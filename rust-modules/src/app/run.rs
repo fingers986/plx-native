@@ -2196,34 +2196,9 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
                 super::bridge::reseat_player_focus(&mut app.pages);
             }
         }
-        // the pointer resting at the top or bottom edge glides the page (`input::EdgeScroll`)
-        if !matches!(app.route(), AppArg::Player)
-            && !app.ptr.dpad_mode
-            && !app.ptr.button_down
-            && super::bridge::page_glides(&app.pages)
-        {
-            // over the page's own cards the edge glides all the same; over a button of the top bar
-            // it stops, and goes on once the pointer is off it
-            let on_bar = app.ptr.edge.at().is_some_and(|(x, y)| pointer_on_bar(app, x, y));
-            if let Some(dy) = app.ptr.edge.step(on_bar, fr.now) {
-                // a fractional wheel: the pages that scroll freely glide by it
-                app.inputs.push(plx_machine::machine::InputEvent {
-                    at: plx_machine::machine::Tick { ms: fr.now, dt_us: 0 },
-                    source: plx_machine::machine::Source::Sdl,
-                    kind: plx_machine::machine::InputKind::Wheel { dy },
-                });
-            }
-            // and at a side edge, the row under the pointer glides sideways
-            if let (Some(dx), Some((x, y))) = (app.ptr.edge.pan(on_bar, fr.now), app.ptr.edge.at()) {
-                app.inputs.push(plx_machine::machine::InputEvent {
-                    at: plx_machine::machine::Tick { ms: fr.now, dt_us: 0 },
-                    source: plx_machine::machine::Source::Sdl,
-                    kind: plx_machine::machine::InputKind::Pan { dx, x, y },
-                });
-            }
-        } else {
-            app.ptr.edge.stop();
-        }
+        // Edge gliding is disabled. Pointer motion at every screen edge remains ordinary hover,
+        // so it can move focus without scrolling the page or dragging a row.
+        app.ptr.edge.stop();
         // hide the idle pointer during playback
         if matches!(app.route(), AppArg::Player)
             && !app.ptr.cur_hidden
