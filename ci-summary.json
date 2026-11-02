@@ -1,6 +1,6 @@
 {
  "flaky": [],
- "generated": "2026-11-02T15:55:26Z",
+ "generated": "2026-11-02T16:02:18Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -21,27 +21,6 @@
    "state30": "new",
    "threshold_abs": 90.0,
    "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": null,
-   "d30": null,
-   "delta30": null,
-   "delta7": null,
-   "group": "ci",
-   "id": "push_wait",
-   "kind": "wait",
-   "label": "Wait after merge",
-   "n_now": 1,
-   "n_prev": 0,
-   "now": 479,
-   "prev7": null,
-   "shown": true,
-   "state": "new",
-   "state30": "new",
-   "threshold_abs": 60.0,
-   "threshold_pct": 15.0,
    "unit": "s"
   },
   {
