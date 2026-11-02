@@ -385,7 +385,7 @@ mod tests {
         aligns: ass::AlignSet,
     ) -> Vec<f32> {
         let mut dys = Vec::new();
-        lift_dys(origin, lift, band, regions, aligns, &mut dys);
+        lift_dys(origin, lift, band, 0.0, regions, aligns, &mut dys);
         dys
     }
 
@@ -464,7 +464,7 @@ mod tests {
     /// The largest block at the highest position, three lines, as libass places it, lifted by the
     /// band's `lift`: where its top starts and where it ends up.
     fn lifted_libass_top(band: HudBand) -> (f32, f32) {
-        let style = style(SubtitleSize::Huge, SubtitlePosition::High);
+        let style = style(SubtitleSize::Huge, SubtitlePosition::TvScreen);
         let pitch = text_style::CAPTION_LINE_PITCH * style.scale();
         let height = text_style::CAPTION_ANCHOR_LINES as f32 * pitch;
         let top = text_style::bottom_anchor_y(style.position) - height;
@@ -521,7 +521,7 @@ mod tests {
     /// One delta for every region that moves, a region above the limit staying, with a section open.
     #[test]
     fn the_section_rise_is_one_delta_for_the_group_that_moves() {
-        let style = style(SubtitleSize::Medium, SubtitlePosition::Low);
+        let style = style(SubtitleSize::Medium, SubtitlePosition::TvScreen);
         let band = HudBand::CLASSIC.with_rise(HudBand::CLASSIC.rise_to_clear(668.0));
         let (y, h) = line_at(style, 0);
         let regions = [(y - h, h), (y, h), (100, 48)];
@@ -532,7 +532,7 @@ mod tests {
     /// Where the lifted block's top would cross the safe area the rise stops: the block overlaps the section.
     #[test]
     fn the_section_rise_stops_where_the_block_would_leave_the_safe_area() {
-        let style = style(SubtitleSize::Huge, SubtitlePosition::Low);
+        let style = style(SubtitleSize::Huge, SubtitlePosition::TvScreen);
         let pitch = text_style::CAPTION_LINE_PITCH * style.scale();
         let height = text_style::CAPTION_ANCHOR_LINES as f32 * pitch;
         let top = text_style::bottom_anchor_y(style.position) - height;
@@ -565,7 +565,7 @@ mod tests {
 
     #[test]
     fn a_four_line_block_moves_as_one() {
-        let style = style(SubtitleSize::ExtraLarge, SubtitlePosition::High);
+        let style = style(SubtitleSize::ExtraLarge, SubtitlePosition::TvScreen);
         let pitch = 72;
         let bottom = text_style::bottom_anchor_y(style.position) as i32;
         let region = (bottom - 4 * pitch, 4 * pitch);
@@ -617,7 +617,7 @@ mod tests {
 
     #[test]
     fn a_four_line_block_as_separate_regions_moves_together_beside_a_top_cue() {
-        let style = style(SubtitleSize::ExtraLarge, SubtitlePosition::High);
+        let style = style(SubtitleSize::ExtraLarge, SubtitlePosition::TvScreen);
         let pitch = (text_style::CAPTION_LINE_PITCH * style.scale()) as i32;
         let bottom = text_style::bottom_anchor_y(style.position) as i32;
         let mut regions = vec![(100, 48)];

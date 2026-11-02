@@ -35,7 +35,7 @@ fn confirm_repick_of_the_current_value_writes_nothing_and_reports_saved() {
     select_subtitle_size(SubtitleSize::Large, Some(tx));
     assert!(recv(&rx));
     let (tx, rx) = mpsc::channel();
-    select_subtitle_position(SubtitlePosition::High, Some(tx));
+    select_subtitle_position(SubtitlePosition::TvScreen, Some(tx));
     assert!(recv(&rx));
 
     // The disk now refuses every write; none is attempted, so none fails.
@@ -50,7 +50,7 @@ fn confirm_repick_of_the_current_value_writes_nothing_and_reports_saved() {
         select_subtitle_size(SubtitleSize::Large, Some(tx));
         assert!(recv(&rx), "size reports saved");
         let (tx, rx) = mpsc::channel();
-        select_subtitle_position(SubtitlePosition::High, Some(tx));
+        select_subtitle_position(SubtitlePosition::TvScreen, Some(tx));
         assert!(recv(&rx), "position reports saved");
     }), "an unchanged pick writes nothing");
 

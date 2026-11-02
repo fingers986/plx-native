@@ -76,7 +76,7 @@ fn stored_prefs() -> Preferences {
         .with_pref::<QualityPref>(Quality::P1080High)
         .with_pref::<DirectPlayModePref>(DirectPlayMode::Forced)
         .with_pref::<SubtitleSizePref>(SubtitleSize::Large)
-        .with_pref::<SubtitlePositionPref>(SubtitlePosition::High)
+        .with_pref::<SubtitlePositionPref>(SubtitlePosition::TvScreen)
         .with_pref::<NextEpisodeModePref>(NextEpisodeMode::AfterCredits)
         .with_pref::<SkipIntervalPref>(SkipInterval::Seconds30)
         .with_pref::<DeckPressPref>(DeckPress::Play)
@@ -132,7 +132,7 @@ fn cells() -> Cells {
 
 /// The eleven legacy values of [`stored_prefs`], as the cells hold them once they are restored.
 fn legacy_cells() -> Cells {
-    Cells(Quality::P1080High, DirectPlayMode::Forced, SubtitleSize::Large, SubtitlePosition::High,
+    Cells(Quality::P1080High, DirectPlayMode::Forced, SubtitleSize::Large, SubtitlePosition::TvScreen,
         NextEpisodeMode::AfterCredits, SkipInterval::Seconds30, DeckPress::Play, SubtitleTone::Silver,
         AudioEnhancements { boost_dialog: true, normalize_loudness: true }, HdrOverlayBrightness::Half, false)
 }
@@ -167,7 +167,7 @@ fn scramble() {
     restore_quality(Quality::P480);
     restore_direct_play_mode(DirectPlayMode::Disabled);
     restore_subtitle_size(SubtitleSize::ExtraLarge);
-    restore_subtitle_position(SubtitlePosition::Middle);
+    restore_subtitle_position(SubtitlePosition::TvScreen);
     restore_next_episode_mode(NextEpisodeMode::Off);
     restore_skip_interval(SkipInterval::Seconds60);
     restore_deck_press(DeckPress::Play);
@@ -202,7 +202,7 @@ fn restore_profile_rows_unseated_reads_the_legacy_keys_and_never_an_own_value() 
     restore(&record(Preferences::default(), vec![]), &Seat::Unseated, Overrides::default());
     assert_eq!(
         cells(),
-        Cells(Quality::Original, DirectPlayMode::Auto, SubtitleSize::Medium, SubtitlePosition::Low,
+        Cells(Quality::Original, DirectPlayMode::Auto, SubtitleSize::Medium, SubtitlePosition::TvScreen,
             NextEpisodeMode::Countdown, SkipInterval::Seconds10, DeckPress::Details, SubtitleTone::White,
             AudioEnhancements::NONE, HdrOverlayBrightness::ThreeQuarters, false),
         "a record that chose nothing restores every default (an absent quality is Original; the derived \
@@ -388,7 +388,7 @@ fn every_live_setting_is_picked_into_the_seated_profiles_record() {
     assert!(confirm::<QualityPref>(Quality::P480));
     assert!(confirm::<DirectPlayModePref>(DirectPlayMode::Disabled));
     assert!(confirm::<SubtitleSizePref>(SubtitleSize::ExtraLarge));
-    assert!(confirm::<SubtitlePositionPref>(SubtitlePosition::Middle));
+    assert!(confirm::<SubtitlePositionPref>(SubtitlePosition::TvScreen));
     assert!(confirm::<NextEpisodeModePref>(NextEpisodeMode::Off));
     assert!(confirm::<SkipIntervalPref>(SkipInterval::Seconds60));
     assert!(confirm::<DeckPressPref>(DeckPress::Details));
@@ -404,7 +404,7 @@ fn every_live_setting_is_picked_into_the_seated_profiles_record() {
     assert_eq!(profile_prefs_mirror_for_test(), after.prefs.profile_prefs, "the mirror holds exactly what landed");
     assert_eq!(
         cells(),
-        Cells(Quality::P480, DirectPlayMode::Disabled, SubtitleSize::ExtraLarge, SubtitlePosition::Middle,
+        Cells(Quality::P480, DirectPlayMode::Disabled, SubtitleSize::ExtraLarge, SubtitlePosition::TvScreen,
             NextEpisodeMode::Off, SkipInterval::Seconds60, DeckPress::Details, SubtitleTone::Grey,
             AudioEnhancements::NONE, HdrOverlayBrightness::ThreeQuarters, true)
     );

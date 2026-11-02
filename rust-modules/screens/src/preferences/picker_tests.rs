@@ -194,7 +194,7 @@ fn the_subtitle_pickers_write_locally_and_pop_on_the_receipt() {
     let _session = plx_plex::plex::session::TempSession::new("picker-subtitle-local");
     let (size, position) = (plx_media::route::subtitle_size(), plx_media::route::subtitle_position());
     plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Medium);
-    plx_media::route::restore_subtitle_position(plx_media::route::SubtitlePosition::Low);
+    plx_media::route::restore_subtitle_position(plx_media::route::SubtitlePosition::TvScreen);
     for field in [PickerKind::SubtitleSize, PickerKind::SubtitlePosition] {
         let mut page = PickerPage::new(EntryId(0), field);
         let checked = page.state.checked;

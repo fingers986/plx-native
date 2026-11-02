@@ -125,7 +125,7 @@ fn ink_bottom(rects: &[Rect]) -> i32 {
 }
 
 const SIZES: [SubtitleSize; 5] = SubtitleSize::LADDER;
-const POSITIONS: [SubtitlePosition; 3] = [SubtitlePosition::Low, SubtitlePosition::Middle, SubtitlePosition::High];
+const POSITIONS: [SubtitlePosition; 3] = SubtitlePosition::LADDER;
 
 /// libass's line box for a one-line Inter Bold cue: `win ascent` above the baseline and `win
 /// descent` below, at the style's em (`36 x scale`).
@@ -180,7 +180,7 @@ fn native_the_bottom_anchor_is_where_the_last_line_box_ends() {
 #[ignore = "requires the pinned native host libass artifact and packaged fonts"]
 fn native_the_line_pitch_is_forty_eight_times_the_scale() {
     for size in SIZES {
-        let picks = style(size, SubtitlePosition::Low);
+        let picks = style(size, SubtitlePosition::TvScreen);
         let scale = picks.scale();
         let one = first_glyph_baseline(&text_frame(&picks, &[cue("H")]));
         let two = fill_bands(&text_frame(&picks, &[cue("H\\NH")]));
@@ -219,7 +219,7 @@ fn native_an8_cues_hang_from_the_top_margin_at_every_position() {
 #[ignore = "requires the pinned native host libass artifact and packaged fonts"]
 fn native_an5_is_centred_and_ignores_the_position() {
     for size in SIZES {
-        let scale = style(size, SubtitlePosition::Low).scale();
+        let scale = style(size, SubtitlePosition::TvScreen).scale();
         let want = text_style::SCR_H / 2.0 + (win_ascent_px(scale) - win_descent_px(scale)) / 2.0;
         for position in POSITIONS {
             let picks = style(size, position);
@@ -239,7 +239,7 @@ fn native_an5_is_centred_and_ignores_the_position() {
 #[ignore = "requires the pinned native host libass artifact and packaged fonts"]
 fn native_left_and_right_alignments_sit_on_the_side_margins() {
     for size in SIZES {
-        let picks = style(size, SubtitlePosition::Low);
+        let picks = style(size, SubtitlePosition::TvScreen);
         let margin = text_style::side_margin(picks.scale()) as i32;
         for align in [1u8, 4, 7] {
             let (left, _) = fill_extent(&text_frame(&picks, &[raw(align, "HH")]), 0, 1080);
@@ -263,7 +263,7 @@ const PROSE: &str = "The quick brown fox jumps over the lazy dog while the five 
 #[ignore = "requires the pinned native host libass artifact and packaged fonts"]
 fn native_lines_wrap_at_the_wrap_width_for_every_size() {
     for size in SIZES {
-        let picks = style(size, SubtitlePosition::Low);
+        let picks = style(size, SubtitlePosition::TvScreen);
         let wrap = text_style::wrap_width(picks.scale());
         let rects = text_frame(&picks, &[cue(PROSE)]);
         let lines = fill_bands(&rects);
@@ -305,7 +305,7 @@ fn native_lines_wrap_at_the_wrap_width_for_every_size() {
 #[test]
 #[ignore = "requires the pinned native host libass artifact and packaged fonts"]
 fn native_the_outline_is_a_four_pixel_black_stroke_at_eighty_five_percent() {
-    let rects = text_frame(&style(SubtitleSize::Medium, SubtitlePosition::Low), &[cue("H")]);
+    let rects = text_frame(&style(SubtitleSize::Medium, SubtitlePosition::TvScreen), &[cue("H")]);
     let all: Vec<(i32, i32, [u8; 4])> = pixels(&rects).collect();
     let fill: Vec<&(i32, i32, [u8; 4])> = all.iter().filter(|p| is_fill(p.2)).collect();
     let (fill_left, fill_top) = (fill.iter().map(|p| p.0).min().unwrap(), fill.iter().map(|p| p.1).min().unwrap());
@@ -343,7 +343,7 @@ const WHITE: &str = "{\\1c&HFFFFFF&}";
 #[test]
 #[ignore = "requires the pinned native host libass artifact and packaged fonts"]
 fn native_a_mixed_latin_and_arabic_line_takes_the_direction_of_its_first_letter() {
-    let picks = style(SubtitleSize::Large, SubtitlePosition::Low);
+    let picks = style(SubtitleSize::Large, SubtitlePosition::TvScreen);
     let arabic = "مرحبا";
     let rtl = text_frame(&picks, &[raw(2, &format!("{RED}{arabic}{WHITE}.")) ]);
     assert!(
@@ -373,7 +373,7 @@ fn native_a_mixed_latin_and_arabic_line_takes_the_direction_of_its_first_letter(
 #[test]
 #[ignore = "requires the pinned native host libass artifact and packaged fonts"]
 fn native_escapes_show_what_the_subtitle_says() {
-    let picks = style(SubtitleSize::Large, SubtitlePosition::Low);
+    let picks = style(SubtitleSize::Large, SubtitlePosition::TvScreen);
     let frame = |text: &str| text_frame(&picks, &[cue(text)]);
     let extent = |rects: &[Rect]| {
         let (l, r) = fill_extent(rects, 0, 1080);
@@ -445,7 +445,7 @@ fn native_hud_up_deep_marks_clear_the_transport_controls() {
                         "{script} {size:?} {position:?}: lifted ink ends at {lifted}, controls start at {}",
                         band.controls_top_y
                     );
-                    if position == SubtitlePosition::Low && size == SubtitleSize::ExtraLarge {
+                    if position == SubtitlePosition::TvScreen && size == SubtitleSize::ExtraLarge {
                         assert!(depth > latin, "{script}: no deeper than Latin \"Hxg\" ({depth} vs {latin})");
                     }
                 }
