@@ -1,0 +1,9 @@
+{"updated":"2026-11-02T05:50:19Z",
+"ci":[],
+"sim":[
+{"id":41395664521,"at":"2026-11-02T05:43:22Z","sha":"de5f513cb","title":"Refine playback HUD, markers, subtitles, and navigation","pr":null,"conclusion":"failure","attempt":1,"jobs":{"Linux simulator build + launch":308,"Windows launcher syntax":18},"failed":["macOS simulator build + launch","macOS tests against bundled FFmpeg and ASS"]}
+],
+"nightly":[],
+"cancelled":{},
+"daily":[],
+"flaky":[]}
