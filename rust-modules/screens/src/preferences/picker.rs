@@ -68,7 +68,7 @@ fn option_form(options: Vec<(String, Value)>, current: &Value, busy: bool, retry
     let mut choices = FormSection::new("");
     for (i, (label, value)) in options.into_iter().enumerate() {
         if let Value::SubtitlePosition(anchor) = value {
-            let distance = plx_plex::plex::session::peek().subtitle_distance(anchor);
+            let distance = plx_media::route::subtitle_distance(anchor);
             choices = choices.item_keyed(OptionId::Choice(Value::SubtitlePosition(anchor)), RowKey(i as u32),
                 RowKind::Nav(SettingsPage::SubtitlePositionDistance(anchor)), PickAction::Pick(Value::SubtitlePosition(anchor)),
                 Row::new(&label).detail(format!("{distance} px")).chevron(true).dim(busy));
@@ -101,7 +101,7 @@ impl PickerPage {
     }
     fn current(&self) -> Value {
         if let Some(anchor) = self.state.distance_anchor {
-            return Value::SubtitleDistance(anchor, plx_plex::plex::session::peek().subtitle_distance(anchor));
+            return Value::SubtitleDistance(anchor, plx_media::route::subtitle_distance(anchor));
         }
         resolve_value(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs())
     }
@@ -117,7 +117,7 @@ impl PickerPage {
             Value::SubtitleSize(v) => stored_effective::<SubtitleSizePref>(&peek(), &current_seat()) == *v,
             Value::SubtitlePosition(v) => stored_effective::<SubtitlePositionPref>(&peek(), &current_seat()) == *v,
             Value::HdrOverlay(v) => stored_effective::<HdrOverlayBrightnessPref>(&peek(), &current_seat()) == *v,
-            Value::SubtitleDistance(anchor, v) => peek().subtitle_distance(*anchor) == *v,
+            Value::SubtitleDistance(anchor, v) => plx_media::route::subtitle_distance(*anchor) == *v,
             _ => true,
         }
     }
@@ -320,94 +320,3 @@ impl Machine<InnerHost> for PickerPage {
                         self.rebuild(false);
                         fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session));
                     }
-                    Landed::Nothing if started => { self.rebuild(true); fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session)); }
-                    Landed::Nothing => {}
-                }
-                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
-                Handled::Yes
-            }
-            ScreenEvent::FocusMoved { to, .. } => {
-                form_focus(&mut self.form, to.elem);
-                self.state.selected = self.form.key_at(self.form.table.sel.max(0) as usize).map_or(0, |k| k.0);
-                Handled::Yes
-            }
-            ScreenEvent::Activate(key) => { self.activate(*key, fx); Handled::Yes }
-            ScreenEvent::Input(InputEvent { kind: InputKind::Key { key: Key::Right, at_edge: true, .. }, .. })
-                if self.state.distance_anchor.is_none() && self.state.field == PickerKind::SubtitlePosition =>
-            {
-                if let Some(key) = cx.focus.current.and_then(|k| form_right_target(&self.form, k.elem)) {
-                    self.activate(key, fx);
-                }
-                Handled::Yes
-            }
-            ScreenEvent::Input(InputEvent { kind: InputKind::Key { key: Key::Back, edge: Edge::Down, .. }, .. }) if self.writing_account() => Handled::Yes,
-            _ => Handled::No,
-        }
-    }
-}
-
-impl Focusable<InnerHost> for PickerPage {
-    fn groups(&self, cx: &Cx<'_, InnerHost>, out: &mut Vec<GroupSpec>) {
-        if !self.alert.groups(out, cx.measure) {
-            Focusable::<InnerHost>::groups(&self.view(), cx, out)
-        }
-    }
-    fn group_of(&self, key: &u32, cx: &Cx<'_, InnerHost>) -> Option<GroupId> {
-        match self.alert.group_of(*key) {
-            Some(answer) => answer,
-            None => Focusable::<InnerHost>::group_of(&self.view(), key, cx),
-        }
-    }
-    fn neighbour(&self, key: FocusKey<u32>, dir: Dir, cx: &Cx<'_, InnerHost>) -> Step<u32> {
-        match self.alert.neighbour(key, dir) {
-            Some(step) => step,
-            None => Focusable::<InnerHost>::neighbour(&self.view(), key, dir, cx),
-        }
-    }
-    fn place(&self, key: &u32, cx: &Cx<'_, InnerHost>, at: At) -> Option<Placed> {
-        match self.alert.place(*key, cx.measure) {
-            Some(placed) => placed,
-            None => Focusable::<InnerHost>::place(&self.view(), key, cx, at),
-        }
-    }
-    fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, InnerHost>) -> FocusKey<u32> {
-        if let Some(key) = self.alert.reconcile(want) {
-            return key;
-        }
-        if self.alert.owns(want.elem) {
-            return FocusKey { entry: self.entry, elem: self.state.selected };
-        }
-        Focusable::<InnerHost>::reconcile(&self.view(), want, cx)
-    }
-    fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, InnerHost>) -> FocusKey<u32> {
-        match self.alert.seat(g, self.entry) {
-            Some(key) => key,
-            // A list is entered on its CHECKED option (the cursor the page opened on), wherever the
-            // entry comes from — the push's `FirstInGroup` included, which a page-emitted Enter
-            // cannot outrun (the surface queues its own after the page's mount effects).
-            None if g == GroupId(0) && self.form.table.n_rows() > 0 =>
-                FocusKey { entry: self.entry, elem: self.state.selected },
-            None => Focusable::<InnerHost>::seat(&self.view(), g, from, cx),
-        }
-    }
-}
-
-impl Screen<InnerHost> for PickerPage {
-    fn name(&self) -> &'static str { word::PICKER }
-    fn state(&self) -> &dyn LogicalState { &self.state }
-    fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> {
-        Some(Cow::Borrowed(plx_platform::i18n::msg::settings_title()))
-    }
-    fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
-    fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
-        plx_ui::screen::Part::<InnerHost>::draw(&mut self.view(), f, Rect::FULL);
-        self.alert.draw(f, self.entry);
-    }
-    fn render(&self) -> RenderStrategy { RenderStrategy::Page }
-    fn focus_source(&self) -> FocusSource { FocusSource::Engine }
-    fn hit_source(&self) -> HitSource { HitSource::Engine }
-}
-
-#[cfg(test)]
-#[path = "picker_tests.rs"]
-mod tests;

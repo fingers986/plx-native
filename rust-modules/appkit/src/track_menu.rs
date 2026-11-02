@@ -1398,7 +1398,7 @@ impl TrackMenuState {
                 // is stored separately from the profile's default position.
                 let position = match SubtitlePosition::from_index(rung as u8) {
                     SubtitlePosition::Custom(_) => SubtitlePosition::Custom(
-                        plx_plex::plex::session::peek().subtitle_custom_distance(),
+                        plx_media::route::subtitle_custom_distance(),
                     ),
                     fixed => fixed,
                 };
@@ -1699,7 +1699,7 @@ impl TrackMenuState {
     /// why; Color is live under every renderer — the subtitle ink tints bitmaps and ASS alike.
     fn custom_position_distance(&self) -> u8 {
         self.position.custom_gap()
-            .unwrap_or_else(|| plx_plex::plex::session::peek().subtitle_custom_distance())
+            .unwrap_or_else(plx_media::route::subtitle_custom_distance)
     }
 
     fn position_readout(&self) -> String {

@@ -944,6 +944,15 @@ pub fn subtitle_position() -> SubtitlePosition {
         }
     }
 }
+/// The configured vertical distance for a subtitle position. Consumers in screens and appkit
+/// use the route adapter instead of reaching into the process session registry directly.
+pub fn subtitle_distance(position: SubtitlePosition) -> u8 {
+    session::peek().subtitle_distance(position)
+}
+/// The configured distance shown for the player's Custom subtitle position.
+pub fn subtitle_custom_distance() -> u8 {
+    subtitle_distance(SubtitlePosition::Custom(40))
+}
 pub fn restore_subtitle_position(position: SubtitlePosition) {
     PLAYER_SUBTITLE_POSITION_OVERRIDE.store(u8::MAX, Relaxed);
     restore_live::<SubtitlePositionPref>(position)
