@@ -96,7 +96,7 @@ impl<'a> MetadataView<'a> {
     }
     /// Has the viewer already put this exact segment behind them? Keyed on the segment, not the
     /// marker value (the server can re-send the same marker with another end), and shared by the
-    /// server-marker and synthesized-tail paths so neither can re-offer a dismissed segment.
+    /// server-marker, chapter-derived recap and synthesized-tail paths so none can re-offer a dismissed segment.
     fn skipped(&self, m: &Marker) -> bool {
         self.state.skipped.contains(&(m.kind, m.start_ms))
     }
@@ -104,7 +104,15 @@ impl<'a> MetadataView<'a> {
         if !head.playing {
             return None;
         }
-        let m = marker_at(self.playing_markers(), head.pos_ns / 1_000_000)?;
+        let markers = self.playing_markers();
+        let pos_ms = head.pos_ns / 1_000_000;
+        // A recap marker should win if it overlaps a broad intro marker; otherwise the
+        // recap-specific action could depend on the order PMS happened to return markers in.
+        let m = markers
+            .iter()
+            .find(|m| m.kind == MarkerKind::Recap && marker_contains(m, pos_ms))
+            .copied()
+            .or_else(|| marker_at(markers, pos_ms))?;
         (!self.skipped(&m)).then_some(m)
     }
     pub fn synthesized_tail_marker(&self, head: Playhead, has_next: bool) -> Option<Marker> {
@@ -1253,6 +1261,8 @@ impl RelatedTail {
 pub struct Chapter {
     pub index: i64,    // 1-based chapter number
     pub start_ms: i64, // startTimeOffset — the seek target + timestamp label
+    #[serde(default)]
+    pub end_ms: i64,   // endTimeOffset — used to bound a named recap chapter
     pub title: String, // Chapter.tag; empty → UI shows "Chapter {index}"
     pub thumb: String, // server image path → resolve_tex_wh_on (empty if no chapter thumbs)
 }
@@ -1266,25 +1276,27 @@ fn convert_chapters(chapters: &[plx_plex::plex::Chapter]) -> Vec<Chapter> {
         .map(|c| Chapter {
             index: c.index,
             start_ms: c.start_time_offset,
+            end_ms: c.end_time_offset,
             title: c.tag.clone(),
             thumb: c.thumb.clone(),
         })
         .collect()
 }
 
-/// Which timeline segment a [`Marker`] describes. Only the two the player acts on are modelled —
-/// PMS also emits `commercial` on recorded content, which [`convert_markers`] drops, so an
+/// Which timeline segment a [`Marker`] describes. The player acts on these three — PMS also emits
+/// `commercial` on recorded content, which [`convert_markers`] drops, so an
 /// unhandled kind can never be mistaken for one of these.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[derive(serde::Serialize, serde::Deserialize)]
 pub enum MarkerKind {
     Intro,
     Credits,
+    Recap,
 }
 
-/// A server-detected intro / credits segment of the playing item (`?includeMarkers=1`). Drives
-/// the in-player Skip prompt and — for an episode with something queued after it — the moment the
-/// Up Next control takes over.
+/// A server-detected intro / recap / credits segment of the playing item (`?includeMarkers=1`), or
+/// a recap synthesized from a specifically named recap chapter. Drives the in-player Skip prompt
+/// and — for an episode with something queued after it — the moment the Up Next control takes over.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Marker {
@@ -1312,6 +1324,7 @@ fn convert_markers(markers: &[plx_plex::plex::Marker], duration_ms: i64) -> Vec<
             let kind = match m.kind.as_str() {
                 "intro" => MarkerKind::Intro,
                 "credits" => MarkerKind::Credits,
+                "recap" => MarkerKind::Recap,
                 _ => return None,
             };
             (m.end_time_offset > m.start_time_offset && m.start_time_offset >= 0).then_some(
@@ -1319,14 +1332,60 @@ fn convert_markers(markers: &[plx_plex::plex::Marker], duration_ms: i64) -> Vec<
                     kind,
                     start_ms: m.start_time_offset,
                     end_ms: m.end_time_offset,
-                    final_seg: m.is_final != 0
-                        || (kind == MarkerKind::Credits
-                            && duration_ms > 0
-                            && m.end_time_offset >= duration_ms - FINAL_SLACK_MS),
+                    final_seg: kind == MarkerKind::Credits
+                        && (m.is_final != 0
+                            || (duration_ms > 0 && m.end_time_offset >= duration_ms - FINAL_SLACK_MS)),
                 },
             )
         })
         .collect()
+}
+
+/// Plex does not always expose recap as a `Marker[]` entry. Some libraries instead have a named
+/// `Chapter[]` segment. Treat an explicitly named recap chapter as a marker only when PMS did not
+/// provide a recap marker, and use the chapter's end (or the following chapter's start) as the
+/// seek target. Generic chapters are never guessed from their timing alone.
+fn convert_item_markers(
+    markers: &[plx_plex::plex::Marker],
+    chapters: &[plx_plex::plex::Chapter],
+    duration_ms: i64,
+) -> Vec<Marker> {
+    let mut converted = convert_markers(markers, duration_ms);
+    if converted.iter().any(|m| m.kind == MarkerKind::Recap) {
+        return converted;
+    }
+    let recap_chapters = chapters.iter().filter(|c| is_recap_chapter(&c.tag));
+    for chapter in recap_chapters {
+        let end_ms = if chapter.end_time_offset > chapter.start_time_offset {
+            chapter.end_time_offset
+        } else {
+            chapters
+                .iter()
+                .filter(|next| next.start_time_offset > chapter.start_time_offset)
+                .map(|next| next.start_time_offset)
+                .min()
+                .unwrap_or(duration_ms)
+        };
+        if chapter.start_time_offset >= 0 && end_ms > chapter.start_time_offset {
+            converted.push(Marker {
+                kind: MarkerKind::Recap,
+                start_ms: chapter.start_time_offset,
+                end_ms,
+                final_seg: false,
+            });
+        }
+    }
+    converted
+}
+
+fn is_recap_chapter(title: &str) -> bool {
+    let title = title.trim().to_ascii_lowercase();
+    title == "recap"
+        || title.starts_with("recap:")
+        || title.starts_with("recap -")
+        || title == "previously on"
+        || title.starts_with("previously on ")
+        || title.starts_with("previously on:")
 }
 
 /// Record that `m` has been skipped, so it is never offered again for this item.
@@ -1384,13 +1443,12 @@ pub fn tail_marker(pos_ms: i64, dur_ms: i64) -> Option<Marker> {
 /// PMS sets that end to the container duration, but our playhead is the DECODER's, which routinely
 /// stops a few hundred ms short of it — so the prompt would blink out over the last frames.
 pub fn marker_at(markers: &[Marker], pos_ms: i64) -> Option<Marker> {
-    markers
-        .iter()
-        .find(|m| {
-            let end = if m.final_seg { i64::MAX } else { m.end_ms };
-            pos_ms >= m.start_ms && pos_ms < end
-        })
-        .copied()
+    markers.iter().find(|m| marker_contains(m, pos_ms)).copied()
+}
+
+fn marker_contains(marker: &Marker, pos_ms: i64) -> bool {
+    let end = if marker.final_seg { i64::MAX } else { marker.end_ms };
+    pos_ms >= marker.start_ms && pos_ms < end
 }
 
 /// Which badge artwork a `Rating.image` string names — the provider AND its icon state, both of
@@ -1708,7 +1766,7 @@ pub struct Detail {
     #[serde(default)]
     pub collection: Option<CollectionShelf>,
     pub chapters: Vec<Chapter>,
-    pub markers: Vec<Marker>, // intro / credits segments (leaf items only)
+    pub markers: Vec<Marker>, // intro / recap / credits segments (leaf items only)
     pub ratings: Vec<Rating>, // review scores, critic-first (see convert_ratings)
     /// Every extras row, server order. Empty when PMS sent none, the GET was refused and no
     /// primary trailer could be filled, or this item is an episode/season (those never request
@@ -2338,7 +2396,7 @@ fn fetch_detail(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::Se
         related_tail: RelatedTail::default(),
         collection: None,
         chapters: convert_chapters(&it.chapter),
-        markers: convert_markers(&it.marker, it.duration),
+        markers: convert_item_markers(&it.marker, &it.chapter, it.duration),
         ratings: convert_ratings(&it),
         extras: Vec::new(),
         trailer_rk: String::new(),
@@ -2629,7 +2687,7 @@ pub struct PlayingItem {
     /// not convert to Profile 8.1) would otherwise be fed to the decoder verbatim and shown in the
     /// wrong colours. See [`Dovi`].
     pub dovi: Dovi,
-    pub markers: Vec<Marker>, // intro / credits segments — the in-player Skip prompt
+    pub markers: Vec<Marker>, // intro / recap / credits segments — the in-player Skip prompt
     pub chapters: Vec<Chapter>, // chapter boundaries — the in-player Chapters tab/strip
     /// The played leaf's video stream is HDR: a PQ or HLG transfer, or Dolby Vision
     /// (`convert_streams`' `hdr`). The SOURCE's fact, not the picture's: a server re-encode to SDR
@@ -2782,7 +2840,7 @@ fn playing_item_of(
     // here costs no request, and dropping it is what hid the Chapters tab on the episode path.
     let markers = it
         .as_ref()
-        .map(|it| convert_markers(&it.marker, it.duration))
+        .map(|it| convert_item_markers(&it.marker, &it.chapter, it.duration))
         .unwrap_or_default();
     let chapters = it
         .as_ref()

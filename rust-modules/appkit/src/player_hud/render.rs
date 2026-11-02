@@ -64,27 +64,30 @@
 
 use std::ffi::CString;
 
-use plx_ui::theme;
 use plx_ui::icons::Icon;
+use plx_ui::theme;
 use plx_ui::widgets::{ControlGround, TabPill, TransportButton, TransportFocus, TransportRest};
 use plx_ui::{Painter, Rect, View};
 
 use super::classic::{
-    draw_player_title_at, draw_playbar_look, draw_scrim_at, draw_scrub_preview, hud_env, hud_tab_state, tab_labels,
+    draw_playbar_look, draw_player_title_at, draw_scrim_at, draw_scrub_preview, hud_env, hud_tab_state, tab_labels,
     tab_of_section, Kicker, Playbar, PlaybarLook, TitleLook,
 };
+use super::command::{HudCommand, Section, SeekBy, TrackTab};
 use super::geometry::{frame_state, GROUP_ROW, GROUP_SECTION};
-use super::sections;
 use super::model::HudModel;
 use super::motion::HudMotion;
+use super::sections;
 use super::state::{readout_owns_frame, Busy, ControlSlot};
+use crate::hud_format::compile::{
+    Chrome, Compiled, CompiledState, DrawOp, FaceRef, Focus, Rest, Span, Widget, OPEN_CHAPTERS,
+    OPEN_INFO,
+};
+use crate::skip_pill;
+use crate::up_next::{self, Countdown, Decor, Layout};
 use plx_machine::machine::{GroupId, Host};
 use plx_ui::geom::IndexElem;
 use plx_ui::screen::DrawFrame;
-use super::command::{HudCommand, SeekBy, Section, TrackTab};
-use crate::hud_format::compile::{Chrome, Compiled, CompiledState, DrawOp, FaceRef, Focus, Rest, Span, Widget, OPEN_CHAPTERS, OPEN_INFO};
-use crate::skip_pill;
-use crate::up_next::{self, Countdown, Decor, Layout};
 
 /// Everything besides the compiled package, the motion and the painter that one frame of the
 /// transport draws from, bundled.
@@ -94,6 +97,10 @@ pub struct Frame<'a> {
     pub ps: &'a plx_media::route::PlaybackSession,
     pub model: &'a HudModel,
     pub up: &'a Countdown,
+    /// Draw only an Intro/Recap offer while playback continues and the ordinary HUD is hidden.
+    pub skip_only: bool,
+    pub skip_progress: f32,
+    pub skip_cancelled: bool,
     pub slot: ControlSlot,
     pub busy: Busy,
     pub focus: GroupId,
@@ -130,13 +137,24 @@ struct Layers {
 impl Layers {
     /// Every section at rest: what a state walked on its own (a test's) draws.
     fn settled() -> Self {
-        Self { appear: [1.0; 2], lift: Vec::new() }
+        Self { appear: [1.0; 2], lift: Vec::new(),
+        }
     }
 
     /// The layers of `state`, the state of the `base` bits, from the motion `row` holds.
-    fn of(compiled: &Compiled, state: &CompiledState, base: u8, f: &Frame<'_>, inline: bool, row: &HudMotion) -> Self {
-        let appear = [row.section_appear(Section::Chapters), row.section_appear(Section::Info)];
-        let lift = if inline { lift(compiled, state, base, f, &appear) } else { Vec::new() };
+    fn of(compiled: &Compiled, state: &CompiledState, base: u8, f: &Frame<'_>,
+        inline: bool,
+        row: &HudMotion,
+    ) -> Self {
+        let appear = [
+            row.section_appear(Section::Chapters),
+            row.section_appear(Section::Info),
+        ];
+        let lift = if inline {
+            lift(compiled, state, base, f, &appear)
+        } else {
+            Vec::new()
+        };
         Self { appear, lift }
     }
 
@@ -157,12 +175,16 @@ impl Layers {
         if a >= 1.0 {
             return p;
         }
-        p.alpha(a).translate(0.0, plx_ui::popover::Popover::RISE * (1.0 - a))
+        p.alpha(a)
+            .translate(0.0, plx_ui::popover::Popover::RISE * (1.0 - a))
     }
 
     /// How far below its rest place the band `id` stands.
     fn lift_of(&self, id: &str) -> f32 {
-        self.lift.iter().find(|(band, _)| band == id).map_or(0.0, |(_, dy)| *dy)
+        self.lift
+            .iter()
+            .find(|(band, _)| band == id)
+            .map_or(0.0, |(_, dy)| *dy)
     }
 }
 
@@ -172,7 +194,9 @@ impl Layers {
 /// puts it and the mask drops with no jump. The lift is read from the compiler's geometry: the band's box in
 /// `state` against the same band's box in the state without the section, so it is whatever the package laid out
 /// (a keyed `gap_before` included) and nothing is tuned per package. No state is kept per op.
-fn lift(compiled: &Compiled, state: &CompiledState, base: u8, f: &Frame<'_>, appear: &[f32; 2]) -> Vec<(String, f32)> {
+fn lift(compiled: &Compiled, state: &CompiledState, base: u8, f: &Frame<'_>,
+    appear: &[f32; 2],
+) -> Vec<(String, f32)> {
     let mut out: Vec<(String, f32)> = Vec::new();
     for section in [Section::Chapters, Section::Info] {
         let bit = section.open_bit();
@@ -180,11 +204,22 @@ fn lift(compiled: &Compiled, state: &CompiledState, base: u8, f: &Frame<'_>, app
         if base & bit == 0 || a >= 1.0 {
             continue;
         }
-        let Some(without) = state_for(compiled, base & !bit, f) else { continue };
-        let owned = |id: &str| state.spans.iter().any(|span| span.section & bit != 0 && span.band == id);
-        let Some(first) = state.bands.iter().position(|(id, _)| owned(id)) else { continue };
+        let Some(without) = state_for(compiled, base & !bit, f) else {
+            continue;
+        };
+        let owned = |id: &str| {
+            state
+                .spans
+                .iter()
+                .any(|span| span.section & bit != 0 && span.band == id)
+        };
+        let Some(first) = state.bands.iter().position(|(id, _)| owned(id)) else {
+            continue;
+        };
         for (id, rect) in &state.bands[..first] {
-            let Some((_, rest)) = without.bands.iter().find(|(other, _)| other == id) else { continue };
+            let Some((_, rest)) = without.bands.iter().find(|(other, _)| other == id) else {
+                continue;
+            };
             let dy = (1.0 - a) * (rest.y - rect.y);
             match out.iter_mut().find(|(band, _)| band == id) {
                 Some(entry) => entry.1 += dy,
@@ -197,7 +232,10 @@ fn lift(compiled: &Compiled, state: &CompiledState, base: u8, f: &Frame<'_>, app
 
 /// Draw the transport from `compiled` into `p`. Returns false, having drawn nothing, when the package
 /// has no state for this frame (the caller then draws what it drew before the renderer existed).
-pub fn draw<H: Host>(compiled: &Compiled, f: &Frame<'_>, df: &DrawFrame<'_, '_, H>, row: &mut HudMotion, p: Painter) -> bool
+pub fn draw<H: Host>(
+    compiled: &Compiled,
+    f: &Frame<'_>, df: &DrawFrame<'_, '_, H>, row: &mut HudMotion, p: Painter,
+) -> bool
 where
     H::Elem: IndexElem,
 {
@@ -212,7 +250,8 @@ where
     let presented = row.presented();
     let inline = !compiled.sections_modal();
     let base = if inline { f.open | presented } else { f.open };
-    let Some(state) = state_for(compiled, base, f) else { return false };
+    let Some(state) = state_for(compiled, base, f) else { return false;
+    };
     let layers = Layers::of(compiled, state, base, f, inline, row);
     walk(compiled, state, f, df, row, p, &layers, 0);
     if !inline {
@@ -222,7 +261,8 @@ where
                 continue;
             }
             if let Some(leaving) = state_for(compiled, bit, f) {
-                walk(compiled, leaving, f, df, row, p, &Layers::of(compiled, leaving, bit, f, false, row), bit);
+                walk(compiled, leaving, f, df, row, p, &Layers::of(compiled, leaving, bit, f, false, row), bit,
+                );
             }
         }
     }
@@ -233,8 +273,11 @@ where
 /// one with no section open, an open-section state otherwise); a test hands it any state it builds
 /// (`compiled.lookup(OPEN_INFO | OPEN_CHAPTERS, ..)`). The failure read-out is [`draw`]'s: it owns the frame
 /// before any state is chosen.
-pub fn draw_state<H: Host>(compiled: &Compiled, state: &CompiledState, f: &Frame<'_>, df: &DrawFrame<'_, '_, H>, row: &mut HudMotion, p: Painter)
-where
+pub fn draw_state<H: Host>(compiled: &Compiled, state: &CompiledState, f: &Frame<'_>,
+    df: &DrawFrame<'_, '_, H>,
+    row: &mut HudMotion,
+    p: Painter,
+) where
     H::Elem: IndexElem,
 {
     walk(compiled, state, f, df, row, p, &Layers::settled(), 0);
@@ -277,10 +320,10 @@ fn walk<H: Host>(
         if only != 0 && span.section & only == 0 {
             return;
         }
-        if span.chrome == Chrome::Fades && !chrome {
+        if !f.skip_only && span.chrome == Chrome::Fades && !chrome {
             return;
         }
-        let q = if span.chrome == Chrome::Fades { pc } else { p };
+        let q = if !f.skip_only && span.chrome == Chrome::Fades { pc } else { p };
         // an appearing or fading section lifts the bands above it; its own spans are one layer
         let dy = layers.lift_of(&span.band);
         let (q, p) = if dy != 0.0 { (q.translate(0.0, dy), p.translate(0.0, dy)) } else { (q, p) };
@@ -293,18 +336,25 @@ fn walk<H: Host>(
             if at < grouped_to {
                 continue;
             }
+            if f.skip_only && !matches!(op, DrawOp::SkipPill { .. }) {
+                continue;
+            }
             if let Some(g) = state.groups.iter().find(|g| g.ops.start == at) {
-                sections::group(compiled, f, q, state, g);
+                if !f.skip_only {
+                    sections::group(compiled, f, q, state, g);
+                }
                 grouped_to = g.ops.end;
                 continue;
             }
             match op {
                 DrawOp::Scrim { rect } => draw_scrim_at(q, *rect),
                 _ if hides_transport && !is_section_tab(op) => {}
-                DrawOp::Text { bind, rect, size, bold, ink, alpha, max_lines, leading } => match text_of(bind) {
+                DrawOp::Text { bind, rect, size, bold, ink, alpha, max_lines, leading,
+                } => match text_of(bind) {
                     Some(Text::Kicker) => kicker_rect = Some((*rect, *size)),
                     Some(Text::Title) => draw_title(f, row, q, kicker_rect.take(), *rect, *size),
-                    None => sections::text(f, q, *rect, bind, *size, bold, ink, *alpha, *max_lines, *leading),
+                    None => sections::text(f, q, *rect, bind, *size, bold, ink, *alpha, *max_lines, *leading,
+                    ),
                 },
                 DrawOp::Control(c) => draw_control(compiled, f, row, &e, q, state, c),
                 DrawOp::UpNext { rects, .. } => {
@@ -315,14 +365,25 @@ fn walk<H: Host>(
                             credits: rects.credits,
                             next: rects.next,
                         };
-                        let decor = Decor { still: rects.still.is_some(), caption: rects.caption.is_some() };
-                        up_next::draw_over(f.ps, &layout, decor, row, f.up, q, f.focus == GROUP_ROW, f.btn, f.now, f.measure);
+                        let decor = Decor { still: rects.still.is_some(), caption: rects.caption.is_some(),
+                        };
+                        up_next::draw_over(f.ps, &layout, decor, row, f.up, q, f.focus == GROUP_ROW, f.btn, f.now, f.measure,
+                        );
                     }
                 }
                 DrawOp::SkipPill { rects } => {
                     if let ControlSlot::Skip(pr) = f.slot {
-                        let shown = rects[usize::from(pr.kind == plx_data::metadata::MarkerKind::Credits)];
-                        skip_pill::draw_at(row, q, pr, shown, f.focus == GROUP_ROW);
+                        let shown = rects[usize::from(matches!(pr.kind,
+                            plx_data::metadata::MarkerKind::Credits | plx_data::metadata::MarkerKind::Recap))];
+                        skip_pill::draw_at(
+                            row,
+                            q,
+                            pr,
+                            shown,
+                            f.focus == GROUP_ROW,
+                            f.skip_progress,
+                            f.skip_cancelled,
+                        );
                     }
                 }
                 DrawOp::Playbar { track, fill, track_ink, clock_size, knob, clocks, mark, .. } => {
@@ -345,11 +406,12 @@ fn walk<H: Host>(
                 }
                 DrawOp::Ground { rect, ink, radius } => sections::ground(q, *rect, *radius, ink, f),
                 DrawOp::Rule { rect, ink } => sections::rule(q, *rect, ink, f),
-                DrawOp::Icon { rect, asset, ink } => sections::icon(compiled, q, *rect, asset, ink, f),
-                DrawOp::Image { rect, bind, radius } => sections::image(f, q, *rect, bind, *radius),
-                DrawOp::Facts { rect, order, badges, genres_max, playback_fact, bold, ink, .. } => {
-                    sections::facts(f, q, *rect, order, badges, *genres_max, *playback_fact, bold, ink)
+                DrawOp::Icon { rect, asset, ink } => {
+                    sections::icon(compiled, q, *rect, asset, ink, f)
                 }
+                DrawOp::Image { rect, bind, radius } => sections::image(f, q, *rect, bind, *radius),
+                DrawOp::Facts { rect, order, badges, genres_max, playback_fact, bold, ink, .. } => sections::facts(f, q, *rect, order, badges, *genres_max, *playback_fact, bold, ink,
+                ),
                 // not drawn by this renderer yet: see the module doc
                 DrawOp::Strip { .. } => sections::strip(f, df, row, q, op, moved),
             }
@@ -401,7 +463,13 @@ fn text_of(bind: &str) -> Option<Text> {
 /// The title pair, in the cell the compile placed it: the kicker's rect and size, and the main line's. The
 /// main line's right edge is the bound both lines fit before (the `w: fill` cell's, golden-pinned for classic in
 /// `classic-title-right.golden.tsv`).
-fn draw_title(f: &Frame<'_>, row: &mut HudMotion, q: Painter, kicker: Option<(Rect, i32)>, main: Rect, title_size: i32) {
+fn draw_title(f: &Frame<'_>,
+    row: &mut HudMotion,
+    q: Painter,
+    kicker: Option<(Rect, i32)>,
+    main: Rect,
+    title_size: i32,
+) {
     let classic = TitleLook::default();
     let look = TitleLook {
         x: main.x,
@@ -413,10 +481,20 @@ fn draw_title(f: &Frame<'_>, row: &mut HudMotion, q: Painter, kicker: Option<(Re
     let right = main.x + main.w;
     let paused = f.model.paused;
     if let Some(n) = f.meta.now_playing().filter(|n| n.is_real_episode) {
-        let kicker = CString::new(plx_ui::fmt::episode_kicker(n.season, n.index, &n.ep_title)).unwrap_or_default();
+        let kicker = CString::new(plx_ui::fmt::episode_kicker(n.season, n.index, &n.ep_title))
+            .unwrap_or_default();
         // an interior-NUL title drew nothing before the title was factored out: it still does
         if let Ok(title) = CString::new(n.title.clone()) {
-            draw_player_title_at(q, look, Kicker::Episode(kicker.as_ptr()), title.as_ptr(), right, f.measure, paused, &row.title_clock);
+            draw_player_title_at(
+                q,
+                look,
+                Kicker::Episode(kicker.as_ptr()),
+                title.as_ptr(),
+                right,
+                f.measure,
+                paused,
+                &row.title_clock,
+            );
         }
     } else {
         draw_player_title_at(
@@ -451,7 +529,7 @@ fn face_state(act: HudCommand, m: &HudModel) -> &'static str {
     }
 }
 
-/// The glyph of a command whose package wrote no `face`: the app's own. For classic's five commands it is
+/// The glyph of a command whose package wrote no `face`: the app's own. For the built-in commands it is
 /// `Controls::icon`'s, so the replaced row and the old one cannot disagree.
 fn classic_glyph(act: Option<HudCommand>, m: &HudModel) -> Icon {
     match act {
@@ -469,13 +547,17 @@ fn classic_glyph(act: Option<HudCommand>, m: &HudModel) -> Icon {
             SeekBy::Setting(super::command::SeekDir::Forward) => Icon::FastForward,
         },
         Some(HudCommand::FromBeginning) => Icon::Restart,
-        Some(HudCommand::GoToDetail | HudCommand::ToggleStats | HudCommand::ToggleSection(_)) => Icon::Info,
+        Some(HudCommand::GoToDetail | HudCommand::ToggleStats | HudCommand::ToggleSection(_)) => {
+            Icon::Info
+        }
         Some(HudCommand::OpenTracks(TrackTab::Subtitles)) | None => Icon::Cc,
     }
 }
 
 /// The glyph the control `c` draws now: its `face` picked at the command's state, else the command's own.
-fn glyph_of<'a>(compiled: &'a Compiled, c: &crate::hud_format::compile::ControlRect, m: &HudModel) -> Glyph<'a> {
+fn glyph_of<'a>(
+    compiled: &'a Compiled, c: &crate::hud_format::compile::ControlRect, m: &HudModel,
+) -> Glyph<'a> {
     let picked = match c.act {
         Some(HudCommand::Seek(SeekBy::Setting(_))) => c.face.pick_interval(m.skip_secs),
         Some(act) => c.face.pick(face_state(act, m)),
@@ -483,7 +565,9 @@ fn glyph_of<'a>(compiled: &'a Compiled, c: &crate::hud_format::compile::ControlR
     };
     match picked {
         Some(FaceRef::Builtin(icon)) => Glyph::Icon(*icon),
-        Some(FaceRef::Asset(id)) => compiled.glyph(id).map_or(Glyph::Icon(classic_glyph(c.act, m)), Glyph::Svg),
+        Some(FaceRef::Asset(id)) => compiled
+            .glyph(id)
+            .map_or(Glyph::Icon(classic_glyph(c.act, m)), Glyph::Svg),
         None => Glyph::Icon(classic_glyph(c.act, m)),
     }
 }
@@ -513,8 +597,10 @@ fn draw_control(
         // the model cannot disagree); its glyph is its `face` at the command's state, else the command's
         // own; its rest and focus faces are the widget's.
         Widget::Disc => {
-            let ControlSlot::Discs(controls) = f.slot else { return };
-            let Some(i) = state.row_ids.iter().position(|id| id.as_deref() == Some(c.id.as_str())) else { return };
+            let ControlSlot::Discs(controls) = f.slot else { return;
+            };
+            let Some(i) = state.row_ids.iter().position(|id| id.as_deref() == Some(c.id.as_str())) else { return;
+            };
             let Ok(i) = i32::try_from(i) else { return };
             let model = HudModel { controls, ..*f.model };
             let button = TransportButton::new(i, c.rect)
@@ -542,10 +628,13 @@ fn draw_control(
         // A section tab. Its label and its index are the tab strip's (`tab_labels`), so what is
         // drawn, hit and selected are the one list.
         Widget::Pill => {
-            let Some(section) = c.section.as_deref() else { return };
-            let Some(i) = tab_of_section(section) else { return };
+            let Some(section) = c.section.as_deref() else { return;
+            };
+            let Some(i) = tab_of_section(section) else { return;
+            };
             let labels = tab_labels(crate::chapters_panel::has_chapters(f.meta));
-            let Some(Ok(label)) = usize::try_from(i).ok().and_then(|i| labels[i]).map(CString::new) else { return };
+            let Some(Ok(label)) = usize::try_from(i).ok().and_then(|i| labels[i]).map(CString::new) else { return;
+            };
             let (focused, selected) = hud_tab_state(f.transport, f.focus, f.tab, i);
             // the state the walk is in says which sections are open: their tabs read selected, whatever the
             // policy (a modal section hides the row, an inline one leaves it live)
@@ -599,7 +688,10 @@ mod tests {
     }
 
     /// Run `f` over a frame whose focus reads `focus`.
-    pub(super) fn with_df_focus<R>(focus: FocusRead<u32>, f: impl FnOnce(&DrawFrame<'_, '_, HostFixture>) -> R) -> R {
+    pub(super) fn with_df_focus<R>(
+        focus: FocusRead<u32>,
+        f: impl FnOnce(&DrawFrame<'_, '_, HostFixture>) -> R,
+    ) -> R {
         let cx = plx_machine::machine::Cx {
             views: (),
             tick: Tick::default(),
@@ -616,12 +708,25 @@ mod tests {
     }
 
     const FM: FixtureMeasure = FixtureMeasure;
-    const PAIR: Controls = Controls { previous: true, next: true, restart: false };
-    const RESTART: Controls = Controls { previous: true, next: false, restart: true };
+    const PAIR: Controls = Controls {
+        previous: true,
+        next: true,
+        restart: false,
+    };
+    const RESTART: Controls = Controls {
+        previous: true,
+        next: false,
+        restart: true,
+    };
 
     /// Every primitive a frame hands the painter: the command census, the text runs, the glyphs and the
     /// fills with their effective alpha, in draw order.
-    type Census = (Vec<(u64, Rect)>, Vec<Run>, Vec<(Icon, Rect)>, Vec<(u64, Rect, f32)>);
+    type Census = (
+        Vec<(u64, Rect)>,
+        Vec<Run>,
+        Vec<(Icon, Rect)>,
+        Vec<(u64, Rect, f32)>,
+    );
 
     fn census(draw: impl FnOnce()) -> Census {
         let (mut runs, mut icons, mut inks) = (Vec::new(), Vec::new(), Vec::new());
@@ -638,7 +743,12 @@ mod tests {
     }
 
     fn marker(kind: MarkerKind, final_seg: bool) -> Marker {
-        Marker { kind, start_ms: 1_000, end_ms: 2_000, final_seg }
+        Marker {
+            kind,
+            start_ms: 1_000,
+            end_ms: 2_000,
+            final_seg,
+        }
     }
 
     /// One frame's inputs.
@@ -670,6 +780,9 @@ mod tests {
             entry: EntryId(0), ps: &ps,
             model: &model,
             up: &up,
+            skip_only: false,
+            skip_progress: 0.0,
+            skip_cancelled: false,
             slot: c.slot,
             busy: Busy::None,
             focus: c.focus,
@@ -691,9 +804,12 @@ mod tests {
             ("movie", ControlSlot::Discs(Controls::NONE)),
             ("pair", ControlSlot::Discs(PAIR)),
             ("restart", ControlSlot::Discs(RESTART)),
-            ("skip-intro", ControlSlot::Skip(prompt_for(marker(MarkerKind::Intro, false)))),
-            ("skip-credits", ControlSlot::Skip(prompt_for(marker(MarkerKind::Credits, false)))),
-            ("up-next", ControlSlot::UpNext(marker(MarkerKind::Credits, true))),
+            ("skip-intro", ControlSlot::Skip(prompt_for(marker(MarkerKind::Intro, false))),
+            ),
+            ("skip-credits", ControlSlot::Skip(prompt_for(marker(MarkerKind::Credits, false))),
+            ),
+            ("up-next", ControlSlot::UpNext(marker(MarkerKind::Credits, true)),
+            ),
         ];
         let mut out = Vec::new();
         for (name, slot) in slots {
@@ -701,10 +817,18 @@ mod tests {
                 for transport in [true, false] {
                     // focus on the bar, on every stable stop of the row, and on both tabs
                     let mut focuses = vec![(GROUP_SCRUB, 0, 0)];
-                    focuses.extend((0..slot.items()).map(|i| (GROUP_ROW, i, 0)));
+                    // Keep the five historical disc focus slots so later frozen case indices stay
+                    // stable. Slots 0 and 1 are no longer controls in the built-in layout.
+                    let row_items = if matches!(slot, ControlSlot::Discs(_)) {
+                        5
+                    } else {
+                        slot.items()
+                    };
+                    focuses.extend((0..row_items).map(|i| (GROUP_ROW, i, 0)));
                     focuses.extend([(GROUP_TABS, 0, 0), (GROUP_TABS, 0, 1)]);
                     for (focus, btn, tab) in focuses {
-                        out.push(Case { name, slot, focus, btn, tab, paused, transport });
+                        out.push(Case { name, slot, focus, btn, tab, paused, transport,
+                        });
                     }
                 }
             }
@@ -723,7 +847,9 @@ mod tests {
 
     /// FNV-1a, 64 bit: a hash whose algorithm is fixed here (`DefaultHasher`'s is not).
     fn fnv1a(text: &str) -> u64 {
-        text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+        text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        })
     }
 
     fn census_hash(c: &Census) -> u64 {
@@ -753,11 +879,41 @@ mod tests {
             let _language = language_on_this_thread_for_test(language);
             let cx = plx_platform::i18n::current();
             let hud = crate::player_hud::loaded::load_classic("0.0.0-test", cx, &FM);
-            for (index, c) in cases().into_iter().enumerate() {
+            let cases = cases();
+            for (index, c) in cases.iter().copied().enumerate() {
                 let (new, drew) = drawn(&hud.compiled, c);
                 assert!(drew, "{c:?}: the renderer has a state for every classic frame");
                 assert!(!new.0.is_empty(), "{c:?}: the renderer draws something");
-                assert_eq!(census_hash(&new), frozen_hash(language.tag(), index), "{} {c:?}: the renderer's frame is not the frozen census:\n{new:#?}", language.tag());
+                // The old frozen census includes Previous/Next and Restart versions of the classic
+                // row. They are intentionally absent now, so compare those states with the same
+                // movie frame. Map the built-in row's new indices back to their old census slots;
+                // all unrelated historical census entries remain pinned verbatim.
+                let expected_index = if matches!(c.name, "movie" | "pair" | "restart") {
+                    let old_btn = if c.focus == GROUP_ROW {
+                        match c.btn {
+                            0 => 2,
+                            1 => 3,
+                            2 => 4,
+                            _ => 0,
+                        }
+                    } else {
+                        c.btn
+                    };
+                    cases
+                        .iter()
+                        .position(|base| {
+                            base.name == "movie"
+                                && base.focus == c.focus
+                                && base.btn == old_btn
+                                && base.tab == c.tab
+                                && base.paused == c.paused
+                                && base.transport == c.transport
+                        })
+                        .expect("the matching movie census frame")
+                } else {
+                    index
+                };
+                assert_eq!(census_hash(&new), frozen_hash(language.tag(), expected_index), "{} {c:?}: the renderer's frame is not the frozen census:\n{new:#?}", language.tag());
                 compared += 1;
             }
         }
@@ -768,7 +924,8 @@ mod tests {
     /// A failure owns the frame: nothing of the transport draws, and the title's marquee resets.
     #[test]
     fn a_failure_read_out_owns_the_frame_in_the_renderer_too() {
-        let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM);
+        let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM,
+        );
         let ps = plx_media::route::PlaybackSession::IDLE;
         let store = plx_data::stores::metadata::MetadataStore::default();
         let model = HudModel::default();
@@ -778,6 +935,9 @@ mod tests {
             entry: EntryId(0), ps: &ps,
             model: &model,
             up: &up,
+            skip_only: false,
+            skip_progress: 0.0,
+            skip_cancelled: false,
             slot: ControlSlot::Discs(Controls::NONE),
             busy: Busy::Readout(plx_ui::widgets::StatusKind::Failed, c"x"),
             focus: GROUP_SCRUB,
@@ -789,7 +949,9 @@ mod tests {
             measure: &FM,
             meta: store.view(),
         };
-        let drawn = census(|| assert!(with_df(|df| draw(&hud.compiled, &frame, df, &mut row, Painter::root()))));
+        let drawn = census(|| {
+            assert!(with_df(|df| draw(&hud.compiled, &frame, df, &mut row, Painter::root())))
+        });
         assert!(drawn.0.is_empty(), "{:?}", drawn.0);
     }
 
@@ -815,7 +977,8 @@ mod tests {
             names
                 .iter()
                 .enumerate()
-                .map(|(i, t)| Chapter { index: i as i64 + 1, start_ms: i as i64 * 125_000, title: (*t).into(), thumb: format!("/library/metadata/{i}/thumb") })
+                .map(|(i, t)| Chapter { index: i as i64 + 1, start_ms: i as i64 * 125_000, end_ms: (i as i64 + 1) * 125_000, title: (*t).into(), thumb: format!("/library/metadata/{i}/thumb"),
+                })
                 .collect()
         }
 
@@ -828,7 +991,9 @@ mod tests {
         fn side(c: Census, rings: Vec<(Rect, f32)>) -> Side {
             // the renderer draws the section tabs too (the hand-written strip was only the strip)
             let mut runs: Vec<Run> = c.1.into_iter().filter(|r| r.text != "Chapters" && r.text != "Info").collect();
-            runs.sort_by(|a, b| (a.at.x, a.at.y, &a.text).partial_cmp(&(b.at.x, b.at.y, &b.text)).unwrap());
+            runs.sort_by(|a, b| {
+                (a.at.x, a.at.y, &a.text).partial_cmp(&(b.at.x, b.at.y, &b.text)).unwrap()
+            });
             Side { runs, rings }
         }
 
@@ -858,14 +1023,16 @@ mod tests {
 
         /// [`both`] with the section at appear `appear`: the renderer's spring and the strip's frozen argument.
         fn both_at(set: &str, sel: u32, appear: f32) -> (Side, Side) {
-            (scene(items(set), sel, appear, false), panel(set, sel, appear))
+            (scene(items(set), sel, appear, false), panel(set, sel, appear),
+            )
         }
 
         /// [`both_at`] over the frame the section is DISMISSED: the page has put it away (`open` is 0, the
         /// engine's focus is off the strip) and it fades from `appear` down, against the strip's frozen draw on
         /// its own selection at that appear.
         fn closing_at(set: &str, sel: u32, appear: f32) -> (Side, Side) {
-            (scene(items(set), sel, appear, true), panel(set, sel, appear))
+            (scene(items(set), sel, appear, true), panel(set, sel, appear),
+            )
         }
 
         fn scene(items: Vec<Chapter>, sel: u32, appear: f32, closing: bool) -> Side {
@@ -873,7 +1040,8 @@ mod tests {
             let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
             let mut store = plx_data::stores::metadata::MetadataStore::default();
             plx_data::metadata::set_playing_chapters_for_test(store.state_mut(), items);
-            let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM);
+            let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM,
+            );
             let state = hud.compiled.lookup(OPEN_CHAPTERS, Slot::Discs, true, true, false).expect("classic has a chapters state");
             let geo = state.ops.iter().find_map(Geometry::of).expect("the chapters state has a strip");
             let ps = plx_media::route::PlaybackSession::IDLE;
@@ -882,10 +1050,11 @@ mod tests {
             let mut row = HudMotion::new();
             row.set_section_appear_for_test(Section::Chapters, appear);
             let frame = Frame {
-                entry: ENTRY, ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
+                entry: ENTRY, ps: &ps, model: &model, up: &up, skip_only: false, skip_progress: 0.0, skip_cancelled: false, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
                 focus: GROUP_SCRUB, btn: 0, tab: 0, open: if closing { 0 } else { OPEN_CHAPTERS }, now: 1_000, transport: false, measure: &FM, meta: store.view(),
             };
-            let key = FocusKey { entry: ENTRY, elem: crate::player_hud::state::ELEM_CHAPTER_BASE + sel };
+            let key = FocusKey { entry: ENTRY, elem: crate::player_hud::state::ELEM_CHAPTER_BASE + sel,
+            };
             let focus = FocusRead { current: Some(key), ..FocusRead::default() };
             // the screen's tick: the engine said focus arrived on `sel`, then frames pass until the Shelf rests
             with_df_focus(focus.clone(), |df| {
@@ -894,9 +1063,13 @@ mod tests {
                 let mut present = Present::new();
                 let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
                 let shelf = row.strip(ENTRY, &geo);
-                shelf.on(&ScreenEvent::FocusMoved { from: None, to: key, by: By::Restore }, df, &src, &mut fx);
+                shelf.on(&ScreenEvent::FocusMoved { from: None, to: key, by: By::Restore,
+                    }, df, &src, &mut fx,
+                );
                 for k in 1..=240u32 {
-                    shelf.on(&ScreenEvent::Tick(Tick { ms: k * 17, dt_us: 16_667 }), df, &src, &mut fx);
+                    shelf.on(&ScreenEvent::Tick(Tick { ms: k * 17, dt_us: 16_667,
+                        }), df, &src, &mut fx,
+                    );
                 }
             });
             // the dismissal: the page drops the section and the engine's focus leaves the strip
@@ -908,7 +1081,13 @@ mod tests {
                 focus
             };
             let mut new = None;
-            let rings = capture_rings(|| new = Some(census(|| with_df_focus(focus, |df| assert!(draw(&hud.compiled, &frame, df, &mut row, Painter::root()))))));
+            let rings = capture_rings(|| {
+                new = Some(census(|| {
+                    with_df_focus(focus, |df| {
+                        assert!(draw(&hud.compiled, &frame, df, &mut row, Painter::root()))
+                    })
+                }))
+            });
             side(new.unwrap(), rings)
         }
 
@@ -920,7 +1099,9 @@ mod tests {
         #[test]
         fn an_unnamed_chapter_is_named_by_its_number_as_the_strip_names_it() {
             let (new, old) = both("unnamed", 0);
-            let named = |s: &Side| s.runs.iter().find(|r| r.text == "Chapter 2").map(|r| (r.size, r.ink, r.bold, r.at.x, r.at.y));
+            let named = |s: &Side| {
+                s.runs.iter().find(|r| r.text == "Chapter 2").map(|r| (r.size, r.ink, r.bold, r.at.x, r.at.y))
+            };
             assert!(named(&old).is_some(), "the strip draws `Chapter 2`: {:?}", old.runs);
             assert_eq!(named(&new), named(&old));
         }
@@ -933,14 +1114,19 @@ mod tests {
         fn a_long_focused_name_shows_whole_where_the_strip_elides_it() {
             let long = "The Very Long Chapter Name That Does Not Fit A Card";
             let (new, old) = both("long", 0);
-            let name = |s: &Side, at: f32| s.runs.iter().find(|r| r.size == theme::size::LABEL && (r.at.x - at).abs() < 1.0).map(|r| (r.text.clone(), r.at.w));
-            let (focused_new, focused_old) = (name(&new, 96.0).expect("the focused name"), name(&old, 96.0).expect("the strip's"));
+            let name = |s: &Side, at: f32| {
+                s.runs.iter().find(|r| r.size == theme::size::LABEL && (r.at.x - at).abs() < 1.0).map(|r| (r.text.clone(), r.at.w))
+            };
+            let (focused_new, focused_old) = (name(&new, 96.0).expect("the focused name"), name(&old, 96.0).expect("the strip's"),
+            );
             assert!(focused_old.1 <= 288.0 && focused_old.0.ends_with('\u{2026}'), "the strip elides it to the card: {focused_old:?}");
             assert_eq!(focused_new.0, long, "the Shelf sets the whole name in its window");
             assert!(focused_new.1 > 288.0, "…wider than the card: {focused_new:?}");
             let third = 96.0 + 2.0 * (288.0 + 24.0);
             assert_eq!(name(&new, third), name(&old, third), "an unfocused name elides as it did");
-            let times = |s: &Side| s.runs.iter().filter(|r| r.size == theme::size::CAPTION).map(|r| (r.text.clone(), r.at.x.round(), r.at.y.round())).collect::<Vec<_>>();
+            let times = |s: &Side| {
+                s.runs.iter().filter(|r| r.size == theme::size::CAPTION).map(|r| (r.text.clone(), r.at.x.round(), r.at.y.round())).collect::<Vec<_>>()
+            };
             assert_eq!(times(&new), times(&old), "…and every time stands as it did");
         }
 
@@ -1073,7 +1259,8 @@ mod tests {
         /// [`both`] with the section at appear `appear`: the renderer's spring and the card's frozen argument.
         fn both_at(variant: &str, appear: f32) -> (Census, Census) {
             let pct = (appear * 100.0).round() as u32;
-            (scene(detail(variant), appear, false), super::panel_goldens::info(variant, pct, false))
+            (scene(detail(variant), appear, false), super::panel_goldens::info(variant, pct, false),
+            )
         }
 
         /// [`both_at`] over the frame the section is DISMISSED: the page has put it away (`open` is 0 and the
@@ -1081,7 +1268,8 @@ mod tests {
         /// down on its own focus (frozen).
         fn closing_at(variant: &str, appear: f32) -> (Census, Census) {
             let pct = (appear * 100.0).round() as u32;
-            (scene(detail(variant), appear, true), super::panel_goldens::info(variant, pct, true))
+            (scene(detail(variant), appear, true), super::panel_goldens::info(variant, pct, true),
+            )
         }
 
         fn scene(detail: Detail, appear: f32, closing: bool) -> Census {
@@ -1089,7 +1277,8 @@ mod tests {
             let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
             let mut store = plx_data::stores::metadata::MetadataStore::default();
             plx_data::metadata::set_current_for_test(store.state_mut(), Some(detail));
-            let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM);
+            let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM,
+            );
             assert!(hud.compiled.lookup(OPEN_INFO, Slot::Discs, true, true, false).is_some(), "classic has an info state");
             let ps = plx_media::route::PlaybackSession::IDLE;
             let model = HudModel::default();
@@ -1097,7 +1286,7 @@ mod tests {
             let mut row = HudMotion::new();
             row.set_section_appear_for_test(Section::Info, appear);
             let frame = Frame {
-                entry: EntryId(0), ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
+                entry: EntryId(0), ps: &ps, model: &model, up: &up, skip_only: false, skip_progress: 0.0, skip_cancelled: false, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
                 focus: GROUP_SCRUB, btn: 0, tab: 0, open: if closing { 0 } else { OPEN_INFO },
                 now: 1_000, transport: false, measure: &FM, meta: store.view(),
             };
@@ -1108,7 +1297,9 @@ mod tests {
                 row.hold_focus(Section::Info, GROUP_SECTION, 0);
                 row.follow(0);
             }
-            census(|| with_df(|df| assert!(draw(&hud.compiled, &frame, df, &mut row, Painter::root()))))
+            census(|| {
+                with_df(|df| assert!(draw(&hud.compiled, &frame, df, &mut row, Painter::root())))
+            })
         }
 
         /// **The card's appear is the card's**: at every point of the spring the section path draws what the
@@ -1140,7 +1331,9 @@ mod tests {
                 assert_eq!(tabs(&new, &old), still, "appear {appear}: the tab row neither fades nor rises with the card");
                 fn words(c: &Census) -> Vec<&Run> {
                     let mut runs: Vec<&Run> = c.1.iter().filter(|r| r.text != "Info" && r.text != "Chapters").collect();
-                    runs.sort_by(|a, b| (a.at.x, a.at.y, &a.text).partial_cmp(&(b.at.x, b.at.y, &b.text)).unwrap());
+                    runs.sort_by(|a, b| {
+                        (a.at.x, a.at.y, &a.text).partial_cmp(&(b.at.x, b.at.y, &b.text)).unwrap()
+                    });
                     runs
                 }
                 let (n, o) = (words(&new), words(&old));
@@ -1166,7 +1359,9 @@ mod tests {
         fn a_card_fading_out_keeps_the_focused_buttons_glow_ink_and_pop() {
             for appear in [0.25, 0.5, 0.75] {
                 let (new, old) = closing_at("playing", appear);
-                let glow = |c: &Census| c.3.iter().filter(|(tag, ..)| *tag == 5).map(|(_, r, a)| (*r, *a)).collect::<Vec<_>>();
+                let glow = |c: &Census| {
+                    c.3.iter().filter(|(tag, ..)| *tag == 5).map(|(_, r, a)| (*r, *a)).collect::<Vec<_>>()
+                };
                 let (n, o) = (glow(&new), glow(&old));
                 assert!(!o.is_empty(), "appear {appear}: the card's focused button wears a glow: {:?}", old.3);
                 assert_eq!(n.len(), o.len(), "appear {appear}: the section keeps the focused button's glow: {:?}", new.3);
@@ -1197,7 +1392,9 @@ mod tests {
 
 
         fn run<'a>(c: &'a Census, text: &str) -> &'a Run {
-            c.1.iter().find(|r| r.text == text).unwrap_or_else(|| panic!("no run `{text}` in {:?}", c.1))
+            c.1.iter()
+                .find(|r| r.text == text)
+                .unwrap_or_else(|| panic!("no run `{text}` in {:?}", c.1))
         }
 
         /// The ground, the buttons, the glyphs and every run's x, width and size are the card's. The renderer
@@ -1238,7 +1435,8 @@ mod tests {
         fn the_synopsis_column_ends_where_the_cards_text_column_ends() {
             let _serial = plx_base::testlock::serial();
             let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
-            let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM);
+            let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM,
+            );
             let state = hud.compiled.lookup(OPEN_INFO, Slot::Discs, true, true, false).expect("classic has an info state");
             let text = |bind: &str| {
                 state
@@ -1294,7 +1492,8 @@ mod tests {
 
         #[test]
         fn a_two_line_synopsis_and_a_full_facts_row_sit_where_the_card_puts_them() {
-            same_block("playing", &["The Long Title", "A summary of the film", "Drama"], &[]);
+            same_block("playing", &["The Long Title", "A summary of the film", "Drama"], &[],
+            );
         }
 
         #[test]
@@ -1311,13 +1510,16 @@ mod tests {
         /// duration but no genres still has its row, and an item with none of the facts has none.
         #[test]
         fn an_item_with_no_facts_drops_the_tag_row() {
-            same_block("bare", &["The Long Title", "A summary of the film"], &["Drama", "2001", "PG-13"]);
-            same_block("barenosummary", &["The Long Title"], &["A summary", "Drama", "2001"]);
+            same_block("bare", &["The Long Title", "A summary of the film"], &["Drama", "2001", "PG-13"],
+            );
+            same_block("barenosummary", &["The Long Title"], &["A summary", "Drama", "2001"],
+            );
         }
 
         #[test]
         fn an_item_with_facts_but_no_genres_still_has_its_tag_row() {
-            same_block("nogenres", &["The Long Title", "A summary of the film", "2001"], &["Drama"]);
+            same_block("nogenres", &["The Long Title", "A summary of the film", "2001"], &["Drama"],
+            );
         }
 
         /// **A group never leaves the rect the compiler promised** (lint, Cost and the census read the worst
@@ -1326,7 +1528,8 @@ mod tests {
         /// what is compared; the full block fills the rect exactly.
         #[test]
         fn a_group_stays_inside_its_worst_case_rect() {
-            let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM);
+            let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM,
+            );
             let state = hud.compiled.lookup(OPEN_INFO, Slot::Discs, true, true, false).expect("an info state");
             assert_eq!(state.groups.len(), 1, "classic's info text block is one group");
             let rect = state.groups[0].rect;
@@ -1341,7 +1544,8 @@ mod tests {
                 let new = scene(detail, 1.0, false);
                 let mut seen = 0;
                 for r in new.1.iter().filter(|r| r.text == "The Long Title" || r.text.starts_with("A s")) {
-                    let cap = r.at.y + plx_gfx::text::text_cap_band(r.size, i32::from(r.text == "The Long Title")).0;
+                    let cap = r.at.y + plx_gfx::text::text_cap_band(r.size, i32::from(r.text == "The Long Title"),
+                        ).0;
                     assert!(cap >= rect.y - 0.5 && cap <= rect.y + rect.h, "`{}` at cap top {cap} leaves the group {rect:?}", r.text);
                     seen += 1;
                 }
@@ -1354,7 +1558,8 @@ mod tests {
         #[test]
         fn a_package_vstack_with_the_title_pair_stays_static() {
             let text = include_str!("../hud_format/fixtures/reference.plxhud.json");
-            let compiled = crate::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FM)
+            let compiled = crate::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FM,
+            )
                 .expect("the reference loads")
                 .compiled;
             let state = compiled.lookup(OPEN_INFO, Slot::Discs, true, true, false).expect("the reference has an info state");
@@ -1363,7 +1568,8 @@ mod tests {
 
         #[test]
         fn an_open_chapters_state_has_no_info_arms_and_the_gate_only_hides_the_compact_state() {
-            let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM);
+            let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM,
+            );
             assert!(hud.compiled.lookup(OPEN_CHAPTERS, Slot::Discs, true, true, false).is_some());
         }
     }
@@ -1376,21 +1582,26 @@ mod tests {
         use crate::hud_format::compile::OPEN_INFO;
         use crate::hud_format::Slot;
 
-        fn info_frame_census(transport: bool, tab: i32, focus: GroupId, btn: i32, row: &mut HudMotion) -> Census {
+        fn info_frame_census(transport: bool, tab: i32, focus: GroupId, btn: i32, row: &mut HudMotion,
+        ) -> Census {
             let _serial = plx_base::testlock::serial();
             let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
             let mut store = plx_data::stores::metadata::MetadataStore::default();
-            plx_data::metadata::set_current_for_test(store.state_mut(), Some(plx_data::metadata::Detail { title: "T".into(), ..Default::default() }));
-            let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM);
+            plx_data::metadata::set_current_for_test(store.state_mut(), Some(plx_data::metadata::Detail { title: "T".into(), ..Default::default() }),
+            );
+            let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM,
+            );
             let state = hud.compiled.lookup(OPEN_INFO, Slot::Discs, true, true, false).expect("an info state");
             let ps = plx_media::route::PlaybackSession::IDLE;
             let model = HudModel::default();
             let up = Countdown::default();
             let frame = Frame {
-                entry: EntryId(0), ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
+                entry: EntryId(0), ps: &ps, model: &model, up: &up, skip_only: false, skip_progress: 0.0, skip_cancelled: false, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
                 focus, btn, tab, open: 0, now: 1_000, transport, measure: &FM, meta: store.view(),
             };
-            census(|| with_df(|df| draw_state(&hud.compiled, state, &frame, df, row, Painter::root())))
+            census(|| {
+                with_df(|df| draw_state(&hud.compiled, state, &frame, df, row, Painter::root()))
+            })
         }
 
         /// The Info tab reads selected because the STATE has Info open, not because the transport is hidden: an
@@ -1409,12 +1620,15 @@ mod tests {
         #[test]
         fn a_toggle_section_control_reads_selected_while_its_section_is_open() {
             let text = include_str!("../hud_format/fixtures/reference.plxhud.json");
-            let compiled = crate::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FM)
+            let compiled = crate::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FM,
+            )
                 .expect("the reference loads")
                 .compiled;
             let open = |bits: u8| {
                 let state = compiled.lookup(bits, Slot::Discs, true, true, false).expect("a state");
-                let on = |id: &str| state.controls.iter().find(|c| c.id == id).map(|c| section_open(state, c));
+                let on = |id: &str| {
+                    state.controls.iter().find(|c| c.id == id).map(|c| section_open(state, c))
+                };
                 (on("info"), on("chapters"))
             };
             assert_eq!(open(0), (Some(false), Some(false)), "the compact state selects none");
@@ -1463,25 +1677,30 @@ mod tests {
 
         fn reference() -> std::sync::Arc<Compiled> {
             let text = include_str!("../hud_format/fixtures/reference.plxhud.json");
-            crate::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FM)
+            crate::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FM,
+            )
                 .expect("the reference loads")
                 .compiled
         }
 
         fn frame_census(compiled: &Compiled, focus: GroupId, btn: i32, model: HudModel) -> Census {
-            frame_census_with(compiled, ControlSlot::Discs(Controls::NONE), focus, btn, model)
+            frame_census_with(compiled, ControlSlot::Discs(Controls::NONE), focus, btn, model,
+            )
         }
 
-        fn frame_census_with(compiled: &Compiled, slot: ControlSlot, focus: GroupId, btn: i32, model: HudModel) -> Census {
+        fn frame_census_with(compiled: &Compiled, slot: ControlSlot, focus: GroupId, btn: i32, model: HudModel,
+        ) -> Census {
             let ps = plx_media::route::PlaybackSession::IDLE;
             let store = plx_data::stores::metadata::MetadataStore::default();
             let up = Countdown::default();
             let mut row = HudMotion::new();
             let frame = Frame {
-                entry: EntryId(0), ps: &ps, model: &model, up: &up, slot, busy: Busy::None, focus, btn,
+                entry: EntryId(0), ps: &ps, model: &model, up: &up, skip_only: false, skip_progress: 0.0, skip_cancelled: false, slot, busy: Busy::None, focus, btn,
                 tab: 0, open: 0, now: 1_000, transport: true, measure: &FM, meta: store.view(),
             };
-            census(|| assert!(with_df(|df| draw(compiled, &frame, df, &mut row, Painter::root())), "the reference has a compact state"))
+            census(|| {
+                assert!(with_df(|df| draw(compiled, &frame, df, &mut row, Painter::root())), "the reference has a compact state")
+            })
         }
 
         fn model() -> HudModel {
@@ -1498,7 +1717,9 @@ mod tests {
             let compiled = reference();
             let (hud_seen, svgs) = {
                 let mut seen = None;
-                let svgs = plx_ui::draw_census::capture_svgs(|| seen = Some(frame_census(&compiled, GROUP_SCRUB, 0, model())));
+                let svgs = plx_ui::draw_census::capture_svgs(|| {
+                    seen = Some(frame_census(&compiled, GROUP_SCRUB, 0, model()))
+                });
                 (seen.unwrap(), svgs)
             };
             let key = |id: &str| compiled.glyph(id).map(|g| g.key).unwrap();
@@ -1509,12 +1730,14 @@ mod tests {
             // `playing` face (pause) and the Info section disc its own; a movie has no Previous or Next
             let icons: Vec<Icon> = hud_seen.2.iter().map(|(i, _)| *i).collect();
             assert_eq!(icons, [Icon::Pause, Icon::Info], "a playing movie");
-            let paused = frame_census(&compiled, GROUP_SCRUB, 0, HudModel { paused: true, ..model() });
+            let paused = frame_census(&compiled, GROUP_SCRUB, 0, HudModel { paused: true, ..model() },
+            );
             assert!(paused.2.iter().any(|(i, _)| *i == Icon::Play), "the play disc's `paused` face: {:?}", paused.2);
             let pair = frame_census_with(&compiled, ControlSlot::Discs(PAIR), GROUP_SCRUB, 0, model());
             let icons: Vec<Icon> = pair.2.iter().map(|(i, _)| *i).collect();
             assert!(icons.contains(&Icon::Previous) && icons.contains(&Icon::Next), "an episode pair: {icons:?}");
-            let restart = frame_census_with(&compiled, ControlSlot::Discs(RESTART), GROUP_SCRUB, 0, model());
+            let restart = frame_census_with(&compiled, ControlSlot::Discs(RESTART), GROUP_SCRUB, 0, model(),
+            );
             assert!(restart.2.iter().any(|(i, _)| *i == Icon::Restart), "Previous's `restart` face");
         }
 
@@ -1558,7 +1781,8 @@ mod tests {
         fn a_seek_disc_without_a_duration_draws_disabled() {
             let compiled = reference();
             let live = frame_census(&compiled, GROUP_SCRUB, 0, model());
-            let dead = frame_census(&compiled, GROUP_SCRUB, 0, HudModel { duration_ns: 0, ..model() });
+            let dead = frame_census(&compiled, GROUP_SCRUB, 0, HudModel { duration_ns: 0, ..model() },
+            );
             assert_ne!(live.3, dead.3, "the fills differ when the seek discs go dead");
             assert_ne!(live.0, dead.0);
         }
@@ -1582,13 +1806,19 @@ mod tests {
                     row.set_section_appear_for_test(Section::Info, a);
                 }
                 let frame = Frame {
-                    entry: EntryId(0), ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
+                    entry: EntryId(0), ps: &ps, model: &model, up: &up, skip_only: false, skip_progress: 0.0, skip_cancelled: false, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
                     focus: GROUP_SCRUB, btn: 0, tab: 0, open, now: 1_000, transport: true, measure: &FM, meta: store.view(),
                 };
-                census(|| assert!(with_df(|df| draw(&compiled, &frame, df, &mut row, Painter::root()))))
+                census(|| {
+                    assert!(with_df(|df| draw(&compiled, &frame, df, &mut row, Painter::root())))
+                })
             };
-            let clock = |c: &Census| c.1.iter().find(|r| r.text == "1:30").map(|r| r.at.y).expect("the bar's elapsed clock");
-            let disc = |c: &Census| c.2.iter().find(|(i, _)| *i == Icon::Pause).map(|(_, r)| r.y).expect("the play disc");
+            let clock = |c: &Census| {
+                c.1.iter().find(|r| r.text == "1:30").map(|r| r.at.y).expect("the bar's elapsed clock")
+            };
+            let disc = |c: &Census| {
+                c.2.iter().find(|(i, _)| *i == Icon::Pause).map(|(_, r)| r.y).expect("the play disc")
+            };
             let closed = at(0, None);
             let open = at(OPEN_INFO, Some(1.0));
             let (clock_lift, disc_lift) = (clock(&closed) - clock(&open), disc(&closed) - disc(&open));

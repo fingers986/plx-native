@@ -24,19 +24,19 @@ pub(super) fn display_pos_ns(loading: bool, seekdisp: i64, scrub: i64, livepos: 
     }
 }
 
-/// Stable slots: Previous, Next, Subtitles, Audio, More. The first pair can be absent.
-pub const BTN_N: i32 = 5;
-pub const BTN_PREVIOUS: i32 = 0;
-pub const BTN_NEXT: i32 = 1;
-pub const BTN_SUBTITLES: i32 = 2;
-pub const BTN_AUDIO: i32 = 3;
+/// The built-in row's stable slots: Subtitles, Audio, More.
+pub const BTN_N: i32 = 3;
+pub const BTN_SUBTITLES: i32 = 0;
+pub const BTN_AUDIO: i32 = 1;
 
 /// Index of the `…` overflow disc within the row — the LAST one. Exported because `app.rs` routes
 /// its OK and its click, and a second literal `2` over there is exactly the drift `ControlSlot`
 /// was introduced to stop.
 pub const BTN_MORE: i32 = BTN_N - 1;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Action { Previous, Next, Subtitles, Audio, More }
+pub enum Action {
+    Subtitles, Audio, More,
+}
 
 /// A frame's episode-button eligibility, availability and restart glyph, sampled once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,7 +46,8 @@ pub struct Controls {
     pub restart: bool,
 }
 impl Controls {
-    pub const NONE: Self = Self { previous: false, next: false, restart: false };
+    pub const NONE: Self = Self { previous: false, next: false, restart: false,
+    };
     pub fn now(ps: &plx_media::route::PlaybackSession) -> Self {
         if plx_media::route::cur_kind(ps) != "episode" { return Self::NONE; }
         let (previous, next) = plx_media::route::queue_neighbors(ps);
@@ -56,7 +57,8 @@ impl Controls {
     }
     pub fn for_item(episode: bool, previous: bool, next: bool, restart: bool) -> Self {
         if !episode || !(previous || next) { return Self::NONE; }
-        Self { previous: previous || restart, next, restart }
+        Self { previous: previous || restart, next, restart,
+        }
     }
     /// Whether the Previous/Next pair is on the row at all: [`Self::for_item`] only ever builds a
     /// pair with at least one of its two buttons live.
@@ -64,18 +66,18 @@ impl Controls {
         self.previous || self.next
     }
     pub fn enabled(self, i: i32) -> bool {
-        match i { BTN_PREVIOUS => self.previous, BTN_NEXT => self.next,
-            BTN_SUBTITLES..=BTN_MORE => true, _ => false }
+        (BTN_SUBTITLES..BTN_N).contains(&i)
     }
     pub fn primary(self) -> i32 {
-        if self.enabled(BTN_NEXT) { BTN_NEXT }
-        else if self.enabled(BTN_PREVIOUS) { BTN_PREVIOUS }
-        else { BTN_SUBTITLES }
+        BTN_SUBTITLES
     }
     pub fn action(self, i: i32) -> Option<Action> {
         if !self.enabled(i) { return None; }
-        match i { BTN_PREVIOUS => Some(Action::Previous), BTN_NEXT => Some(Action::Next),
-            BTN_SUBTITLES => Some(Action::Subtitles), BTN_AUDIO => Some(Action::Audio), BTN_MORE => Some(Action::More), _ => None }
+        match i {
+            BTN_SUBTITLES => Some(Action::Subtitles),
+            BTN_AUDIO => Some(Action::Audio),
+            BTN_MORE => Some(Action::More), _ => None,
+        }
     }
     /// What a press of control `i` asks the app to do: its entry of [`super::command::CLASSIC_COMMANDS`],
     /// `None` for a control that is absent or disabled (it has no stop to press).
@@ -85,8 +87,11 @@ impl Controls {
     }
     pub fn icon(self, i: i32) -> plx_ui::icons::Icon {
         use plx_ui::icons::Icon;
-        match i { BTN_PREVIOUS if self.restart => Icon::Restart, BTN_PREVIOUS => Icon::Previous,
-            BTN_NEXT => Icon::Next, BTN_AUDIO => Icon::Audio, BTN_MORE => Icon::More, _ => Icon::Cc }
+        match i {
+            BTN_AUDIO => Icon::Audio,
+            BTN_MORE => Icon::More,
+            _ => Icon::Cc,
+        }
     }
 }
 
@@ -118,8 +123,8 @@ impl ControlSlot {
             ControlSlot::Skip(_) => 1,
         }
     }
-    /// Where the focus ring parks when this row APPEARS. The discs prefer an enabled Next, then
-    /// the first enabled disc. Up Next's primary is drawn on the RIGHT; the countdown's
+    /// Where the focus ring parks when this row APPEARS. The built-in discs start on Subtitles.
+    /// Up Next's primary is drawn on the RIGHT; the countdown's
     /// cancel rule is a steady state (`up_next::countdown_may_run`), so parking on item 0 there
     /// would disarm the timer on the frame after it armed.
     pub fn primary_btn(self) -> c_int {
@@ -130,13 +135,15 @@ impl ControlSlot {
         }
     }
     pub fn enabled(self, idx: i32) -> bool {
-        match self { Self::Discs(controls) => controls.enabled(idx), _ => (0..self.items()).contains(&idx) }
+        match self { Self::Discs(controls) => controls.enabled(idx), _ => (0..self.items()).contains(&idx),
+        }
     }
     /// The command a press of item `idx` performs, when the row holds the discs. A stand-in's
     /// items (the Skip pill, the Up Next pair) are app-owned and carry no [`HudCommand`](super::command::HudCommand): what
     /// they do depends on the segment they offer.
     pub fn command(self, idx: i32) -> Option<super::command::HudCommand> {
-        match self { Self::Discs(controls) => controls.command(idx), _ => None }
+        match self { Self::Discs(controls) => controls.command(idx), _ => None,
+        }
     }
     /// whether the Subtitles/Audio discs are the current occupant
     pub fn is_discs(self) -> bool {
@@ -172,7 +179,8 @@ impl ControlSlot {
 /// The Next episode preference only changes the offer for that final-credits-with-a-successor
 /// case: `AfterCredits` and `Off` offer nothing there (the discs stay), because the successor is
 /// not announced until the stream ends, if then. The last episode and films keep Skip Credits.
-pub fn slot_for(marker: Option<plx_data::metadata::Marker>, has_next: bool, mode: plx_media::route::NextEpisodeMode) -> ControlSlot {
+pub fn slot_for(marker: Option<plx_data::metadata::Marker>, has_next: bool, mode: plx_media::route::NextEpisodeMode,
+) -> ControlSlot {
     match marker {
         Some(m) => {
             let pr = crate::skip_pill::prompt_for(m);
@@ -194,7 +202,8 @@ pub fn slot_for(marker: Option<plx_data::metadata::Marker>, has_next: bool, mode
 /// `DismissOffer`) and pass the result around: `playpos_ns` is written by LG's media thread and `player::pump` runs between the input
 /// handlers and the draw, so re-deriving per call site let a keypress dispatch to a control that
 /// the same frame then declined to draw.
-pub fn slot(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>) -> ControlSlot {
+pub fn slot(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>,
+) -> ControlSlot {
     let has_next = plx_media::route::up_next(ps).is_some();
     let mode = plx_media::route::next_episode_mode();
     // The data layer does not read the player: the playhead is sampled here, once, and handed in.
@@ -212,7 +221,11 @@ pub fn slot(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::Me
             .flatten()
     });
     let slot = slot_for(m, has_next, mode);
-    if slot.is_discs() { ControlSlot::Discs(Controls::now(ps)) } else { slot }
+    if slot.is_discs() {
+        ControlSlot::Discs(Controls::now(ps))
+    } else {
+        slot
+    }
 }
 
 /// PURE edge: has a stand-in just vanished OUT FROM UNDER the focus ring, so the ring has to go
@@ -267,7 +280,11 @@ pub enum Busy {
 /// it is both the cold-start tail AND the 1-3 frame tail of every seek (between prime→Play, where
 /// `engine` clears `seeking`, and the first presented frame). Keyed on the state alone, one of
 /// those two flashes the wrong surface every time.
-pub fn busy_surface(ps: &plx_media::route::PlaybackSession, st: plx_media::player::PlaybackState, seen_frame: bool) -> Busy {
+pub fn busy_surface(
+    ps: &plx_media::route::PlaybackSession,
+    st: plx_media::player::PlaybackState,
+    seen_frame: bool,
+) -> Busy {
     busy_surface_with(ps, st, seen_frame, plx_media::player::audio_switching())
 }
 
@@ -284,8 +301,11 @@ pub fn busy_surface_with(
     match st {
         // not `st.caption()`: the Error caption is shaped by WHY (an audio-only stream names the
         // server; see `player::error_shape`), which a method on the bare state cannot know.
-        PlaybackState::Error => Busy::Readout(StatusKind::Failed, plx_media::player::error_caption(ps)),
-        s if s.is_busy() && !seen_frame => Busy::Readout(StatusKind::Working, plx_media::player::busy_caption_with(st, audio_switch)),
+        PlaybackState::Error => {
+            Busy::Readout(StatusKind::Failed, plx_media::player::error_caption(ps))
+        }
+        s if s.is_busy() && !seen_frame => Busy::Readout(StatusKind::Working, plx_media::player::busy_caption_with(st, audio_switch),
+        ),
         s if s.is_busy() => Busy::Transport,
         _ => Busy::None,
     }
@@ -337,7 +357,8 @@ pub fn busy(ps: &plx_media::route::PlaybackSession) -> Busy {
     if plx_base::devtrig::flag("failtest") {
         return Busy::Readout(StatusKind::Failed, plx_media::player::error_caption(ps));
     }
-    busy_surface(ps, plx_media::player::state(ps), plx_media::player::seen_frame())
+    busy_surface(ps, plx_media::player::state(ps), plx_media::player::seen_frame(),
+    )
 }
 
 // ---- the transport STATE READ-OUT (the glyph slot just past the elapsed clock) ---------------
@@ -476,8 +497,8 @@ pub struct FailureReadout {
 /// A control's label. Sentence case, as every `StatusOverlay` row is (the sign-in read-out's *Try
 /// again*): these are capsule buttons, not the ALL-CAPS clickable TEXT marks.
 pub fn failure_action_label(a: plx_media::player::FailureAction) -> &'static std::ffi::CStr {
-    use plx_platform::i18n::msg;
     use plx_media::player::FailureAction as A;
+    use plx_platform::i18n::msg;
     match a {
         A::PlayAutomatically => msg::widgets_failure_play_auto_c(),
         A::TryAgain => msg::browse_action_retry_c(),
@@ -522,7 +543,8 @@ impl FailureReadout {
                 }
             }
         }
-        let actions = plx_media::player::failure_actions(e.kind, plx_media::player::failure_context(ps));
+        let actions =
+            plx_media::player::failure_actions(e.kind, plx_media::player::failure_context(ps));
         Self::of(&e, actions, plx_media::player::support_line(e.kind))
     }
 
@@ -597,7 +619,7 @@ pub const ELEM_SCRUB: u32 = 0;
 /// buttons, each at its own rect (`HudGeometry::items`).
 ///
 /// **A control's element is `ELEM_CONTROL_BASE + ordinal`, in an open-ended range**: the ordinal
-/// is the control's place in its layout (classic's five discs are 0..5), and there is no upper
+/// is the control's place in its layout (the built-in row is 0..3), and there is no upper
 /// bound short of [`ELEM_CHAPTER_BASE`]. The base sits above every other fixed element (the tabs
 /// at 20, the failure row at 30, the repair card at 40 000 in `screens::player`), so the range
 /// can grow without meeting one of them. `hud.nav.btn` holds the ordinal; [`control_elem`] and

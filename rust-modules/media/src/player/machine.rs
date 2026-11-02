@@ -39,6 +39,16 @@ pub struct Player {
     pub lifecycle: super::lifecycle::ForegroundLifecycle,
     /// This frame's millisecond stamp — see the module doc. Zero before the first frame.
     pub now_ms: u32,
+    /// Whether a visible-HUD scrub preview temporarily paused a film that was playing. The
+    /// overlay screen owns the gesture; the player machine owns the transport state to restore.
+    pub scrub_preview_was_playing: Option<bool>,
+    /// Whether a Subtitle/Audio/More panel session began while the film was playing. This pause
+    /// lease remains active across panel hand-offs and is released only after an open panel has
+    /// been observed and the bare HUD returns.
+    pub player_menu_was_playing: Option<bool>,
+    /// The pause lease must not settle during the frame between requesting a panel and its mount.
+    /// Set only after the dispatcher reports a player panel open.
+    pub player_menu_seen_open: bool,
     /// **Is the hardware video plane bound to our sink?** (spec §9, §4.4, §16 risk 10.)
     ///
     /// A DECISION of this machine, with defined transitions, not an expression the frame
@@ -63,6 +73,9 @@ impl Player {
             repair: RepairAttempt::new(),            session: PlaybackSession::IDLE,
             lifecycle: super::lifecycle::ForegroundLifecycle::IDLE,
             now_ms: 0,
+            scrub_preview_was_playing: None,
+            player_menu_was_playing: None,
+            player_menu_seen_open: false,
             video_plane_bound: false,
             clock_fp: 0,
         }

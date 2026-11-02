@@ -2462,7 +2462,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   Load-returned flag publishes, making issue #74 D.1's budget observable on demand: the pump's
   `deferring` line, then, past `NATIVE_LOAD_BUDGET`, the failure read-out; NOT `DIAG`, since it
   changes playback behaviour), `/tmp/plxnative-marker[=intro|credits]` (once playing, seek to 5s before that
-  server marker — the only practical way to reach the Skip Intro / Skip Credits pill, and, via a
+  server marker — the only practical way to reach the Skip Intro / Skip Recap / Skip Credits pill, and, via a
   `final` credits marker, the whole finish → Up Next → auto-advance chain, without playing 50
   minutes of episode first),
   **`/tmp/plxnative-nowan[=slow]`** (the OFFLINE reproduction: every name that would have gone

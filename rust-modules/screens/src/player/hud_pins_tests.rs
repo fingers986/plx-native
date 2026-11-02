@@ -454,6 +454,7 @@ impl Chaptered {
         let chapter = |index: i64| plx_data::metadata::Chapter {
             index,
             start_ms: index * 60_000,
+            end_ms: (index + 1) * 60_000,
             title: format!("Chapter {index}"),
             thumb: String::new(),
         };

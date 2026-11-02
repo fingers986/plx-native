@@ -965,6 +965,11 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
     // kind — rather than in each of the ~30 arms below, where the next one added would
     // silently draw nothing.
     plx_machine::idle::invalidate();
+    if et == SDL_KEYDOWN {
+        // A remote key is a deliberate new interaction and releases any suppression of the
+        // pointer gesture that was carried through startup buffering.
+        app.ptr.startup_motion_suppressed = false;
+    }
     if et == SDL_KEYDOWN
         || et == SDL_KEYUP
         || et == SDL_TEXTINPUT
@@ -1440,10 +1445,6 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
     } else if et == SDL_MOUSEMOTION {
         app.last_input = clock::now();
         app.ptr.last_motion = app.last_input;
-        if app.ptr.cur_hidden {
-            show_cursor_after_motion();
-        }
-        app.ptr.cur_hidden = false;
         let (mx, my) = ptr_xy(&app.ev);
         if app.boot_initial.is_none() {
             app.rec.input(super::recorder::enc_pointer("pointer", mx as i32, my as i32));
@@ -1453,16 +1454,67 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         }
         app.ptr.prev_mx = mx;
         app.ptr.prev_my = my;
+        // Pointer movement during the startup load is not an interaction with the player HUD.
+        // Keep recording its position/time so the cursor can be hidden at the Playing edge, but
+        // do not dispatch hover into PlayerScreen: that would extend the startup HUD and prevent
+        // the recap pill from appearing on its own after buffering completes.
+        let startup_loading = matches!(app.route(), AppArg::Player)
+            && !plx_media::player::is_playing(&app.player.session)
+            && super::bridge::player(&app.pages)
+                .is_some_and(|player| player.hud.startup_until_playing);
+        if startup_loading {
+            if !app.ptr.cur_hidden {
+                hide_cursor();
+                app.ptr.cur_hidden = true;
+            }
+            app.ptr.edge.stop();
+            return;
+        }
+        // If motion was already in progress when buffering ended, it is the tail of that
+        // startup gesture, not a fresh request to reopen the HUD. Keep both hidden until the
+        // pointer rests; a later motion then follows the ordinary wake path.
+        if app.ptr.startup_motion_suppressed && matches!(app.route(), AppArg::Player) {
+            if !app.ptr.cur_hidden {
+                hide_cursor();
+                app.ptr.cur_hidden = true;
+            }
+            app.ptr.edge.stop();
+            return;
+        }
+        // Small motion after a remote dismissal is usually pointer jitter, not an intentional
+        // hand-off back to Magic Remote control. Keep the cursor and HUD hidden until the travel
+        // passes the shared D-pad gate.
+        if !super::input::pointer_motion_allowed(&mut app.ptr) {
+            return;
+        }
+        if app.ptr.cur_hidden {
+            show_cursor_after_motion();
+            app.ptr.cur_hidden = false;
+        }
+        // Meaningful pointer activity hands control back to the cursor and declines an automatic
+        // Intro/Recap skip. Keep the pill available; only the active marker's timer is cancelled.
+        if matches!(app.route(), AppArg::Player) && !app.pages.surface_up() {
+            if let Some(player) = super::bridge::player_mut(&mut app.pages) {
+                let cancelled = player.intro.cancel_offer(
+                    player.slot,
+                    plx_data::metadata::MarkerKind::Intro,
+                ) | player.recap.cancel_offer(
+                    player.slot,
+                    plx_data::metadata::MarkerKind::Recap,
+                );
+                if cancelled {
+                    player.publish();
+                }
+            }
+        }
         // **The BARE transport's pointer, handed to the page that owns it** (phase 12,
         // PX-PLAYER). This arm used to raise the HUD and move the scrub preview HERE, on the
         // screen's own fields, and then `return` — so the player page never saw a pointer event
         // at all, and the drag preview kept reading a flag whose producer had become unreachable.
         // Both halves are `PlayerScreen`'s now; what is left is the choice of EVENT.
         //
-        // It stays AHEAD of the D-pad accumulation gate below, deliberately and as it always was:
-        // over full-screen video a mouse nudge is how the transport is found, and 120 px of
-        // accumulated travel is not what that costs. (`ui::hit`'s own dpad gate still suppresses
-        // hover-driven focus underneath, which is the half that rule is actually about.)
+        // The shared D-pad accumulation gate applies on the full-screen player too, so a small
+        // stale motion cannot immediately bring its HUD back after a remote dismissal.
         //
         // A button held down makes this a DRAG rather than a move — §7.5, the one pointer kind
         // that drives a control with no hover and no click.
@@ -1477,12 +1529,6 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
                 super::bridge::pointer_input(mx, my, at)
             });
             return;
-        }
-        if app.ptr.dpad_mode {
-            if app.ptr.mot_accum < super::input::DPAD_MOTION_GATE {
-                return;
-            }
-            app.ptr.dpad_mode = false;
         }
         // Hover is the tree's on every screen it owns — `ui::route_screen`'s rule 11
         // ("hover parks focus on every screen in the family") is the HIT MAP's job now.
@@ -1511,6 +1557,8 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // 6/7/10): all three are owned screens or surfaces now, so their hover was already taken
         // by `owns_input()` above.
     } else if et == SDL_MOUSEBUTTONDOWN {
+        // A click is a fresh, intentional pointer action, unlike motion continuing from buffering.
+        app.ptr.startup_motion_suppressed = false;
         // OK on a set whose pointer the app can only make transparent: see `click_is_ok`. Pushed
         // as an OK key-down, so it reaches the focused control by the key path.
         let on_control = {
@@ -1633,6 +1681,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // the page commits its own preview with `PlayerReq::CommitSeek`.
         app.ptr.button_down = false;
     } else if et == SDL_MOUSEWHEEL {
+        app.ptr.startup_motion_suppressed = false;
         app.last_input = clock::now();
         if app.last_input.wrapping_sub(app.ptr.last_wheel) > 250 {
             app.ptr.last_wheel = app.last_input;
@@ -1667,6 +1716,27 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             if dy == 0 {
                 // a fractional trackpad tick that rounded to nothing (hostsim), or a
                 // `wheel:0` token — not a step in either direction
+                return;
+            }
+            // After BACK hides the cursor and HUD, treat the first wheel tick as the pointer's
+            // wake gesture. Restore both together and consume this tick, so waking the pointer
+            // does not also move focus underneath it.
+            if matches!(app.route(), AppArg::Player)
+                && !app.pages.surface_up()
+                && app.ptr.cur_hidden
+            {
+                show_cursor_after_motion();
+                app.ptr.cur_hidden = false;
+                app.ptr.dpad_mode = false;
+                app.ptr.mot_accum = 0.0;
+                app.ptr.last_motion = app.last_input;
+                if let Some(player) = super::bridge::player_mut(&mut app.pages) {
+                    player.hud.dismissed = false;
+                    player.hud.extend(app.last_input, HUD_LINGER_MS);
+                    player.intro.cancel_offer(player.slot, plx_data::metadata::MarkerKind::Intro);
+                    player.recap.cancel_offer(player.slot, plx_data::metadata::MarkerKind::Recap);
+                    player.publish();
+                }
                 return;
             }
             if super::bridge::search_owns_input(&app.pages) {
@@ -1718,6 +1788,13 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
 /// does the pipeline taking the video decoder back ([`park_on_decoder_release`]); the restore is
 /// the foreground lifecycle's claim either way.
 fn park_playback(app: &mut App) {
+    // A pending HUD preview is cancelled on backgrounding. Restore its owned pause before
+    // snapshotting viewer intent, or foreground restore would mistake the preview pause for the
+    // viewer's own Pause.
+    super::playback::cancel_scrub_preview(&mut app.adapters.player, &mut app.player);
+    // Menus are dismissed as part of parking too. Restore a menu-owned pause before the lifecycle
+    // snapshots viewer intent, so foreground restore returns to the pre-menu playback state.
+    super::playback::cancel_player_menu_pause(&mut app.adapters.player, &mut app.player);
     // INTENDED, not published: this snapshot is the only thing the foreground
     // restore has, and `suspend_bufferfeed` below drops the pending seek target
     // with the session — so a background that lands while a seek is still
@@ -1735,7 +1812,10 @@ fn park_playback(app: &mut App) {
     // timer and the countdown stay. It is spelled as a delivery to the owner because
     // `player::TX::reset_for_reload` no longer clears `scrub_ns` from under it (§2.3).
     if let Some(player) = super::bridge::player_mut(&mut app.pages) {
-        player.transport_reset(true);
+        let restore_scrub = player.transport_reset(true);
+        if restore_scrub {
+            super::playback::cancel_scrub_preview(&mut app.adapters.player, &mut app.player);
+        }
     }
     close_player_overlays(&mut app.pages);
     super::bridge::close_player_sections(&mut app.pages);
@@ -1938,7 +2018,7 @@ fn finish_foreground_launch(app: &mut App) {
     // foreground half of `start_playback`'s two paths.
     app.bridge.seed_player_hud(HUD_LINGER_MS);
     if let Some(player) = super::bridge::player_mut(&mut app.pages) {
-        player.hud.extend(clock::now(), HUD_LINGER_MS);
+        player.hud.show_until_playing(clock::now(), HUD_LINGER_MS);
         player.publish();
     }
 }
@@ -2032,6 +2112,33 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // failure there is. It observes the value the HUD renders and reports only transitions,
         // so the steady-state cost is one atomic load.
         plx_media::player::report::tick(&mut app.player.session);
+        // Hide the cursor as soon as the startup player page is active, including throughout
+        // resolving/buffering. Pointer motion during this phase is ignored above, so it cannot
+        // reveal the cursor or extend the HUD. Once frames are actually playing, consume only
+        // that startup timer; a later intentional interaction follows the ordinary wake path.
+        if matches!(app.route(), AppArg::Player)
+            && super::bridge::player(&app.pages)
+                .is_some_and(|player| player.hud.startup_until_playing)
+            && !app.ptr.cur_hidden
+        {
+            hide_cursor();
+            app.ptr.cur_hidden = true;
+        }
+        if plx_media::player::is_playing(&app.player.session) {
+            if let Some(player) = super::bridge::player_mut(&mut app.pages) {
+                if player.hud.hide_startup_on_playing() {
+                    // Hide the pointer on the startup HUD's auto-hide edge, independently of
+                    // the idle timeout that waits for three seconds of stillness.
+                    app.ptr.startup_motion_suppressed = app.ptr.last_motion != 0
+                        && fr.now.wrapping_sub(app.ptr.last_motion) <= 3000;
+                    if !app.ptr.cur_hidden {
+                        hide_cursor();
+                        app.ptr.cur_hidden = true;
+                    }
+                    player.publish();
+                }
+            }
+        }
         // end-of-stream: the pipeline drained at the credits → hand off to Up Next when the
         // show has another episode queued and the Next episode preference is not Off, else leave
         // the player (back to the detail page or home, whichever is behind), instead of freezing
@@ -2075,6 +2182,42 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             ) {
                 if let Some(player) = super::bridge::player_mut(&mut app.pages) {
                     player.up_next.cancel(); // nothing queued after all — don't re-fire
+                }
+            }
+        }
+        // Intro/Recap countdown elapsed → retire that marker and seek past it. The pill's own
+        // Watch action, or any other interaction, cancels its timer for the rest of the marker.
+        if playback_may_run(app) {
+            let expired_skip = super::bridge::player(&app.pages).and_then(|p| {
+                if app.pages.surface_up() || p.hud.sections.any() || p.hud.dismissed {
+                    return None;
+                }
+                match p.slot {
+                    plx_appkit::player_hud::ControlSlot::Skip(prompt)
+                        if prompt.kind == plx_data::metadata::MarkerKind::Intro
+                            && p.intro.expired(fr.now) => Some((prompt.marker, prompt.kind)),
+                    plx_appkit::player_hud::ControlSlot::Skip(prompt)
+                        if prompt.kind == plx_data::metadata::MarkerKind::Recap
+                            && p.recap.expired(fr.now) => Some((prompt.marker, prompt.kind)),
+                    _ => None,
+                }
+            });
+            if let Some((marker, kind)) = expired_skip {
+                if let Some(player) = super::bridge::player_mut(&mut app.pages) {
+                    match kind {
+                        plx_data::metadata::MarkerKind::Intro => player.intro.cancel(),
+                        plx_data::metadata::MarkerKind::Recap => player.recap.cancel(),
+                        plx_data::metadata::MarkerKind::Credits => {}
+                    }
+                }
+                match kind {
+                    plx_data::metadata::MarkerKind::Intro => {
+                        super::playback::auto_skip_intro(marker, &mut app.adapters.player, &mut app.bridge);
+                    }
+                    plx_data::metadata::MarkerKind::Recap => {
+                        super::playback::auto_skip_recap(marker, &mut app.adapters.player, &mut app.bridge);
+                    }
+                    plx_data::metadata::MarkerKind::Credits => {}
                 }
             }
         }
@@ -2182,9 +2325,18 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
                         player.up_next.cancel();
                     }
                 }
-                // when the HUD auto-hides, park focus back on the scrubber so the next reveal
-                // is clean
-                if !player.hud.visible(&mut app.player.session, fr.now, paused_now) {
+                if !bare || player.hud.dismissed {
+                    player.intro.cancel_offer(player.slot, plx_data::metadata::MarkerKind::Intro);
+                    player.recap.cancel_offer(player.slot, plx_data::metadata::MarkerKind::Recap);
+                }
+                let auto_skip_offer_active = bare
+                    && !player.hud.dismissed
+                    && matches!(player.slot, plx_appkit::player_hud::ControlSlot::Skip(p) if matches!(p.kind,
+                        plx_data::metadata::MarkerKind::Intro | plx_data::metadata::MarkerKind::Recap));
+                // When Intro/Recap first takes the row, its countdown may not have armed until the
+                // screen's next Tick. Keep focus on the Watch action across that frame instead of
+                // parking it on the scrubber; other hidden-HUD states still park normally.
+                if !player.hud.visible(&mut app.player.session, fr.now, paused_now) && !auto_skip_offer_active {
                     // A hidden HUD is parked on EVERY frame it stays hidden (~99% of a playback), so
                     // the engine is told only when the ring was somewhere else to be brought home.
                     parked = player.hud.nav.focus != HudNav::HOME.focus;
@@ -2199,6 +2351,14 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // Edge gliding is disabled. Pointer motion at every screen edge remains ordinary hover,
         // so it can move focus without scrolling the page or dragging a row.
         app.ptr.edge.stop();
+        if !matches!(app.route(), AppArg::Player) {
+            app.ptr.startup_motion_suppressed = false;
+        } else if app.ptr.startup_motion_suppressed
+            && app.ptr.last_motion != 0
+            && fr.now.wrapping_sub(app.ptr.last_motion) > 3000
+        {
+            app.ptr.startup_motion_suppressed = false;
+        }
         // hide the idle pointer during playback
         if matches!(app.route(), AppArg::Player)
             && !app.ptr.cur_hidden
@@ -2526,7 +2686,31 @@ fn loop_requests(app: &mut App) {
 /// and the previous bool implemented neither of the ones its comment promised.
 fn follow_control_row(app: &mut App, ctrl: plx_appkit::player_hud::ControlSlot, now: u32) {
     let mut reseat = false;
+    let mut reseat_primary = false;
     if let Some(player) = super::bridge::player_mut(&mut app.pages) {
+        // Credits can first occupy the row as a single Watch Credits pill, then become Up Next
+        // when the queue resolves. Initially seat the ring on Next Episode so its countdown is
+        // visible; after a previous cancellation, don't steal focus back when seeking into the
+        // same credits marker again.
+        let became_up_next = matches!(ctrl, plx_appkit::player_hud::ControlSlot::UpNext(_))
+            && !matches!(player.slot, plx_appkit::player_hud::ControlSlot::UpNext(_));
+        // Make primary-seat calculations below use this frame's occupant, not last frame's.
+        player.slot = ctrl;
+        if became_up_next {
+            player.hud.dismissed = false;
+            if player.up_next.cancelled() {
+                // This marker's automatic countdown was already refused. Keep the focus on the
+                // transport instead of moving it back to Next Episode on a seek into the marker.
+                player.hud.nav = HudNav::HOME;
+                reseat = true;
+            } else {
+                player.hud.nav.focus = GROUP_ROW;
+                player.hud.nav.btn = plx_appkit::up_next::BTN_NEXT;
+                player.hud.extend(now, HUD_LINGER_MS);
+                reseat = true;
+                reseat_primary = true;
+            }
+        }
         // Keyed on the SEGMENT, not the slot, and `last_offer` is only ever advanced to
         // a real offer — never cleared back to None. `active_marker` is gated on `is_playing`,
         // so a momentary drop out of Playing mid-segment reads as "no segment" and flips the
@@ -2548,7 +2732,32 @@ fn follow_control_row(app: &mut App, ctrl: plx_appkit::player_hud::ControlSlot, 
             // the DISMISSAL and the ring in one act, because raising the timer alone left
             // the tile behind a transport nobody drew. `HudState::raise_for_offer` is where
             // that rule, its resting-position clause and the bug are written down.
-            player.raise_for_offer(now, ctrl.primary_btn());
+            let auto_skip_offer = matches!(ctrl, plx_appkit::player_hud::ControlSlot::Skip(p) if matches!(p.kind,
+                plx_data::metadata::MarkerKind::Intro | plx_data::metadata::MarkerKind::Recap));
+            let restore_scrub = if auto_skip_offer {
+                // Focus Watch Intro/Recap for a new countdown, but don't move focus back to a
+                // marker button whose countdown was already cancelled before this seek returned.
+                // `skip_only` draws the pill once the startup/ordinary HUD hides.
+                player.hud.dismissed = false;
+                let cancelled = match ctrl {
+                    plx_appkit::player_hud::ControlSlot::Skip(p)
+                        if p.kind == plx_data::metadata::MarkerKind::Intro => player.intro.cancelled(),
+                    _ => player.recap.cancelled(),
+                };
+                if cancelled {
+                    player.hud.nav = HudNav::HOME;
+                } else {
+                    player.hud.nav.focus = GROUP_ROW;
+                    player.hud.nav.btn = 0;
+                    reseat_primary = true;
+                }
+                false
+            } else {
+                player.raise_for_offer(now, ctrl.primary_btn())
+            };
+            if restore_scrub {
+                super::playback::cancel_scrub_preview(&mut app.adapters.player, &mut app.player);
+            }
             // It moved the ring (when it was on the scrubber) with no effect to say so: the engine
             // has to follow, or OK on the offered pill would toggle play/pause.
             reseat = true;
@@ -2577,7 +2786,11 @@ fn follow_control_row(app: &mut App, ctrl: plx_appkit::player_hud::ControlSlot, 
         player.publish();
     }
     if reseat {
-        super::bridge::reseat_player_focus(&mut app.pages);
+        if reseat_primary {
+            super::bridge::reseat_player_focus_on_primary(&mut app.pages);
+        } else {
+            super::bridge::reseat_player_focus(&mut app.pages);
+        }
     }
 }
 
@@ -2985,10 +3198,25 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // one panel that instead HIDES the transport outright (`HudPolicy::Hidden`
                         // outranks `Lifted` — see `bridge::player_hud_policy`).
                         let hud_policy = super::bridge::player_hud_policy(&app.pages);
-                        if let Some(player) = super::bridge::player_mut(&mut app.pages) {
+                        let menu_open = super::bridge::player_overlay_up(&app.pages);
+                        let menu_can_resume = hud_policy == plx_screens::player::HudPolicy::Normal
+                            && !menu_open
+                            && !super::bridge::player_section_up(&app.pages);
+                        let (restore_scrub, hud_shown) = if let Some(player) = super::bridge::player_mut(&mut app.pages) {
                             player.busy = busy;
-                            player.set_hud_policy(hud_policy);
+                            let restore_scrub = player.set_hud_policy(hud_policy);
+                            let hud_shown = player.hud.visible(&app.player.session, fr.now, paused());
+                            (restore_scrub, hud_shown)
+                        } else { (false, false) };
+                        if restore_scrub {
+                            super::playback::cancel_scrub_preview(&mut app.adapters.player, &mut app.player);
                         }
+                        super::playback::settle_player_menu_pause(
+                            &mut app.adapters.player,
+                            &mut app.player,
+                            menu_open,
+                            menu_can_resume && hud_shown,
+                        );
                         // THE PAGE, and its panels: `Dispatcher::draw(.., true)` runs the page
                         // pass (subtitles, the transport, the read-out — `PlayerScreen::draw`) and
                         // then the surfaces bottom-to-top, which is exactly the order the four
@@ -4646,9 +4874,8 @@ mod lifecycle_regression_tests {
         assert_eq!(reqs, vec![plx_screens::registry::PlayerReq::Transport(None)], "OK toggles play");
     }
 
-    /// The same on an EPISODE, where the first disc (Previous / Restart) IS enabled, so the engine's
-    /// reconcile has nothing to move: before the departure re-seated the engine, the ring said
-    /// "scrubber" while the engine held that disc, and OK restarted the episode.
+    /// The same on an EPISODE: the built-in row's first disc remains Subtitle regardless of queue
+    /// neighbors, so leaving the Up Next stand-in must still move focus back to the scrubber.
     #[test]
     fn an_up_next_stand_in_that_leaves_an_episode_sends_the_ring_to_the_scrubber() {
         use plx_appkit::player_hud::{geometry::GROUP_SCRUB, ControlSlot, Controls, ELEM_SCRUB};
@@ -4656,7 +4883,10 @@ mod lifecycle_regression_tests {
         let _serial = plx_base::testlock::serial();
         let credits = Marker { kind: MarkerKind::Credits, start_ms: 0, end_ms: 60_000, final_seg: true };
         let discs = ControlSlot::Discs(Controls::for_item(true, true, true, true));
-        assert!(discs.enabled(plx_appkit::player_hud::BTN_PREVIOUS), "the fixture: the first disc is live");
+        assert!(
+            discs.enabled(plx_appkit::player_hud::BTN_SUBTITLES),
+            "Subtitle remains the first built-in disc"
+        );
         let (focus, engine, reqs) = depart_and_press_ok(ControlSlot::UpNext(credits), discs);
         assert_eq!(focus, GROUP_SCRUB, "nav");
         assert_eq!(engine, Some(ELEM_SCRUB), "the engine");
@@ -4887,7 +5117,7 @@ mod lifecycle_regression_tests {
         use plx_ui::form::FormId;
         use plx_ui::screen::ScreenEvent;
         let _serial = plx_base::testlock::serial();
-        let chapter = |index: i64| plx_data::metadata::Chapter { index, start_ms: index * 60_000, title: format!("Chapter {index}"), thumb: String::new() };
+        let chapter = |index: i64| plx_data::metadata::Chapter { index, start_ms: index * 60_000, end_ms: (index + 1) * 60_000, title: format!("Chapter {index}"), thumb: String::new() };
         for policy in ["modal", "inline"] {
             let mut app = self::app();
             app.bridge.seed_player_compiled(plx_appkit::player_hud::loaded::reference_without_openers_for_test(policy));

@@ -107,7 +107,9 @@ impl TextDialect {
             "realtext" => Self::RealText,
             "microdvd" => Self::MicroDvd,
             "mpl2" => Self::Mpl2,
-            "text" | "vplayer" | "pjs" | "jacosub" | "subviewer" | "subviewer1" | "stl" => Self::Plain,
+            "text" | "vplayer" | "pjs" | "jacosub" | "subviewer" | "subviewer1" | "stl" => {
+                Self::Plain
+            }
             _ => return None,
         })
     }
@@ -137,11 +139,13 @@ pub fn convert(text: &str, dialect: TextDialect) -> Option<Converted> {
 }
 
 /// [`convert`] with the alignment a cue gets when its own text names none (WebVTT's `line:0`).
-pub fn convert_aligned(text: &str, dialect: TextDialect, default_align: Option<Align>) -> Option<Converted> {
+pub fn convert_aligned(text: &str, dialect: TextDialect, default_align: Option<Align>,
+) -> Option<Converted> {
     let parsed = Parser::run(text, dialect);
     let pieces = normalize(parsed.pieces)?;
     let align = parsed.align.or(default_align).filter(|a| (1..=9).contains(a)).unwrap_or(DEFAULT_ALIGN);
-    Some(Converted { body: render(&pieces), align })
+    Some(Converted { body: render(&pieces), align,
+    })
 }
 
 /// The Matroska packet an embedded cue becomes: `ReadOrder,Layer,Style,Name,MarginL,MarginR,
@@ -212,7 +216,8 @@ impl Parser {
     fn run(text: &str, dialect: TextDialect) -> Parsed {
         let mut p = Parser {
             dialect,
-            out: Parsed { pieces: Vec::new(), align: None },
+            out: Parsed { pieces: Vec::new(), align: None,
+            },
             in_rt: false,
             line_start: true,
             line_italic: false,
@@ -555,7 +560,8 @@ fn render(pieces: &[Piece]) -> String {
 fn style_margins(style: &TextStyle) -> [(Align, u32); 9] {
     let bottom = text_style::bottom_margin_v(style.position);
     let top = text_style::TOP_MARGIN_V.round() as u32;
-    [(2, bottom), (1, bottom), (3, bottom), (4, 0), (5, 0), (6, 0), (7, top), (8, top), (9, top)]
+    [(2, bottom), (1, bottom), (3, bottom), (4, 0), (5, 0), (6, 0), (7, top), (8, top), (9, top),
+    ]
 }
 
 /// `51.49` or `40`: at most two decimals, no trailing zeros.
@@ -581,7 +587,7 @@ pub fn header(style: &TextStyle) -> String {
     for (align, margin_v) in style_margins(style) {
         h.push_str(&format!(
             "Style: {name},{STYLE_FONT},{fs},&H00FFFFFF,&H00FFFFFF,&H26000000,&HFF000000,\
-             0,0,0,0,100,100,0,0,1,2,0,{align},{margin},{margin},{margin_v},-1\n",
+             0,0,0,0,100,100,0,0,1,4,0,{align},{margin},{margin},{margin_v},-1\n",
             name = style_name(align),
         ));
     }
@@ -706,13 +712,16 @@ fn file_cues(text: &str) -> Vec<FileCue> {
         }
         if let Some((start_ns, end_ns, settings)) = timing_line_settings(line) {
             out.extend(cur.take().filter(|c| !c.text.is_empty()));
-            cur = Some(FileCue { start_ns, end_ns, settings: settings.to_string(), text: String::new() });
+            cur = Some(FileCue { start_ns, end_ns, settings: settings.to_string(), text: String::new(),
+            });
         } else if let Some(c) = cur.as_mut() {
             if !c.text.is_empty() {
                 c.text.push('\n');
             }
             c.text.push_str(line);
-        } else if ["NOTE", "STYLE", "REGION"].iter().any(|k| line == *k || line.starts_with(&format!("{k} ")) || line.starts_with(&format!("{k}\t"))) {
+        } else if ["NOTE", "STYLE", "REGION"].iter().any(|k| {
+            line == *k || line.starts_with(&format!("{k} ")) || line.starts_with(&format!("{k}\t"))
+        }) {
             skipping = true;
         }
     }
@@ -773,7 +782,8 @@ fn script_from(text: &str, dialect: TextDialect) -> TextScript {
         let Some(c) = convert_aligned(&cue.text, dialect, top.then_some(8)) else {
             continue;
         };
-        cues.push(ClipCue { start: cue.start_ns, end: cue.end_ns, class: c.class(), seq: cues.len() as u32 });
+        cues.push(ClipCue { start: cue.start_ns, end: cue.end_ns, class: c.class(), seq: cues.len() as u32,
+        });
         converted.push(c);
     }
     let clipped = clip_newest_wins(&cues);
@@ -796,7 +806,8 @@ fn script_from(text: &str, dialect: TextDialect) -> TextScript {
     }
     lines.sort_by_key(|l| (l.0, l.1));
     let count = lines.len();
-    TextScript { events: lines.into_iter().map(|l| l.3).collect(), cues: count }
+    TextScript { events: lines.into_iter().map(|l| l.3).collect(), cues: count,
+    }
 }
 
 /// `H:MM:SS.cc` from centiseconds.

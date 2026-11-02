@@ -20,11 +20,8 @@ pub const CAPTION_FACE: f32 = 36.0;
 /// The vertical pitch of one caption line at scale 1; it scales with the face.
 pub const CAPTION_LINE_PITCH: f32 = 48.0;
 
-/// The widest a caption line runs at the base face: about 42 characters of bold caption text.
-pub const CAPTION_WRAP_W: f32 = 760.0;
-
-/// The widest a caption line ever runs, at any size: three quarters of the screen.
-pub const CAPTION_MAX_W: f32 = SCR_W * 0.75;
+/// Text subtitles wrap at 80% of the fixed 1920 px logical canvas, independent of font size.
+pub const CAPTION_WRAP_W: f32 = SCR_W * 0.8;
 
 /// The caption line count the block is bottom-anchored at; the Timing capsule's y is fixed by it.
 pub const CAPTION_ANCHOR_LINES: usize = 3;
@@ -99,7 +96,8 @@ impl HudBand {
     /// The one constructor: `ceil_y` and `lift` follow from the control row's top; nothing is open.
     pub const fn from_controls_top(controls_top_y: f32) -> Self {
         let ceil_y = controls_top_y - CAPTION_INK_CLEARANCE;
-        Self { ceil_y, controls_top_y, lift: SUB_BASE_Y - ceil_y, rise: [0.0; 3] }
+        Self { ceil_y, controls_top_y, lift: SUB_BASE_Y - ceil_y, rise: [0.0; 3],
+        }
     }
 
     /// Classic's band: control row at 792, ceiling 780, lift 200 (`text_style::tests` pins them).
@@ -165,7 +163,7 @@ pub fn size_scale(size: SubtitleSize) -> f32 {
         SubtitleSize::Medium => 1.0,
         SubtitleSize::Large => 1.25,
         SubtitleSize::ExtraLarge => 1.5,
-        SubtitleSize::Huge => 1.8,
+        SubtitleSize::Huge => 1.65,
     }
 }
 
@@ -179,15 +177,14 @@ pub fn position_lift(position: SubtitlePosition) -> f32 {
     }
 }
 
-/// The pixel width a caption line wraps at for the viewer's size `scale`.
-pub fn wrap_width(scale: f32) -> f32 {
-    (CAPTION_WRAP_W * scale).min(CAPTION_MAX_W)
+/// The fixed pixel width a text subtitle line wraps at. Font size changes glyph width, not this box.
+pub fn wrap_width(_scale: f32) -> f32 {
+    CAPTION_WRAP_W
 }
 
-/// The left and right margin of the synthesized styles: the wrap width centred on the frame,
-/// rounded to the whole pixel an ASS margin is.
-pub fn side_margin(scale: f32) -> u32 {
-    ((SCR_W - wrap_width(scale)) / 2.0).round().max(0.0) as u32
+/// The fixed left and right margin of synthesized styles, centring the wrap box on the 1920 px canvas.
+pub fn side_margin(_scale: f32) -> u32 {
+    ((SCR_W - CAPTION_WRAP_W) / 2.0).round().max(0.0) as u32
 }
 
 /// The `MarginV` of the bottom-aligned styles: the gap under the last line ([`BOTTOM_GAP`] less
@@ -223,14 +220,16 @@ pub struct TextStyle {
 
 impl Default for TextStyle {
     fn default() -> Self {
-        Self { size: SubtitleSize::Medium, position: SubtitlePosition::Low }
+        Self { size: SubtitleSize::Medium, position: SubtitlePosition::Low,
+        }
     }
 }
 
 impl TextStyle {
     /// The picks as the preferences hold them now.
     pub fn current() -> Self {
-        Self { size: crate::route::subtitle_size(), position: crate::route::subtitle_position() }
+        Self { size: crate::route::subtitle_size(), position: crate::route::subtitle_position(),
+        }
     }
 
     pub fn scale(&self) -> f32 {
@@ -259,11 +258,13 @@ pub struct TodayBaseline {
 }
 
 /// Port of `player_hud::caption_geometry_for` (with `hud_up` and a zero-height block) for a given `scale`, `position` and HUD `band`.
-pub fn today_baseline(position: SubtitlePosition, scale: f32, hud_up: bool, band: HudBand) -> TodayBaseline {
+pub fn today_baseline(position: SubtitlePosition, scale: f32, hud_up: bool, band: HudBand,
+) -> TodayBaseline {
     let rise = if hud_up { band.rise_for(position) } else { 0.0 };
     let baseline = (if hud_up { band.ceil_y } else { SUB_BASE_Y }) - position_lift(position) - rise;
     let floor = if hud_up { band.ceil_y } else { CAPTION_FLOOR_Y };
-    TodayBaseline { scale, baseline, floor }
+    TodayBaseline { scale, baseline, floor,
+    }
 }
 
 /// Where today's one-line caption puts the BASELINE of its glyphs (the row just under a flat-bottomed
@@ -273,8 +274,10 @@ pub fn today_baseline(position: SubtitlePosition, scale: f32, hud_up: bool, band
 /// [`TodayBaseline::baseline`] at the four sizes. A port of that draw: `draw_caption_block`
 /// (appkit) takes its inset from [`CAPTION_TEXT_INSET`], and the ascent is
 /// SDL_ttf's `ceil(hhea ascender)` as `gfx::text` documents it, not measured on a television.
-pub fn today_ink_baseline(position: SubtitlePosition, scale: f32, hud_up: bool, band: HudBand) -> f32 {
-    let lay = today_layout(1, scale, today_baseline(position, scale, hud_up, band).baseline);
+pub fn today_ink_baseline(position: SubtitlePosition, scale: f32, hud_up: bool, band: HudBand,
+) -> f32 {
+    let lay = today_layout(1, scale, today_baseline(position, scale, hud_up, band).baseline,
+    );
     lay.top + CAPTION_TEXT_INSET + (INTER_BOLD_HHEA_ASCENT_EM * lay.face as f32).ceil()
 }
 
@@ -322,7 +325,8 @@ mod tests {
         };
         let head = find(b"head");
         let os2 = find(b"OS/2");
-        (be16(font, head + 18), be16(font, os2 + 74), be16(font, os2 + 76))
+        (be16(font, head + 18), be16(font, os2 + 74), be16(font, os2 + 76),
+        )
     }
 
     #[test]
@@ -359,7 +363,7 @@ mod tests {
     #[test]
     fn scales_and_lifts_are_todays() {
         let scales: Vec<f32> = SubtitleSize::LADDER.iter().map(|s| size_scale(*s)).collect();
-        assert_eq!(scales, [0.78, 1.0, 1.25, 1.5, 1.8]);
+        assert_eq!(scales, [0.78, 1.0, 1.25, 1.5, 1.65]);
         let lifts: Vec<f32> = SubtitlePosition::LADDER.iter().map(|p| position_lift(*p)).collect();
         assert_eq!(lifts, [0.0, 160.0, 320.0]);
         assert_eq!(SUB_BASE_Y, 980.0);
@@ -402,18 +406,22 @@ mod tests {
 
     #[test]
     fn wrap_margins_centre_the_wrap_width() {
-        assert_eq!(side_margin(1.0), 580); // (1920 - 760) / 2
-        assert_eq!(side_margin(1.25), 485); // (1920 - 950) / 2
-        assert_eq!(side_margin(1.5), 390); // (1920 - 1140) / 2
-        assert_eq!(side_margin(0.78), 664); // (1920 - 592.8) / 2 = 663.6
+        assert_eq!(CAPTION_WRAP_W, 1536.0); // 80% of the fixed 1920 px logical canvas
         for size in SubtitleSize::LADDER {
             let s = size_scale(size);
-            assert!(wrap_width(s) <= CAPTION_MAX_W);
-            assert!((2 * side_margin(s)) as f32 + wrap_width(s) - SCR_W < 1.0);
+            assert_eq!(wrap_width(s),
+                1536.0,
+                "wrap width is independent of {size:?}"
+            );
+            assert_eq!(
+                side_margin(s),
+                192,
+                "the centered margin is independent of {size:?}"
+            );
+            assert_eq!(2 * side_margin(s) as f32 + wrap_width(s), SCR_W);
         }
-        // Past 1440 px the cap, not the scale, decides.
-        assert_eq!(wrap_width(3.0), CAPTION_MAX_W);
-        assert_eq!(side_margin(3.0), 240);
+        assert_eq!(wrap_width(3.0), 1536.0);
+        assert_eq!(side_margin(3.0), 192);
     }
 
     #[test]

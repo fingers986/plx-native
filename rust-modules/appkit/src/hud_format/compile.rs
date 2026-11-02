@@ -47,8 +47,8 @@
 //! **Stand-ins.** Up Next and Skip replace the segments `up_next.replaces` names. Those segments keep
 //! their place in the layout (the others stay where they are) but draw and focus nothing; the stand-in
 //! lands on the union of their Discs-slot rects, at the edge `up_next.align` names, so the transport
-//! never jumps when a segment begins. Skip has TWO labels and so two widths: the state carries both
-//! rects ([`SkipKind`]).
+//! never jumps when a segment begins. Skip has three labels and two widths: Intro has one, and Credits
+//! and Recap share the wider secondary rect ([`SkipKind`]).
 //!
 //! **Cost** ([`Cost`]) is REPORTED per state, never enforced: the ceilings are calibrated on the
 //! television (PR7, PR8). Its terms: draw ops, glyph runs, texture bytes and blended pixel area.
@@ -99,8 +99,12 @@ pub struct AppLabels {
     pub watch_credits: String,
     /// the Skip pill over an intro
     pub skip_intro: String,
+    /// the Skip pill's automatic Intro action
+    pub watch_intro: String,
     /// the Skip pill over credits
     pub skip_credits: String,
+    /// the Skip pill over a recap
+    pub skip_recap: String,
     /// the Info card's From the Beginning button
     pub from_beginning: String,
     /// the Info card's Go to Show button (an episode)
@@ -121,7 +125,9 @@ impl AppLabels {
             next_episode: msg::widgets_next_episode_in(cx).to_owned(),
             watch_credits: msg::widgets_next_credits_in(cx).to_owned(),
             skip_intro: msg::widgets_skip_intro_in(cx).to_owned(),
+            watch_intro: msg::widgets_skip_intro_watch_in(cx).to_owned(),
             skip_credits: msg::widgets_skip_credits_in(cx).to_owned(),
+            skip_recap: msg::widgets_skip_recap_in(cx).to_owned(),
             from_beginning: msg::widgets_info_from_beginning_in(cx).to_owned(),
             go_to_show: msg::widgets_info_go_show_in(cx).to_owned(),
             go_to_movie: msg::widgets_info_go_movie_in(cx).to_owned(),
@@ -186,7 +192,7 @@ pub struct StateKey {
     pub paused: bool,
 }
 
-/// Which Skip pill: the two labels have two widths.
+/// Which Skip pill layout: Intro has its own width; Credits and Recap share the wider secondary width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SkipKind {
     Intro,
@@ -362,7 +368,7 @@ pub struct Standin {
     pub row: Rect,
     pub anchor: RowAnchor,
     pub up_next: Option<UpNextRects>,
-    /// The Skip pill per [`SkipKind`] (index `SkipKind as usize`).
+    /// The Skip pill per layout width (Intro, then the widest of Credits and Recap).
     pub skip: Option<[Rect; 2]>,
 }
 
@@ -420,7 +426,7 @@ pub enum DrawOp {
     Control(ControlRect),
     /// The Up Next offer (slot UpNext only); its inside is app-drawn.
     UpNext { rects: UpNextRects, credits_rest: Rest, next_rest: Rest },
-    /// The Skip pill (slot Skip only), at both widths.
+    /// The Skip pill (slot Skip only), at both layout widths.
     SkipPill { rects: [Rect; 2] },
 }
 
@@ -581,10 +587,10 @@ impl CompiledState {
         parts
     }
 
-    /// The state as it draws under `skip`: the Skip pill's two labels have two widths, and a start-aligned
+    /// The state as it draws under `skip`: Intro and the wider Credits/Recap pill have two widths, and a start-aligned
     /// fill in the pill's band (a title) stops short of the one actually shown. `self` is the
     /// [`SkipKind::Intro`] layout and every non-Skip state's; a Skip state whose two pill rects differ (the
-    /// kind's only way into the layout) carries the credits layout in [`CompiledState::skip_alt`].
+    /// kind's only way into the layout) carries the wider secondary layout in [`CompiledState::skip_alt`].
     pub fn skip_variant(&self, skip: SkipKind) -> &CompiledState {
         match (skip, &self.skip_alt) {
             (SkipKind::Credits, Some(alt)) => alt,
@@ -768,7 +774,7 @@ impl CompiledState {
         out.into_iter()
     }
 
-    /// Set the package's one caption band on this state (and on the credits layout it carries).
+    /// Set the package's one caption band on this state (and on the wider secondary layout it carries).
     fn set_band(&mut self, band: HudBand) {
         self.band = band;
         if let Some(alt) = self.skip_alt.as_deref_mut() {
@@ -2089,7 +2095,7 @@ impl<'e, 'p> Env<'e, 'p> {
         out
     }
 
-    /// This state, and for a Skip state the credits layout beside it when the longer or shorter pill
+    /// This state, and for a Skip state the secondary layout beside it when the longer or shorter pill
     /// changes anything (see [`CompiledState::skip_variant`]).
     fn compile_state(&self) -> CompiledState {
         let mut state = self.compile_for(SkipKind::Intro);
@@ -2297,8 +2303,21 @@ impl<'e, 'p> Env<'e, 'p> {
         let still = (up.get("still").and_then(Val::as_bool) == Some(true)).then_some(l.still);
         let caption = (up.get("caption").and_then(Val::as_bool) == Some(true)).then_some(l.caption);
         let up_next = UpNextRects { still, caption, credits: l.credits, next: l.next };
-        let skip = [&self.labels.skip_intro, &self.labels.skip_credits].map(|label| {
-            let w = stand_in_w(self.measure.width_str(label, theme::size::BODY, true), floor.unwrap_or(0.0));
+        let skip_width = |label: &str| {
+            stand_in_w(self.measure.width_str(label, theme::size::BODY, true), floor.unwrap_or(0.0))
+        };
+        let credits_recap = if skip_width(&self.labels.skip_recap) > skip_width(&self.labels.skip_credits) {
+            &self.labels.skip_recap
+        } else {
+            &self.labels.skip_credits
+        };
+        let intro_label = if skip_width(&self.labels.watch_intro) > skip_width(&self.labels.skip_intro) {
+            &self.labels.watch_intro
+        } else {
+            &self.labels.skip_intro
+        };
+        let skip = [intro_label, credits_recap].map(|label| {
+            let w = skip_width(label);
             let x = match align {
                 "start" => union.x,
                 "center" => union.x + union.w * 0.5 - w * 0.5,

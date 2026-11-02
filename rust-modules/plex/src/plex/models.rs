@@ -977,8 +977,8 @@ pub struct Chapter {
     pub thumb: String,
 }
 
-/// Plex `Marker[]` on a leaf item — the server-detected intro / credits segments, present only
-/// with `?includeMarkers=1`. `kind` is `"intro"` | `"credits"` (PMS also emits `"commercial"` on
+/// Plex `Marker[]` on a leaf item — the server-detected intro / recap / credits segments, present only
+/// with `?includeMarkers=1`. `kind` is `"intro"` | `"recap"` | `"credits"` (PMS also emits `"commercial"` on
 /// recorded content); offsets are ms into the item. `is_final` marks a credits segment that runs
 /// to the end of the file — the usual case, and what makes "skip credits" equivalent to "finish".
 ///

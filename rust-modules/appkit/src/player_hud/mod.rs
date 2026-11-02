@@ -14,7 +14,7 @@
 //! | [`caption_rise`] | how far the captions have risen to clear an open section: the rise per Position, its rise-only target and its spring, a field of [`motion::HudMotion`] |
 //! | [`motion`] | the clock prewarm ([`motion::ClockWarm`]), the pop-in of a row ([`motion::RowPop`]) and the HUD's per-frame animation state ([`motion::HudMotion`], formerly `TransportRow`) |
 //! | [`geometry`] | the focus GROUPS ([`geometry::GROUP_SCRUB`] ..), [`geometry::HudGeometry`] and [`geometry::RowAnchor`]: what a layout reports back to focus, the pointer, the overscan audit and the stand-ins |
-//! | [`command`] | [`command::HudCommand`], the closed vocabulary of things a control asks the app to do, with its app-owned enabled predicates, and classic's five discs as controls |
+//! | [`command`] | [`command::HudCommand`], the closed vocabulary of things a control asks the app to do, with its app-owned enabled predicates, and the built-in row's three discs |
 //! | [`classic`] | the transport's primitives and `builtin:classic`'s constants: the draws the renderer calls (scrim, title, playbar, clocks, scrub preview), the three the trailer calls (scrim, title, playbar), the failure read-out, `ROW_ANCHOR`; the tab pills are the renderer's. The arrangement is the compiled package's |
 //! | [`loaded`] | a package parsed and compiled once, never in the draw ([`loaded::LoadedHud`]), and the production [`AppLabels`](crate::hud_format::compile::AppLabels) constructor over a passed-in locale |
 //! | [`render`] | the renderer: it draws a [`Compiled`](crate::hud_format::compile::Compiled) package's state through the shared widgets; `builtin:classic` is the embedded package it draws |
@@ -32,8 +32,8 @@ pub mod loaded;
 pub mod model;
 pub mod motion;
 pub mod render;
-pub mod seek_jump;
 mod sections;
+pub mod seek_jump;
 pub mod state;
 pub mod strip;
 pub mod travel;
@@ -41,16 +41,16 @@ use plx_gfx::gfx::{delete_tex, upload_rgba};
 use plx_machine::machine::Measure;
 // The caption's look (face, pitch, wrap, lift, anchors) is one definition, media's `text_style`,
 // shared with the synthesized ASS header (plan `libass-text-subs` §2.5, PR 5a).
-pub use plx_media::player::text_style::{HudBand, CAPSULE_BOTTOM_Y};
+use model::HudModel;
 use plx_media::player::text_style::{
     position_lift, size_scale, wrap_width, CAPTION_ANCHOR_LINES, CAPTION_FACE, CAPTION_FLOOR_Y,
     CAPTION_INK_CLEARANCE, CAPTION_LINE_PITCH, CAPTION_TEXT_INSET, SUB_BASE_Y,
 };
-pub use state::*;
-use model::HudModel;
+pub use plx_media::player::text_style::{HudBand, CAPSULE_BOTTOM_Y};
 use plx_ui::consts::{SAFE, SCR_H, SCR_W};
 use plx_ui::theme;
 use plx_ui::{Painter, Rect};
+pub use state::*;
 use std::ffi::CString;
 use std::os::raw::{c_int, c_uint};
 
@@ -60,7 +60,8 @@ use std::os::raw::{c_int, c_uint};
 /// (`docs/ass-subtitles.md`). The message is a short fixed string, so it is never paged: a block
 /// taller than the area is drawn whole at the smallest step. `band` is the HUD's, as its layout
 /// reports it ([`geometry::HudGeometry::band`]): the ceiling the block lifts to while `hud_up`.
-pub fn draw_subtitle_message(text: &str, hud_up: bool, band: HudBand, model: &HudModel, measure: &dyn Measure) {
+pub fn draw_subtitle_message(text: &str, hud_up: bool, band: HudBand, model: &HudModel, measure: &dyn Measure,
+) {
     let scale = size_scale(model.sub_size);
     let lines = caption_wrap(text, scale, measure);
     if lines.is_empty() {
@@ -126,9 +127,11 @@ fn draw_caption_block(lines: &[String], lay: &CaptionLayout, model: &HudModel) {
         if let Ok(cs) = CString::new(ln.as_str()) {
             // dark outline (4 offsets) then the bold caption in its tone — legible over any scene
             for (dx, dy) in [(-2.0f32, 0.0f32), (2.0, 0.0), (0.0, -2.0), (0.0, 2.0)] {
-                p.text(cs.as_ptr(), cx + dx, top + CAPTION_TEXT_INSET + dy, lay.face, outline, 1, 1);
+                p.text(cs.as_ptr(), cx + dx, top + CAPTION_TEXT_INSET + dy, lay.face, outline, 1, 1,
+                );
             }
-            p.text(cs.as_ptr(), cx, top + CAPTION_TEXT_INSET, lay.face, ink, 1, 1);
+            p.text(cs.as_ptr(), cx, top + CAPTION_TEXT_INSET, lay.face, ink, 1, 1,
+            );
         }
     }
 }
@@ -199,10 +202,12 @@ const CAPTION_FIT_STEPS: [f32; 4] = [1.0, 0.875, 0.75, 0.625];
 fn caption_layout(lines: usize, scale: f32, baseline: f32, floor: f32) -> CaptionLayout {
     let anchored = lines.min(CAPTION_ANCHOR_LINES) as f32;
     let top = baseline - anchored * CAPTION_LINE_PITCH * scale;
-    let mut lay = CaptionLayout { face: 0, pitch: 0.0, top, lines };
+    let mut lay = CaptionLayout { face: 0, pitch: 0.0, top, lines,
+    };
     for &step in CAPTION_FIT_STEPS.iter() {
         let s = scale * step;
-        lay = CaptionLayout { face: (CAPTION_FACE * s).round() as i32, pitch: CAPTION_LINE_PITCH * s, top, lines };
+        lay = CaptionLayout { face: (CAPTION_FACE * s).round() as i32, pitch: CAPTION_LINE_PITCH * s, top, lines,
+        };
         if top + lines as f32 * lay.pitch <= floor {
             break;
         }
@@ -312,7 +317,8 @@ fn overhangs(r: Rect, band: HudBand) -> bool {
 /// frame by frame without re-uploading. Main-thread only (GL). This is the image counterpart to
 /// the text path (libass) — a selected track is either text or image, so at most one of the two draws a
 /// cue at a time.
-pub fn draw_subtitle_bitmap(cache: &mut SubtitleBitmaps, hud_up: bool, band: HudBand, model: &HudModel) {
+pub fn draw_subtitle_bitmap(cache: &mut SubtitleBitmaps, hud_up: bool, band: HudBand, model: &HudModel,
+) {
     let set = &mut cache.set;
     let sel = model.sub_sel;
     if sel < 0 {
@@ -453,8 +459,10 @@ impl SubtitleBitmaps {
 /// the frozen golden).
 #[cfg(any(test, feature = "test-support"))]
 pub fn audit_geometry() -> geometry::HudGeometry {
-    let hud = loaded::load_classic("audit", plx_platform::i18n::english(), &plx_base::fontcov::advances::ShippedMeasure);
-    geometry::geometry(&hud.compiled, 0, ControlSlot::Discs(Controls::NONE), false, false)
+    let hud = loaded::load_classic("audit", plx_platform::i18n::english(), &plx_base::fontcov::advances::ShippedMeasure,
+    );
+    geometry::geometry(&hud.compiled, 0, ControlSlot::Discs(Controls::NONE), false, false,
+    )
 }
 
 /// **The transport's outermost drawn chrome, for the overscan audit**

@@ -27,15 +27,17 @@ impl PlayerScreen {
 
     /// Another key has interrupted an FF/REW tap that has not been released: its armed scrub goes
     /// with it, uncommitted.
-    pub(super) fn drop_transport_tap(&mut self) {
+    pub(super) fn drop_transport_tap<H: AppLike>(&mut self, fx: &mut Effects<'_, H>) {
         if self.transport_tap {
             self.transport_tap = false;
-            self.scrub.cancel();
+            self.cancel_scrub(fx);
         }
     }
 
     fn commit_jump<H: AppLike>(&mut self, ps: &plx_media::route::PlaybackSession,
-        forward: bool, now: u32, fx: &mut Effects<'_, H>) {
+        forward: bool, now: u32, fx: &mut Effects<'_, H>,
+    ) {
+        self.cancel_scrub(fx);
         if let Some(target) = self.jump_by(ps, signed_step(forward), false, now) {
             Self::ask(fx, PlayerReq::CommitSeek(target));
         }
@@ -49,10 +51,12 @@ impl PlayerScreen {
     /// is a tap that dismisses it again (`hide`), and a seek CONTROL pressed on a visible one keeps
     /// it up and extends its linger. Both share the burst: presses inside
     /// [`BURST_GAP_MS`](plx_appkit::player_hud::seek_jump::BURST_GAP_MS) accumulate into one target, so keyframe rounding never eats the requested travel.
-    pub fn jump_by(&mut self, ps: &plx_media::route::PlaybackSession, step_ns: i64, keep_hud: bool, now: u32) -> Option<i64> {
+    pub fn jump_by(&mut self, ps: &plx_media::route::PlaybackSession, step_ns: i64, keep_hud: bool, now: u32,
+    ) -> Option<i64> {
         let duration = plx_media::player::duration_ns();
         if duration <= 0 { return None; }
-        let target = self.seek_burst.jump(now, plx_media::player::intended_pos_ns(ps), step_ns, duration);
+        let target = self.seek_burst.jump(now, plx_media::player::intended_pos_ns(ps), step_ns, duration,
+        );
         self.scrub.cancel();
         if keep_hud {
             self.hud.extend(now, input::HUD_LINGER_MS);
@@ -64,7 +68,8 @@ impl PlayerScreen {
     }
 
     pub(super) fn jump_key<H: AppLike>(&mut self, ps: &plx_media::route::PlaybackSession,
-        key: consts::Key, edge: Edge, now: u32, fx: &mut Effects<'_, H>) -> bool {
+        key: consts::Key, edge: Edge, now: u32, fx: &mut Effects<'_, H>,
+    ) -> bool {
         let (forward, transport) = match key {
             consts::Key::Left { alt } => (false, alt),
             consts::Key::Right { alt } => (true, alt),
@@ -73,19 +78,21 @@ impl PlayerScreen {
         if transport {
             if plx_media::player::duration_ns() <= 0 {
                 self.transport_tap = false;
-                self.scrub.cancel();
+                self.cancel_scrub(fx);
                 return true;
             }
             match edge {
                 Edge::Down => {
-                    if self.scrub.key.bounce(now, forward) { return true; }
+                    if self.scrub.key.bounce(now, forward) {
+                        return true;
+                    }
                     // Tap/hold is decided by the shared HeldKey's first hardware repeat.
                     // No seek is sent on Down: a hold must never begin with a committed jump.
                     let seed = if self.scrub.is_live() && !self.scrub.reveal && !self.scrub.drag {
                         self.scrub.ns
                     } else { plx_media::player::intended_pos_ns(ps) };
                     self.transport_tap = true;
-                    self.scrub.cancel();
+                    self.cancel_scrub(fx);
                     self.scrub.begin(now, forward);
                     self.scrub.ns = seed;
                     self.scrub.reveal = true;
@@ -95,7 +102,8 @@ impl PlayerScreen {
                 }
                 Edge::Repeat => {
                     if self.transport_tap && self.hud.visible_at_press {
-                        self.scrub.ns = Scrub::clamp_target(self.scrub.ns.saturating_add(signed_step(forward)), plx_media::player::duration_ns());
+                        self.scrub.ns = Scrub::clamp_target(self.scrub.ns.saturating_add(signed_step(forward)), plx_media::player::duration_ns(),
+                        );
                         self.scrub.reveal = false;
                     }
                     self.hud.dismissed = false;
@@ -116,7 +124,7 @@ impl PlayerScreen {
             self.publish();
             return true;
         }
-        if edge == Edge::Down { self.drop_transport_tap(); }
+        if edge == Edge::Down { self.drop_transport_tap(fx); }
         if plx_media::route::instant_dpad_seeking() != InstantDpadSeeking::On || self.hud.visible_at_press {
             self.seek_burst.reset();
             return false;
@@ -226,7 +234,8 @@ mod tests {
         let _playback = PlaybackFixture::new();
         plx_media::route::restore_instant_dpad_seeking(InstantDpadSeeking::Off);
         let _interval = player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
-        let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
+        let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test(),
+        );
         page.hud.dismissed = true;
         assert!(key(&mut page, consts::WCODE_FASTFORWARD, Edge::Down, 1_000).is_empty());
         assert!(page.hud.dismissed);
@@ -240,10 +249,12 @@ mod tests {
         let _playback = PlaybackFixture::new();
         plx_media::route::restore_instant_dpad_seeking(InstantDpadSeeking::Off);
         let _interval = player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
-        let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
+        let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test(),
+        );
         for (sym, at, target) in [(consts::WCODE_FASTFORWARD, 1_000, 50_000_000_000),
             (consts::WCODE_FASTFORWARD, 1_300, 60_000_000_000),
-            (consts::WCODE_REWIND, 1_600, 50_000_000_000)] {
+            (consts::WCODE_REWIND, 1_600, 50_000_000_000),
+        ] {
             assert!(key(&mut page, sym, Edge::Down, at).is_empty());
             assert_eq!(key(&mut page, sym, Edge::Up, at + 40), vec![PlayerReq::CommitSeek(target)]);
             plx_media::player::SHARED.playpos_ns.store(40_000_000_000, Relaxed);
@@ -255,7 +266,8 @@ mod tests {
         let _g = plx_base::testlock::serial();
         let _playback = PlaybackFixture::new();
         plx_media::route::restore_instant_dpad_seeking(InstantDpadSeeking::Off);
-        let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
+        let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test(),
+        );
         page.hud.dismissed = true;
         assert!(key(&mut page, consts::WCODE_FASTFORWARD, Edge::Down, 1_000).is_empty());
         assert!(key(&mut page, consts::WCODE_FASTFORWARD, Edge::Repeat, 1_500).is_empty());
@@ -274,13 +286,30 @@ mod tests {
         use plx_ui::screen::By;
         let _g = plx_base::testlock::serial();
         let _playback = PlaybackFixture::new();
-        let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
-        let cx: Cx<'_, TestHost> = Cx { views: (), tick: Tick::default(), measure: &FixtureMeasure,
-            focus: Default::default(), press: Default::default(), owner: InputOwner::Entry(EntryId(9)) };
+        let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test(),
+        );
+        let cx: Cx<'_, TestHost> = Cx {
+            views: (),
+            tick: Tick::default(),
+            measure: &FixtureMeasure,
+            focus: Default::default(),
+            press: Default::default(),
+            owner: InputOwner::Entry(EntryId(9)),
+        };
         for (controls, primary, right, left) in [
-            (player_hud::Controls::for_item(true, false, true, false), 1, 2, 1),
-            (player_hud::Controls::for_item(true, true, false, false), 0, 2, 0),
-            (player_hud::Controls::NONE, 2, 3, 2),
+            (
+                player_hud::Controls::for_item(true, false, true, false),
+                0,
+                1,
+                0,
+            ),
+            (
+                player_hud::Controls::for_item(true, true, false, false),
+                0,
+                1,
+                0,
+            ),
+            (player_hud::Controls::NONE, 0, 1, 0),
         ] {
             page.slot = ControlSlot::Discs(controls);
             page.hud.nav.focus = GROUP_SCRUB;
@@ -291,23 +320,45 @@ mod tests {
             assert_eq!(page.hud.nav.focus, GROUP_ROW);
             assert_eq!(page.hud.nav.btn, primary);
             let mut engine = FocusEngine::new();
-            let start = <PlayerScreen as Focusable<TestHost>>::seat(&page, GROUP_ROW,
-                Placed { rect: Rect::FULL, rest_rect: Rect::FULL, clip: Rect::FULL, index: None }, &cx);
+            let start = <PlayerScreen as Focusable<TestHost>>::seat(
+                &page,
+                GROUP_ROW,
+                Placed {
+                    rect: Rect::FULL,
+                    rest_rect: Rect::FULL,
+                    clip: Rect::FULL,
+                    index: None,
+                },
+                &cx,
+            );
             assert_eq!(start.elem, player_hud::ELEM_CONTROL_BASE + primary as u32);
             engine.set(cx.owner, start, Some(GROUP_ROW), By::Restore);
             for (dir, expected) in [(Dir::Right, right), (Dir::Left, left)] {
                 let outcome = engine.move_dir(cx.owner, &page, &[], dir, &cx);
-                let Outcome::Moved { from, to, by } = outcome else { panic!("{outcome:?}") };
+                let Outcome::Moved { from, to, by } = outcome else {
+                    panic!("{outcome:?}")
+                };
                 assert_eq!(to.elem, player_hud::ELEM_CONTROL_BASE + expected as u32);
                 let mut out = Vec::new();
                 let mut present = plx_machine::present::Present::new();
-                page.step(&ScreenEvent::FocusMoved { from, to, by }, &cx,
-                    &mut Effects::new(&mut out, MachineId::Instance(InstanceId(3)), &mut present));
+                page.step(
+                    &ScreenEvent::FocusMoved { from, to, by },
+                    &cx,
+                    &mut Effects::new(&mut out, MachineId::Instance(InstanceId(3)), &mut present),
+                );
                 assert_eq!(page.hud.nav.btn, expected);
             }
             for i in 0..page.slot.items() {
-                assert_eq!(<PlayerScreen as Focusable<TestHost>>::place(&page,
-                    &(player_hud::ELEM_CONTROL_BASE + i as u32), &cx, At::Drawn).is_some(), controls.enabled(i));
+                assert_eq!(
+                    <PlayerScreen as Focusable<TestHost>>::place(
+                        &page,
+                        &(player_hud::ELEM_CONTROL_BASE + i as u32),
+                        &cx,
+                        At::Drawn
+                    )
+                    .is_some(),
+                    controls.enabled(i)
+                );
             }
         }
     }
@@ -318,7 +369,10 @@ mod tests {
         let _playback = PlaybackFixture::new();
         let _interval =
             player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
-        let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
+        let mut page = PlayerScreen::new(
+            EntryId(9),
+            plx_appkit::player_hud::loaded::classic_for_test(),
+        );
         page.hud.dismissed = true;
         // A +10s request lands on the preceding keyframe at 40s again. A second tap must
         // advance the REQUESTED position, even after the player reports Playing at that frame.
@@ -347,7 +401,10 @@ mod tests {
         let _playback = PlaybackFixture::new();
         let _interval =
             player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
-        let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
+        let mut page = PlayerScreen::new(
+            EntryId(9),
+            plx_appkit::player_hud::loaded::classic_for_test(),
+        );
         let right = consts::SDLK_RIGHT;
         assert_eq!(
             key(&mut page, right, Edge::Down, 1_000),
@@ -383,7 +440,10 @@ mod tests {
         let _playback = PlaybackFixture::new();
         let _interval =
             player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
-        let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
+        let mut page = PlayerScreen::new(
+            EntryId(9),
+            plx_appkit::player_hud::loaded::classic_for_test(),
+        );
         assert_eq!(
             key(&mut page, consts::SDLK_RIGHT, Edge::Down, 1_000),
             vec![PlayerReq::CommitSeek(50_000_000_000)]
@@ -410,7 +470,10 @@ mod tests {
             (consts::SDLK_RIGHT, 50_000_000_000),
             (consts::SDLK_LEFT, 30_000_000_000),
         ] {
-            let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
+            let mut page = PlayerScreen::new(
+                EntryId(9),
+                plx_appkit::player_hud::loaded::classic_for_test(),
+            );
             page.hud.dismissed = true;
             assert_eq!(
                 key(&mut page, sym, Edge::Down, 1_000),
@@ -432,7 +495,10 @@ mod tests {
         let _playback = PlaybackFixture::new();
         let _interval =
             player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
-        let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
+        let mut page = PlayerScreen::new(
+            EntryId(9),
+            plx_appkit::player_hud::loaded::classic_for_test(),
+        );
         page.hud.visible_at_press = true;
         assert!(key(&mut page, consts::SDLK_RIGHT, Edge::Down, 1_000).is_empty());
         assert_eq!(page.scrub.ns, 50_000_000_000);
@@ -473,7 +539,10 @@ mod tests {
         let _g = plx_base::testlock::serial();
         let _playback = PlaybackFixture::new();
         plx_media::route::restore_instant_dpad_seeking(InstantDpadSeeking::Off);
-        let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
+        let mut page = PlayerScreen::new(
+            EntryId(9),
+            plx_appkit::player_hud::loaded::classic_for_test(),
+        );
         assert!(key(&mut page, consts::SDLK_RIGHT, Edge::Down, 1_000).is_empty());
         assert!(page.scrub.reveal);
         assert!(page.hud.until > 1_000);
@@ -486,7 +555,10 @@ mod tests {
         let _interval =
             player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds60);
         for (sym, target) in [(consts::SDLK_RIGHT, 97_000_000_000), (consts::SDLK_LEFT, 0)] {
-            let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
+            let mut page = PlayerScreen::new(
+                EntryId(9),
+                plx_appkit::player_hud::loaded::classic_for_test(),
+            );
             assert_eq!(
                 key(&mut page, sym, Edge::Down, 1_000),
                 vec![PlayerReq::CommitSeek(target)]
@@ -502,13 +574,31 @@ mod tests {
         let _g = plx_base::testlock::serial();
         let _playback = PlaybackFixture::new();
         let ps = plx_media::route::PlaybackSession::IDLE;
-        let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
-        assert_eq!(page.jump_by(&ps, 10_000_000_000, true, 1_000), Some(50_000_000_000));
-        assert!(!page.hud.dismissed, "a control pressed on a visible transport does not hide it");
+        let mut page = PlayerScreen::new(
+            EntryId(9),
+            plx_appkit::player_hud::loaded::classic_for_test(),
+        );
+        assert_eq!(
+            page.jump_by(&ps, 10_000_000_000, true, 1_000),
+            Some(50_000_000_000)
+        );
+        assert!(
+            !page.hud.dismissed,
+            "a control pressed on a visible transport does not hide it"
+        );
         assert!(page.hud.until > 1_000, "and extends its linger");
-        let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
-        assert_eq!(page.jump_by(&ps, 10_000_000_000, false, 1_000), Some(50_000_000_000));
-        assert!(page.hud.dismissed, "a jump key on a hidden transport dismisses it again");
+        let mut page = PlayerScreen::new(
+            EntryId(9),
+            plx_appkit::player_hud::loaded::classic_for_test(),
+        );
+        assert_eq!(
+            page.jump_by(&ps, 10_000_000_000, false, 1_000),
+            Some(50_000_000_000)
+        );
+        assert!(
+            page.hud.dismissed,
+            "a jump key on a hidden transport dismisses it again"
+        );
         assert_eq!(page.hud.until, 0);
     }
 
@@ -517,12 +607,27 @@ mod tests {
         let _g = plx_base::testlock::serial();
         let _playback = PlaybackFixture::new();
         let ps = plx_media::route::PlaybackSession::IDLE;
-        let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
+        let mut page = PlayerScreen::new(
+            EntryId(9),
+            plx_appkit::player_hud::loaded::classic_for_test(),
+        );
         let step = 10_000_000_000;
         assert_eq!(page.jump_by(&ps, step, true, 1_000), Some(50_000_000_000));
-        assert_eq!(page.jump_by(&ps, step, true, 1_300), Some(60_000_000_000), "a second press inside the gap accumulates");
-        assert_eq!(page.jump_by(&ps, -step, false, 1_500), Some(50_000_000_000), "a key joins the same burst");
-        assert_eq!(page.jump_by(&ps, step, true, 9_000), Some(50_000_000_000), "a press after the gap restarts from the playhead");
+        assert_eq!(
+            page.jump_by(&ps, step, true, 1_300),
+            Some(60_000_000_000),
+            "a second press inside the gap accumulates"
+        );
+        assert_eq!(
+            page.jump_by(&ps, -step, false, 1_500),
+            Some(50_000_000_000),
+            "a key joins the same burst"
+        );
+        assert_eq!(
+            page.jump_by(&ps, step, true, 9_000),
+            Some(50_000_000_000),
+            "a press after the gap restarts from the playhead"
+        );
     }
 
     #[test]
@@ -531,9 +636,15 @@ mod tests {
         let _playback = PlaybackFixture::new();
         plx_media::player::SHARED.duration_ns.store(0, Relaxed);
         let ps = plx_media::route::PlaybackSession::IDLE;
-        let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
+        let mut page = PlayerScreen::new(
+            EntryId(9),
+            plx_appkit::player_hud::loaded::classic_for_test(),
+        );
         assert_eq!(page.jump_by(&ps, 10_000_000_000, true, 1_000), None);
-        assert!(page.hud.until == 0, "nothing to clamp against: the HUD is left alone");
+        assert!(
+            page.hud.until == 0,
+            "nothing to clamp against: the HUD is left alone"
+        );
     }
 
     /// **OK on a seek control continues the burst through `handle_key`**: the guard that keeps the
@@ -565,13 +676,15 @@ mod tests {
                 plx_data::stores::metadata::MetadataStore::default().view(),
             )
         };
-        let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
+        let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test(),
+        );
         ok_down(&mut page, seek, 1_000);
         assert_eq!(page.jump_by(&ps, step, true, 1_000), Some(50_000_000_000));
         ok_down(&mut page, seek, 1_300);
         assert_eq!(page.jump_by(&ps, step, true, 1_300), Some(60_000_000_000), "the second press accumulates");
 
-        let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
+        let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test(),
+        );
         ok_down(&mut page, seek, 1_000);
         assert_eq!(page.jump_by(&ps, step, true, 1_000), Some(50_000_000_000));
         ok_down(&mut page, Some(HudCommand::Next), 1_300);

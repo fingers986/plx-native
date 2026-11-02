@@ -226,24 +226,19 @@ impl HudCommand {
     }
 }
 
-/// Classic's five discs as the controls they are, in the order they are drawn and walked:
-/// Previous, Next, Subtitles, Audio, More. The index is the control's ordinal and
-/// [`super::BTN_PREVIOUS`] .. [`super::BTN_MORE`] name them.
+/// The built-in row's three discs, in their drawn and walked order: Subtitles, Audio, More.
+/// Previous and Next remain available to HUD packages and folded More rows.
 pub const CLASSIC_COMMANDS: [HudCommand; BTN_N as usize] = [
-    HudCommand::Previous,
-    HudCommand::Next,
     HudCommand::OpenTracks(TrackTab::Subtitles),
     HudCommand::OpenTracks(TrackTab::Audio),
     HudCommand::OpenMore(MorePage::Root),
 ];
 
 impl From<Action> for HudCommand {
-    /// The slot-addressed form of the five classic controls, one for one. [`Action`] is what
+    /// The slot-addressed form of the three built-in controls, one for one. [`Action`] is what
     /// `Controls::action` answers (the HUD pins grade it); this is what the app performs.
     fn from(action: Action) -> Self {
         match action {
-            Action::Previous => HudCommand::Previous,
-            Action::Next => HudCommand::Next,
             Action::Subtitles => HudCommand::OpenTracks(TrackTab::Subtitles),
             Action::Audio => HudCommand::OpenTracks(TrackTab::Audio),
             Action::More => HudCommand::OpenMore(MorePage::Root),
@@ -255,7 +250,7 @@ impl From<Action> for HudCommand {
 mod tests {
     use super::*;
     use crate::player_hud::state::{
-        control_elem, row_index, ControlSlot, Controls, BTN_AUDIO, BTN_MORE, BTN_NEXT, BTN_PREVIOUS,
+        control_elem, row_index, ControlSlot, Controls, BTN_AUDIO, BTN_MORE,
         BTN_SUBTITLES, ELEM_CHAPTER_BASE, ELEM_CONTROL_BASE, ELEM_FAILURE_END, ELEM_SCRUB, ELEM_TAB_BASE,
     };
 
@@ -269,16 +264,19 @@ mod tests {
         m
     }
 
-    /// Every classic control, pressed, is today's action one for one: the table the app's
+    /// Every built-in control, pressed, is today's action one for one: the table the app's
     /// performer used to spell as a `match` on `Action`.
     #[test]
     fn each_classic_control_is_the_command_of_the_action_it_always_performed() {
         let episode = Controls::for_item(true, true, true, false);
         let want = [
-            (BTN_PREVIOUS, Action::Previous, HudCommand::Previous),
-            (BTN_NEXT, Action::Next, HudCommand::Next),
-            (BTN_SUBTITLES, Action::Subtitles, HudCommand::OpenTracks(TrackTab::Subtitles)),
-            (BTN_AUDIO, Action::Audio, HudCommand::OpenTracks(TrackTab::Audio)),
+            (
+                BTN_SUBTITLES, Action::Subtitles,
+                HudCommand::OpenTracks(TrackTab::Subtitles),
+            ),
+            (
+                BTN_AUDIO, Action::Audio, HudCommand::OpenTracks(TrackTab::Audio),
+            ),
             (BTN_MORE, Action::More, HudCommand::OpenMore(MorePage::Root)),
         ];
         for (i, action, command) in want {
@@ -300,7 +298,8 @@ mod tests {
         for previous in [false, true] {
             for next in [false, true] {
                 for restart in [false, true] {
-                    let controls = Controls { previous, next, restart };
+                    let controls = Controls { previous, next, restart,
+                    };
                     for i in -1..=BTN_N {
                         assert_eq!(
                             controls.command(i),
@@ -311,7 +310,9 @@ mod tests {
                 }
             }
         }
-        assert_eq!(ControlSlot::Discs(Controls::NONE).command(BTN_PREVIOUS), None, "an absent disc");
+        assert_eq!(ControlSlot::Discs(Controls::NONE).command(BTN_N), None,
+            "past the last built-in disc"
+        );
     }
 
     /// Every enabled predicate, pinned (the design's "Enabled" column).
@@ -334,13 +335,16 @@ mod tests {
         }
 
         // seek needs a known duration, in either spelling
-        for by in [secs(-10), secs(30), SeekBy::Setting(SeekDir::Back), SeekBy::Setting(SeekDir::Forward)] {
+        for by in [secs(-10), secs(30), SeekBy::Setting(SeekDir::Back), SeekBy::Setting(SeekDir::Forward),
+        ] {
             assert!(!HudCommand::Seek(by).enabled(&idle), "{by:?} without a duration");
             assert!(HudCommand::Seek(by).enabled(&model(|m| m.duration_ns = 1)), "{by:?} with one");
         }
 
         // Previous is enabled by `previous || restart` (a restart target counts), Next by `next`
-        let controls = |previous, next, restart| model(|m| m.controls = Controls::for_item(true, previous, next, restart));
+        let controls = |previous, next, restart| {
+            model(|m| m.controls = Controls::for_item(true, previous, next, restart))
+        };
         assert!(!HudCommand::Previous.enabled(&idle) && !HudCommand::Next.enabled(&idle), "not an episode");
         assert!(!HudCommand::Previous.enabled(&controls(false, true, false)), "first episode, nothing to restart");
         assert!(HudCommand::Previous.enabled(&controls(false, true, true)), "a restart target counts");
@@ -356,8 +360,8 @@ mod tests {
         assert!(HudCommand::GoToDetail.enabled(&model(|m| m.detail = true)));
     }
 
-    /// A control's predicate is the one the row's focus stop uses: for classic's five discs,
-    /// `HudCommand::enabled` over the model sampled from `Controls` is `Controls::enabled`.
+    /// The built-in row has only its three always-available discs. Previous and Next remain
+    /// separately enabled by the sampled queue state for package-defined controls.
     #[test]
     fn a_discs_command_is_enabled_exactly_when_its_disc_has_a_stop() {
         for previous in [false, true] {
@@ -366,9 +370,8 @@ mod tests {
                     let controls = Controls::for_item(true, previous, next, restart);
                     let m = model(|m| m.controls = controls);
                     for i in 0..BTN_N {
-                        assert_eq!(
+                        assert!(
                             CLASSIC_COMMANDS[i as usize].enabled(&m),
-                            controls.enabled(i),
                             "{controls:?} control {i}"
                         );
                     }
@@ -435,7 +438,8 @@ mod tests {
             assert_eq!(control_elem(ordinal), ELEM_CONTROL_BASE + ordinal as u32);
             assert_eq!(row_index(control_elem(ordinal)), Some(ordinal));
         }
-        for other in [ELEM_SCRUB, ELEM_TAB_BASE, ELEM_TAB_BASE + 1, ELEM_FAILURE_END - 1, 40_000, 40_001] {
+        for other in [ELEM_SCRUB, ELEM_TAB_BASE, ELEM_TAB_BASE + 1, ELEM_FAILURE_END - 1, 40_000, 40_001,
+        ] {
             assert_eq!(row_index(other), None, "{other} is not a control");
         }
         assert!(ELEM_CONTROL_BASE > 40_000 && ELEM_CONTROL_BASE > ELEM_FAILURE_END);

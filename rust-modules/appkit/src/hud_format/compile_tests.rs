@@ -22,9 +22,9 @@ use plx_ui::{theme, Rect};
 use super::compile::*;
 use super::parse::{self, Package};
 use super::{check, Slot};
-use crate::player_hud::geometry::{HudGeometry, RowAnchor};
-use crate::player_hud::{classic, Controls};
 use crate::info_panel;
+use crate::player_hud::classic;
+use crate::player_hud::geometry::{HudGeometry, RowAnchor};
 
 const CLASSIC: &str = crate::hud_format::CLASSIC_PACKAGE;
 const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
@@ -49,7 +49,9 @@ fn labels() -> AppLabels {
         next_episode: msg::widgets_next_episode().to_owned(),
         watch_credits: msg::widgets_next_credits().to_owned(),
         skip_intro: msg::widgets_skip_intro().to_owned(),
+        watch_intro: msg::widgets_skip_intro_watch().to_owned(),
         skip_credits: msg::widgets_skip_credits().to_owned(),
+        skip_recap: msg::widgets_skip_recap().to_owned(),
         from_beginning: msg::widgets_info_from_beginning().to_owned(),
         go_to_show: msg::widgets_info_go_show().to_owned(),
         go_to_movie: msg::widgets_info_go_movie().to_owned(),
@@ -61,10 +63,9 @@ fn build(text: &str, measure: &dyn Measure) -> Compiled {
 }
 
 fn marker(kind: MarkerKind, final_seg: bool) -> Marker {
-    Marker { kind, start_ms: 1_000, end_ms: 2_000, final_seg }
+    Marker { kind, start_ms: 1_000, end_ms: 2_000, final_seg,
+    }
 }
-
-const PAIR: Controls = Controls { previous: true, next: true, restart: false };
 
 /// Every field of two geometries that differ, as text; empty when they are equal.
 fn diff(got: &HudGeometry, want: &HudGeometry) -> Vec<String> {
@@ -74,19 +75,27 @@ fn diff(got: &HudGeometry, want: &HudGeometry) -> Vec<String> {
             out.push(format!("{name}: compiled {g} != hand-written {w}"));
         }
     };
-    cmp("grab", format!("{:?}", got.grab), format!("{:?}", want.grab));
-    cmp("playbar", format!("{:?}", got.playbar), format!("{:?}", want.playbar));
+    cmp("grab", format!("{:?}", got.grab), format!("{:?}", want.grab),
+    );
+    cmp("playbar", format!("{:?}", got.playbar), format!("{:?}", want.playbar),
+    );
     cmp("row", format!("{:?}", got.row), format!("{:?}", want.row));
-    cmp("row_anchor", format!("{:?}", got.row_anchor), format!("{:?}", want.row_anchor));
+    cmp("row_anchor", format!("{:?}", got.row_anchor), format!("{:?}", want.row_anchor),
+    );
     for i in 0..got.items.len() {
-        cmp(&format!("items[{i}]"), format!("{:?}", got.items[i]), format!("{:?}", want.items[i]));
+        cmp(&format!("items[{i}]"), format!("{:?}", got.items[i]), format!("{:?}", want.items[i]),
+        );
     }
-    cmp("tab_row", format!("{:?}", got.tab_row), format!("{:?}", want.tab_row));
-    cmp("title", format!("{:?}", got.title), format!("{:?}", want.title));
+    cmp("tab_row", format!("{:?}", got.tab_row), format!("{:?}", want.tab_row),
+    );
+    cmp("title", format!("{:?}", got.title), format!("{:?}", want.title),
+    );
     for i in 0..got.tabs.len() {
-        cmp(&format!("tabs[{i}]"), format!("{:?}", got.tabs[i]), format!("{:?}", want.tabs[i]));
+        cmp(&format!("tabs[{i}]"), format!("{:?}", got.tabs[i]), format!("{:?}", want.tabs[i]),
+        );
     }
-    cmp("band", format!("{:?}", got.band), format!("{:?}", want.band));
+    cmp("band", format!("{:?}", got.band), format!("{:?}", want.band),
+    );
     out
 }
 
@@ -106,12 +115,14 @@ fn frozen_base() -> HudGeometry {
         grab: Rect::new(96.0, 810.0, 1728.0, 160.0),
         playbar: Rect::new(96.0, 882.0, 1728.0, 8.0),
         row: Rect::new(1592.0, 792.0, 232.0, 64.0),
-        row_anchor: RowAnchor { right: 1824.0, top: 792.0, h: 64.0 },
+        row_anchor: RowAnchor { right: 1824.0, top: 792.0, h: 64.0,
+        },
         items: [None; crate::player_hud::geometry::MAX_ROW_ITEMS],
         tab_row: Rect::new(96.0, 949.0, 0.0, 64.0),
         title: Rect::new(96.0, 768.0, 0.0, 0.0),
         tabs: [None; 2],
-        band: HudBand { ceil_y: 780.0, controls_top_y: 792.0, lift: 200.0, rise: [0.0; 3] },
+        band: HudBand { ceil_y: 780.0, controls_top_y: 792.0, lift: 200.0, rise: [0.0; 3],
+        },
         open_height: 0.0,
     }
 }
@@ -138,6 +149,17 @@ fn frozen_classic_geometry(key: &str) -> HudGeometry {
     g
 }
 
+/// Previous/Next used old slots 0 and 1 in the frozen geometry. The built-in row now starts at
+/// Subtitle, so move the three retained disc rects down to indices 0..3.
+fn reindex_builtin_discs(mut g: HudGeometry) -> HudGeometry {
+    let old = g.items;
+    g.items = [None; crate::player_hud::geometry::MAX_ROW_ITEMS];
+    g.items[0] = old[2];
+    g.items[1] = old[3];
+    g.items[2] = old[4];
+    g
+}
+
 #[test]
 fn compiled_classic_matches_the_hand_written_layout() {
     let measures: [(&str, &dyn Measure); 2] = [("FixtureMeasure", &FM), ("ShippedMeasure", &ShippedMeasure)];
@@ -156,10 +178,17 @@ fn compiled_classic_matches_the_hand_written_layout() {
                         (Slot::Skip, SkipKind::Credits),
                     ];
                     for (kind, skip) in slots {
-                        let key = StateKey { open: 0, slot: kind, chapters, episode, paused: false };
+                        let key = StateKey { open: 0, slot: kind, chapters, episode, paused: false,
+                        };
                         let got = compiled.geometry(key, skip).expect("the compact state exists");
                         compared += 1;
-                        let frozen = frozen_classic_geometry(&format!("{language:?}/{measure_name}/episode={episode}/chapters={chapters}/{kind:?}/{skip:?}"));
+                        // The old golden's episode form reserves two extra discs. The built-in
+                        // row no longer varies with queue neighbors, so both episode valuations
+                        // use the old movie geometry as the three-disc baseline.
+                        let mut frozen = frozen_classic_geometry(&format!("{language:?}/{measure_name}/episode=false/chapters={chapters}/{kind:?}/{skip:?}"));
+                        if kind == Slot::Discs {
+                            frozen = reindex_builtin_discs(frozen);
+                        }
                         for line in diff(&got, &frozen) {
                             mismatches.push(format!(
                                 "[{language:?} {measure_name} episode={episode} chapters={chapters} {kind:?}/{skip:?}] {line}"
@@ -204,7 +233,9 @@ fn compiled_classic_title_stops_where_the_hand_written_title_does() {
     for episode in [false, true] {
         for kind in [Slot::Discs, Slot::UpNext] {
             let state = compiled.lookup(0, kind, true, episode, false).unwrap();
-            let frozen = frozen_title_right(&format!("{kind:?}/episode={episode}"));
+            // The old episode title edge reserved space for Previous/Next; the built-in row no
+            // longer does, so both valuations use the old movie edge.
+            let frozen = frozen_title_right(&format!("{kind:?}/episode=false"));
             assert_eq!(title_right(state), Some(frozen), "{kind:?} episode={episode}");
         }
     }
@@ -260,7 +291,8 @@ fn compiled_classic_has_the_states_reach_counts() {
     // classic: 18 (see `reach_tests`). The reference places `previous` and `next`, so it has the movie form
     // and the episode form, 2 valuations x 6 states = 12 (the compact state under three slots, plus the
     // three non-empty subsets of its two inline sections). Minimal places neither: 1 x 3.
-    for (name, text, states) in [("classic", CLASSIC, 18), ("reference", REFERENCE, 12), ("minimal", MINIMAL, 3)] {
+    for (name, text, states) in [("classic", CLASSIC, 18), ("reference", REFERENCE, 12), ("minimal", MINIMAL, 3),
+    ] {
         assert_eq!(build(text, &FM).states().len(), states, "{name}");
         assert_eq!(check(&package(text)).states, states, "{name}");
     }
@@ -268,11 +300,14 @@ fn compiled_classic_has_the_states_reach_counts() {
 
 #[test]
 fn every_fixture_compiles_in_every_state_inside_the_canvas() {
-    let inside = |r: Rect| r.x >= -0.001 && r.y >= -0.001 && r.x + r.w <= SCR_W + 0.001 && r.y + r.h <= SCR_H + 0.001;
+    let inside = |r: Rect| {
+        r.x >= -0.001 && r.y >= -0.001 && r.x + r.w <= SCR_W + 0.001 && r.y + r.h <= SCR_H + 0.001
+    };
     for language in SHIPPED {
         let _language = language_on_this_thread_for_test(language);
         for (name, text) in
-            [("classic", CLASSIC), ("reference", REFERENCE), ("minimal", MINIMAL), ("hero-center", HERO), ("tabs", TABS), ("palette", PALETTE)]
+            [("classic", CLASSIC), ("reference", REFERENCE), ("minimal", MINIMAL), ("hero-center", HERO), ("tabs", TABS), ("palette", PALETTE),
+        ]
         {
             for measure in [&FM as &dyn Measure, &ShippedMeasure] {
                 let pkg = package(text);
@@ -309,7 +344,8 @@ fn state_lookup_ignores_the_content_a_package_does_not_name() {
 
 #[test]
 fn compiled_classic_info_section_matches_the_info_panel() {
-    for (name, measure) in [("fixture", &FM as &dyn Measure), ("shipped", &ShippedMeasure)] {
+    for (name, measure) in [("fixture", &FM as &dyn Measure), ("shipped", &ShippedMeasure),
+    ] {
         let compiled = build(CLASSIC, measure);
         let state = compiled.lookup(OPEN_INFO, Slot::Discs, true, true, false).unwrap();
         let (card, pad) = info_panel::card_geometry();
@@ -334,7 +370,8 @@ fn compiled_classic_info_section_matches_the_info_panel() {
 /// The hand-written strip's layout, frozen (`ChaptersState::draw` at 6d4aded01: `CH_W` 288, `CH_H` 162,
 /// `CH_GAP` 24, `CH_TOP` 684, `MARGIN_X` 96, the name `CH_NAME_DROP` 26 and the time `CH_TIME_DROP` 34
 /// under the one before it): the first card, the pitch, and the name's and time's tops.
-const STRIP_CARD: Rect = Rect { x: 96.0, y: 684.0, w: 288.0, h: 162.0 };
+const STRIP_CARD: Rect = Rect { x: 96.0, y: 684.0, w: 288.0, h: 162.0,
+};
 const STRIP_PITCH: f32 = 312.0;
 const STRIP_NAME_Y: f32 = 872.0;
 const STRIP_TIME_Y: f32 = 906.0;
@@ -347,7 +384,8 @@ fn compiled_classic_chapters_section_matches_the_chapters_panel() {
     // face's own on the television), so no gap can land the strip on 684 for all of them. The fixture
     // gives `item.start` the smallest leading (1 px: the stand-in for the zero-height origin the panel's
     // `label_ys` used) and the tabs a gap of 43 less that, so the top is the same number on every measure.
-    for (name, measure) in [("fixture", &FM as &dyn Measure), ("shipped", &ShippedMeasure)] {
+    for (name, measure) in [("fixture", &FM as &dyn Measure), ("shipped", &ShippedMeasure),
+    ] {
         let compiled = build(CLASSIC, measure);
         let state = compiled.lookup(OPEN_CHAPTERS, Slot::Discs, true, true, false).unwrap();
         let (card, pitch, rect) = state
@@ -367,7 +405,8 @@ fn compiled_classic_chapters_section_matches_the_chapters_panel() {
     }
     let compiled = build(CLASSIC, &FM);
     let state = compiled.lookup(OPEN_CHAPTERS, Slot::Discs, true, true, false).unwrap();
-    let card = state.ops.iter().find_map(|op| match op { DrawOp::Strip { card, .. } => Some(*card), _ => None }).expect("the strip");
+    let card = state.ops.iter().find_map(|op| match op { DrawOp::Strip { card, .. } => Some(*card), _ => None,
+        }).expect("the strip");
     // Whatever the strip's top, the card is the same column: the name 26 px and the timestamp 34 px
     // under the one before it.
     let template = state
@@ -420,32 +459,58 @@ fn classic_compact_cost_is_pinned() {
     let c = &state.cost;
     assert_eq!(
         (c.draw_ops, c.glyph_runs, c.texture_bytes, c.blended_px),
-        (11, 6, 81_920, 953_088),
-        "classic's compact cost: the scrim, the two title lines, five discs, the bar and two tabs"
+        (9, 6, 49_152, 944_896),
+        "classic's compact cost: the scrim, the two title lines, three discs, the bar and two tabs"
     );
-    let top: Vec<(&str, u64)> = state.top_contributors().iter().map(|t| (kind_of(&state.ops[t.op]), t.blended_px)).collect();
-    assert_eq!(top, [("scrim", 902_400), ("playbar", 13_824), ("control", 9_984)], "the three largest contributors");
+    let top: Vec<(&str, u64)> = state
+        .top_contributors()
+        .iter()
+        .map(|t| (kind_of(&state.ops[t.op]), t.blended_px))
+        .collect();
+    assert_eq!(
+        top,
+        [("scrim", 902_400), ("playbar", 13_824), ("control", 9_984)],
+        "the three largest contributors"
+    );
     // the report is a sum of its parts, and deterministic
-    assert_eq!(c.draw_ops, state.ops.len(), "no strip or Up Next offer in the compact Discs state");
-    assert_eq!(build(CLASSIC, &FM).lookup(0, Slot::Discs, true, true, false).unwrap().cost, *c);
+    assert_eq!(
+        c.draw_ops,
+        state.ops.len(),
+        "no strip or Up Next offer in the compact Discs state"
+    );
+    assert_eq!(
+        build(CLASSIC, &FM)
+            .lookup(0, Slot::Discs, true, true, false)
+            .unwrap()
+            .cost,
+        *c
+    );
 }
 
 #[test]
 fn classic_cost_of_the_chapters_strip_counts_its_visible_cards() {
     let compiled = build(CLASSIC, &FM);
-    let state = compiled.lookup(OPEN_CHAPTERS, Slot::Discs, true, true, false).unwrap();
+    let state = compiled
+        .lookup(OPEN_CHAPTERS, Slot::Discs, true, true, false)
+        .unwrap();
     let (visible, template) = state
         .ops
         .iter()
         .find_map(|op| match op {
-            DrawOp::Strip { visible, template, .. } => Some((*visible, template.len())),
+            DrawOp::Strip {
+                visible, template, ..
+            } => Some((*visible, template.len())),
             _ => None,
         })
         .expect("the strip");
     // 1728 / (288 + 24) = 5.5: five whole cards and a sixth that peeks in
     assert_eq!(visible, 6);
     assert_eq!(template, 3, "the card's art and its two text lines");
-    assert_eq!(state.cost.texture_bytes, 6 * 4 * 288 * 162, "one 288 x 162 texture per visible card");
+    assert_eq!(
+        state.cost.texture_bytes,
+        6 * 4 * 288 * 162,
+        "one 288 x 162 texture per visible card"
+    );
 }
 
 #[test]
@@ -454,7 +519,10 @@ fn defaults_the_compiler_reads_parse() {
     for (node, key) in [("grab", "above"), ("grab", "below"), ("text", "alpha")] {
         let text = schema::field(schema::node(node).expect("node"), key).and_then(|f| f.default);
         let text = text.unwrap_or_else(|| panic!("{node}.{key} has a default"));
-        assert!(text.parse::<f32>().is_ok(), "{node}.{key} default `{text}` is a number");
+        assert!(
+            text.parse::<f32>().is_ok(),
+            "{node}.{key} default `{text}` is a number"
+        );
     }
 }
 
@@ -479,7 +547,10 @@ fn a_live_ink_carries_both_values_and_the_frame_picks() {
     assert_eq!(playing, ink.base);
     assert_ne!(playing, paused, "sand playing, ember paused");
     // a negated term holds when its name does not
-    let negated = Live { base: 1, cases: vec![(super::parse::CondTerm { negated: true, name: "transport.paused".into() }, 2)] };
+    let negated = Live { base: 1, cases: vec![(super::parse::CondTerm { negated: true, name: "transport.paused".into(),
+            }, 2,
+        )],
+    };
     assert_eq!((negated.at(|_| false), negated.at(|_| true)), (2, 1));
 }
 
@@ -550,7 +621,7 @@ fn the_replaced_segments_leave_the_frame_but_not_the_layout() {
     let discs = compiled.lookup(0, Slot::Discs, true, true, false).unwrap();
     let up_next = compiled.lookup(0, Slot::UpNext, true, true, false).unwrap();
     let ids = |s: &CompiledState| s.controls.iter().map(|c| c.id.clone()).collect::<Vec<_>>();
-    assert_eq!(ids(discs), ["prev", "next", "subs", "audio", "more", "tab_info", "tab_chapters"]);
+    assert_eq!(ids(discs), ["subs", "audio", "more", "tab_info", "tab_chapters"]);
     assert_eq!(ids(up_next), ["tab_info", "tab_chapters"], "the discs are replaced, the tabs stay");
     assert_eq!(discs.standin, up_next.standin, "the offer lands in the same place in every slot's state");
     assert_eq!(discs.bands, up_next.bands, "the transport does not jump when the offer appears");
@@ -562,10 +633,14 @@ fn a_pill_is_as_wide_as_its_label() {
     wide.tab_info = "An extraordinarily long tab label".to_owned();
     let narrow = build(CLASSIC, &FM);
     let widened = compile(&package(CLASSIC), &FM, CompileCtx { labels: wide });
-    let rect = |c: &Compiled| c.lookup(0, Slot::Discs, true, true, false).unwrap().control("tab_info").unwrap().rect;
+    let rect = |c: &Compiled| {
+        c.lookup(0, Slot::Discs, true, true, false).unwrap().control("tab_info").unwrap().rect
+    };
     assert!(rect(&widened).w > rect(&narrow).w, "a different language is a different compile");
     // and the chapters tab, packed after it, moved right by exactly the difference
-    let next = |c: &Compiled| c.lookup(0, Slot::Discs, true, true, false).unwrap().control("tab_chapters").unwrap().rect.x;
+    let next = |c: &Compiled| {
+        c.lookup(0, Slot::Discs, true, true, false).unwrap().control("tab_chapters").unwrap().rect.x
+    };
     assert_eq!(next(&widened) - next(&narrow), rect(&widened).w - rect(&narrow).w);
 }
 
@@ -598,7 +673,8 @@ fn compiling_twice_is_the_same_value() {
 
 #[test]
 fn the_cache_key_is_a_plain_value() {
-    let key = CompileKey { sha256: [7; 32], app_version: "0.9.0".into(), lang: "en".into() };
+    let key = CompileKey { sha256: [7; 32], app_version: "0.9.0".into(), lang: "en".into(),
+    };
     let mut seen = std::collections::HashSet::new();
     assert!(seen.insert(key.clone()));
     assert!(!seen.insert(key.clone()));
@@ -664,7 +740,11 @@ fn an_item_gated_cell_under_the_art_is_present_per_card_too() {
         .find(|c| matches!(&c.op, DrawOp::Text { bind, .. } if bind == "item.start"))
         .expect("the timestamp");
     // every term must hold: current AND not focused
-    let drawn = |current: bool, focused: bool| start.present.at(|name| (name == "item.is_current" && current) || (name == "item.focused" && focused));
+    let drawn = |current: bool, focused: bool| {
+        start.present.at(|name| {
+            (name == "item.is_current" && current) || (name == "item.focused" && focused)
+        })
+    };
     assert!(drawn(true, false));
     assert!(!drawn(true, true) && !drawn(false, false) && !drawn(false, true));
     // and its space stays reserved: the strip is as tall as the unconditional one
@@ -680,7 +760,8 @@ fn an_item_gated_cell_under_the_art_is_present_per_card_too() {
 
 #[test]
 fn a_band_that_asks_for_paused_is_present_exactly_in_the_paused_states() {
-    let text = edit(REFERENCE, r#"{ "id": "title", "cells": ["#, r#"{ "id": "title", "when": "transport.paused", "cells": ["#);
+    let text = edit(REFERENCE, r#"{ "id": "title", "cells": ["#, r#"{ "id": "title", "when": "transport.paused", "cells": ["#,
+    );
     let compiled = build(&text, &FM);
     // paused is an axis of the compile, not of reach's walk (R1 counts it as holding either way)
     assert_eq!(compiled.states().len(), 2 * check(&package(&text)).states, "every state, paused and playing");
@@ -725,7 +806,8 @@ fn a_gap_keyed_on_paused_moves_the_geometry_only_while_paused() {
 
 #[test]
 fn classic_names_no_paused_geometry_so_paused_is_no_axis_of_it() {
-    for (name, text) in [("classic", CLASSIC), ("reference", REFERENCE), ("palette", PALETTE), ("hero-center", HERO)] {
+    for (name, text) in [("classic", CLASSIC), ("reference", REFERENCE), ("palette", PALETTE), ("hero-center", HERO),
+    ] {
         let compiled = build(text, &FM);
         assert_eq!(compiled.states().len(), check(&package(text)).states, "{name}: the state count is reach's");
         assert!(compiled.states().iter().all(|s| !s.key.paused), "{name}");
@@ -749,7 +831,9 @@ fn a_number_or_gap_keyed_on_an_item_term_is_a_finding_not_a_silent_default() {
     assert!(finding.message.contains("below_gap") && finding.message.contains("item.focused"), "{}", finding.message);
     // the layout is the base's: the same as the unedited reference
     let plain = build(REFERENCE, &FM);
-    let state = |c: &Compiled| c.lookup(OPEN_CHAPTERS, Slot::Discs, true, true, false).unwrap().clone();
+    let state = |c: &Compiled| {
+        c.lookup(OPEN_CHAPTERS, Slot::Discs, true, true, false).unwrap().clone()
+    };
     assert_eq!(state(&compiled).ops, state(&plain).ops);
     // inks and bold keyed on an item term are fine, they are `Live`: classic and the reference are clean
     assert!(plain.findings().is_empty() && build(CLASSIC, &FM).findings().is_empty());
@@ -795,7 +879,8 @@ fn an_end_aligned_offer_lands_on_the_end_of_what_it_replaces_not_the_bands() {
 
 #[test]
 fn the_band_is_one_value_in_the_geometry_and_in_the_compiled_package() {
-    for (name, text) in [("classic", CLASSIC), ("reference", REFERENCE), ("minimal", MINIMAL), ("hero-center", HERO), ("tabs", TABS), ("palette", PALETTE)] {
+    for (name, text) in [("classic", CLASSIC), ("reference", REFERENCE), ("minimal", MINIMAL), ("hero-center", HERO), ("tabs", TABS), ("palette", PALETTE),
+    ] {
         let compiled = build(text, &FM);
         for s in compiled.states() {
             for skip in [SkipKind::Intro, SkipKind::Credits] {
@@ -836,11 +921,12 @@ fn the_references_movie_form_drops_previous_and_next_and_its_episode_form_keeps_
 fn a_row_wider_than_the_report_keeps_every_control() {
     // The reference's row has nine controls and R1 guarantees More. The compiler drops none, and since PR7
     // the report (`HudGeometry::items`, `MAX_ROW_ITEMS` wide) holds them all; before it held the first
-    // `BTN_N` = 5, classic's row.
+    // `BTN_N` = 3, the built-in row.
     let compiled = build(REFERENCE, &FM);
     let state = compiled.lookup(0, Slot::Discs, true, true, false).unwrap();
     let ids: Vec<&str> = state.controls.iter().map(|c| c.id.as_str()).collect();
-    for id in ["subs", "back", "prev", "play", "next", "fwd", "chapters", "info", "more"] {
+    for id in ["subs", "back", "prev", "play", "next", "fwd", "chapters", "info", "more",
+    ] {
         assert!(ids.contains(&id), "{id} is in the compiled controls: {ids:?}");
     }
     let nine: Vec<_> = state.row_ids.iter().flatten().collect();
@@ -942,14 +1028,16 @@ fn the_geometry_reports_every_item_of_the_references_row() {
 // ---------------------------------------------------------------------------------------------------
 
 fn ctl<'a>(state: &'a CompiledState, id: &str) -> &'a ControlRect {
-    state.control(id).unwrap_or_else(|| panic!("no control `{id}`"))
+    state
+        .control(id)
+        .unwrap_or_else(|| panic!("no control `{id}`"))
 }
 
 /// **A control's command comes out typed, with its parameters**, ready for the app's one performer: a
 /// literal `seek by` keeps its sign, `open_tracks` its tab, `toggle_section` its section.
 #[test]
 fn a_control_carries_the_command_with_its_parameters() {
-    use crate::player_hud::command::{HudCommand, MorePage, SeekBy, Section, TrackTab};
+    use crate::player_hud::command::{HudCommand, MorePage, Section, SeekBy, TrackTab};
     use std::num::NonZeroI32;
     let c = build(REFERENCE, &FM);
     let state = c.lookup(0, Slot::Discs, true, true, false).unwrap();
@@ -959,10 +1047,22 @@ fn a_control_carries_the_command_with_its_parameters() {
     assert_eq!(ctl(state, "fwd").act, Some(secs(30)));
     assert_eq!(ctl(state, "prev").act, Some(HudCommand::Previous));
     assert_eq!(ctl(state, "next").act, Some(HudCommand::Next));
-    assert_eq!(ctl(state, "subs").act, Some(HudCommand::OpenTracks(TrackTab::Subtitles)));
-    assert_eq!(ctl(state, "more").act, Some(HudCommand::OpenMore(MorePage::Root)));
-    assert_eq!(ctl(state, "chapters").act, Some(HudCommand::ToggleSection(Section::Chapters)));
-    assert_eq!(ctl(state, "info").act, Some(HudCommand::ToggleSection(Section::Info)));
+    assert_eq!(
+        ctl(state, "subs").act,
+        Some(HudCommand::OpenTracks(TrackTab::Subtitles))
+    );
+    assert_eq!(
+        ctl(state, "more").act,
+        Some(HudCommand::OpenMore(MorePage::Root))
+    );
+    assert_eq!(
+        ctl(state, "chapters").act,
+        Some(HudCommand::ToggleSection(Section::Chapters))
+    );
+    assert_eq!(
+        ctl(state, "info").act,
+        Some(HudCommand::ToggleSection(Section::Info))
+    );
 }
 
 /// **A control carries its face**: a declared asset, a built-in icon, or the per-state map, and classic's
@@ -1039,7 +1139,8 @@ fn the_playbars_clocks_stand_where_the_playbar_draws_them_as_wide_as_the_widest_
         let size = theme::size::CAPTION;
         let elapsed_w = widest_printed(measure, size, super::clocks::ELAPSED_BOLD, false);
         let remaining_w = widest_printed(measure, size, super::clocks::REMAINING_BOLD, true);
-        for (name, text, mode) in [("reference", REFERENCE, ClockMode::Ends), ("classic", CLASSIC, ClockMode::FollowHead)] {
+        for (name, text, mode) in [("reference", REFERENCE, ClockMode::Ends), ("classic", CLASSIC, ClockMode::FollowHead),
+        ] {
             let c = build(text, measure);
             let (track, clocks, got_mode, got_size) = bar_of(compact(&c, Slot::Discs));
             let at = format!("{name} under {measure_name}");
@@ -1119,8 +1220,10 @@ fn no_band_under_the_bar_starts_on_the_clocks_line() {
             assert!(classic::clock_line_h(rung) >= measure.line_h(rung), "the reserved line at {rung} px is shorter than the font's");
         }
     }
-    let fixtures = [("classic", CLASSIC), ("reference", REFERENCE), ("minimal", MINIMAL), ("hero-center", HERO), ("tabs", TABS), ("palette", PALETTE)];
-    for (measure_name, measure) in [("FixtureMeasure", &FM as &dyn Measure), ("ShippedMeasure", &ShippedMeasure)] {
+    let fixtures = [("classic", CLASSIC), ("reference", REFERENCE), ("minimal", MINIMAL), ("hero-center", HERO), ("tabs", TABS), ("palette", PALETTE),
+    ];
+    for (measure_name, measure) in [("FixtureMeasure", &FM as &dyn Measure), ("ShippedMeasure", &ShippedMeasure),
+    ] {
         let mut checked = std::collections::BTreeMap::new();
         for (name, text) in fixtures {
             let c = build(text, measure);
@@ -1154,7 +1257,8 @@ fn no_band_under_the_bar_starts_on_the_clocks_line() {
 /// literal in the fixture is that arithmetic, spelt here from the constants.
 #[test]
 fn classics_tabs_gap_is_the_distance_left_after_the_clocks_line() {
-    let key = StateKey { open: 0, slot: Slot::Discs, chapters: false, episode: false, paused: false };
+    let key = StateKey { open: 0, slot: Slot::Discs, chapters: false, episode: false, paused: false,
+    };
     let geometry = build(CLASSIC, &FM).geometry(key, SkipKind::Intro).expect("the compact state exists");
     let cell_foot = geometry.playbar.y + classic::CLOCK_TOP + classic::clock_line_h(theme::size::CAPTION);
     let gap = geometry.tab_row.y - cell_foot;
@@ -1182,7 +1286,8 @@ fn a_compile_carries_the_folds_check_reports() {
         [fold("from_beginning", None), fold("go_to_detail", None)],
         "the reference folds its two Info actions"
     );
-    for (name, text) in [("classic", CLASSIC), ("reference", REFERENCE), ("minimal", MINIMAL), ("hero", HERO), ("tabs", TABS), ("palette", PALETTE)] {
+    for (name, text) in [("classic", CLASSIC), ("reference", REFERENCE), ("minimal", MINIMAL), ("hero", HERO), ("tabs", TABS), ("palette", PALETTE),
+    ] {
         assert_eq!(build(text, &FM).folds(), check(&package(text)).folds, "{name}");
     }
     assert_eq!(Compiled::default().folds(), [], "a compile with no state folds nothing");
@@ -1215,6 +1320,7 @@ fn a_section_only_a_fold_row_opens_is_compiled() {
     assert_eq!(folded, [Some("chapters"), Some("info")]);
     assert_eq!(open_states(&without), [0, OPEN_CHAPTERS, OPEN_INFO, OPEN_CHAPTERS | OPEN_INFO], "the fold rows reach them too");
     // modal: one at a time
-    let modal = build(&bare.replace("\"sections\": \"inline\"", "\"sections\": \"modal\""), &FM);
+    let modal = build(&bare.replace("\"sections\": \"inline\"", "\"sections\": \"modal\""), &FM,
+    );
     assert_eq!(open_states(&modal), [0, OPEN_CHAPTERS, OPEN_INFO]);
 }

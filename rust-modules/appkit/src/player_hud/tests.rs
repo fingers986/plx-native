@@ -38,11 +38,11 @@ fn chapter_panel_retains_selection_without_borrowing_hud_focus() {
     assert_eq!(super::classic::hud_tab_state(false, GROUP_TABS, 0, 0), (false, true));
 }
 
-use super::*;
-use plx_ui::widgets::{StatusKind, StatusOverlay};
 use super::classic::*;
 use super::geometry::*;
 use super::motion::*;
+use super::*;
+use plx_ui::widgets::{StatusKind, StatusOverlay};
 
 /// The title at the default look (the cell classic and the trailer draw it in), `right` the cell's right edge.
 fn draw_player_title(
@@ -54,7 +54,8 @@ fn draw_player_title(
     paused: bool,
     clock: &plx_ui::marquee::Clock,
 ) {
-    draw_player_title_at(p, TitleLook::default(), kicker, title, right, measure, paused, clock);
+    draw_player_title_at(p, TitleLook::default(), kicker, title, right, measure, paused, clock,
+    );
 }
 
 /// **The right edge of the title's cell in the compiled classic** for a frame's slot: where the compile's
@@ -85,9 +86,12 @@ fn long_hud_titles_fit_before_every_control_slot() {
         let compiled = super::loaded::load_classic("test", plx_platform::i18n::current(), measure).compiled;
         let slots = [
             ControlSlot::Discs(Controls::NONE),
-            ControlSlot::Discs(Controls { previous: true, next: true, restart: true }),
-            slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown),
-            slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown),
+            ControlSlot::Discs(Controls { previous: true, next: true, restart: true,
+            }),
+            slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown,
+            ),
+            slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown,
+            ),
         ];
         for slot in slots {
             let right = compiled_title_right(&compiled, slot);
@@ -97,13 +101,16 @@ fn long_hud_titles_fit_before_every_control_slot() {
                 for _ in 0..30 {
                     row.pop.step(Some(focused as usize), 1.0 / 60.0);
                     for i in 0..slot.items() {
-                        let Some(rect) = items[i as usize] else { continue };
+                        let Some(rect) = items[i as usize] else { continue;
+                        };
                         assert!(right + theme::space::MD <= rect.scaled(row.scale(i)).x + 0.001);
                     }
-                    for kicker in [Kicker::Episode(long.as_ptr()), Kicker::Context(long.as_ptr())] {
+                    for kicker in [Kicker::Episode(long.as_ptr()), Kicker::Context(long.as_ptr()),
+                    ] {
                         let runs = plx_ui::draw_census::capture_runs(|| {
                             draw_player_title(Painter::recording(), kicker, long.as_ptr(),
-                                right, measure, false, &clock);
+                                right, measure, false, &clock,
+                            );
                         });
                         assert_eq!(runs.len(), 2);
                         for run in runs {
@@ -122,14 +129,17 @@ fn long_hud_titles_fit_before_every_control_slot() {
 #[test]
 fn short_hud_titles_keep_the_original_position_typography_and_ink() {
     let clock = plx_ui::marquee::Clock::new();
-    for kicker in [Kicker::Episode(c"S1 · E1 · Pilot".as_ptr()), Kicker::Context(c"Trailer".as_ptr())] {
+    for kicker in [Kicker::Episode(c"S1 · E1 · Pilot".as_ptr()), Kicker::Context(c"Trailer".as_ptr()),
+    ] {
         let original = plx_ui::draw_census::capture_runs(|| {
             draw_title(Painter::recording(), kicker, c"Short title".as_ptr());
         });
         for paused in [false, true] {
             let bounded = plx_ui::draw_census::capture_runs(|| {
                 draw_player_title(Painter::recording(), kicker, c"Short title".as_ptr(),
-                    compiled_title_right(&super::loaded::classic_for_test(), ControlSlot::Discs(Controls::NONE)), &FM, paused, &clock);
+                    compiled_title_right(&super::loaded::classic_for_test(), ControlSlot::Discs(Controls::NONE),
+                    ), &FM, paused, &clock,
+                );
             });
             assert_eq!(original, bounded);
         }
@@ -140,11 +150,15 @@ fn short_hud_titles_keep_the_original_position_typography_and_ink() {
 fn paused_title_reveals_once_and_resume_restores_ellipsis() {
     let clock = plx_ui::marquee::Clock::new();
     let long = c"A very long movie title that should slowly reveal its final words after pausing";
-    let right = compiled_title_right(&super::loaded::classic_for_test(), ControlSlot::Discs(Controls::NONE));
-    let paint = |paused| plx_ui::draw_census::capture_runs(|| {
+    let right = compiled_title_right(&super::loaded::classic_for_test(), ControlSlot::Discs(Controls::NONE),
+    );
+    let paint = |paused| {
+        plx_ui::draw_census::capture_runs(|| {
         draw_player_title(Painter::recording(), Kicker::Context(c"Movie".as_ptr()),
-            long.as_ptr(), right, &FM, paused, &clock);
-    });
+            long.as_ptr(), right, &FM, paused, &clock,
+            );
+        })
+    };
     let start = paint(true);
     assert!(start[1].text.ends_with('…'));
     plx_machine::idle::frame_begin(2.0);
@@ -165,13 +179,17 @@ fn a_paused_right_to_left_title_reveals_its_end_to_the_left() {
     let _g = plx_base::testlock::serial();
     let clock = plx_ui::marquee::Clock::new();
     let long = c"فيلم طويل جدا يجب أن يكشف كلماته الأخيرة ببطء بعد الإيقاف المؤقت للتشغيل";
-    let right = compiled_title_right(&super::loaded::classic_for_test(), ControlSlot::Discs(Controls::NONE));
+    let right = compiled_title_right(&super::loaded::classic_for_test(), ControlSlot::Discs(Controls::NONE),
+    );
     let (full, window) = (FM.width(long, HUD_TITLE_SZ, true), right - SB_X);
     assert!(full > window, "the fixture title overflows");
-    let paint = |paused| plx_ui::draw_census::capture_runs(|| {
+    let paint = |paused| {
+        plx_ui::draw_census::capture_runs(|| {
         draw_player_title(Painter::recording(), Kicker::Context(c"Movie".as_ptr()),
-            long.as_ptr(), right, &FM, paused, &clock);
-    });
+            long.as_ptr(), right, &FM, paused, &clock,
+            );
+        })
+    };
     let _ = paint(true);
     plx_machine::idle::frame_begin(2.0);
     let moving = paint(true);
@@ -205,8 +223,13 @@ fn the_overscan_audit_grades_the_compiled_classic_rects() {
             ("player title / elapsed clock", g.title),
         ]
     );
-    assert!(g.items[BTN_SUBTITLES as usize].is_some(), "an enabled disc has a rect");
-    assert!(g.items[BTN_PREVIOUS as usize].is_none(), "an absent disc has none");
+    assert_eq!(
+        BTN_N, 3,
+        "the built-in row has only Subtitle, Audio and More"
+    );
+    assert!(g.items[..BTN_N as usize].iter().all(Option::is_some),
+        "all built-in discs have rects"
+    );
     // the bar maps an x to a fraction of ITS width, clamped
     assert_eq!(g.scrub_frac(g.playbar.x - 50.0), 0.0);
     assert_eq!(g.scrub_frac(g.playbar.x + g.playbar.w * 0.5), 0.5);
@@ -271,9 +294,9 @@ fn the_transport_clocks_are_rasterised_before_the_draw_and_one_second_ahead() {
     plx_gfx::text::reset_prewarm_for_test();
 }
 
+use crate::skip_pill::SkipAction;
 use plx_data::metadata::{Marker, MarkerKind};
 use plx_media::route::NextEpisodeMode;
-use crate::skip_pill::SkipAction;
 
 /// **The image-subtitle display set is a render, and it says how much of one** (§8.3 rule (c)):
 /// one texture per rect, the SOURCE pixels behind them, and nothing left claimed once the set
@@ -318,7 +341,8 @@ const DUR: i64 = 1_000;
 
 /// The classic discs' rects, as the compile reports them (what the page places and hit-tests from).
 fn disc_rects() -> [Option<Rect>; MAX_ROW_ITEMS] {
-    geometry(&super::loaded::classic_for_test(), 0, ControlSlot::Discs(Controls::NONE), false, false).items
+    geometry(&super::loaded::classic_for_test(), 0, ControlSlot::Discs(Controls::NONE), false, false,
+    ).items
 }
 
 /// **Q5: the discs stand `CONTROL_GAP` (20) apart, not the old 22**, and the row's width is the three discs
@@ -337,11 +361,13 @@ fn the_control_row_gap_is_the_shared_control_gap() {
 #[test]
 fn the_bottom_tabs_stand_one_sm_apart_and_are_drawn_where_they_are_hit() {
     let compiled = super::loaded::classic_for_test();
-    let two = geometry(&compiled, 0, ControlSlot::Discs(Controls::NONE), true, false).tabs;
+    let two = geometry(&compiled, 0, ControlSlot::Discs(Controls::NONE), true, false,
+    ).tabs;
     let (info, chapters) = (two[0].expect("Info"), two[1].expect("Chapters"));
     assert_eq!(info.x, SB_X);
     assert_eq!(chapters.x - (info.x + info.w), theme::space::SM);
-    let one = geometry(&compiled, 0, ControlSlot::Discs(Controls::NONE), false, false).tabs;
+    let one = geometry(&compiled, 0, ControlSlot::Discs(Controls::NONE), false, false,
+    ).tabs;
     assert_eq!(one[0], Some(info), "with no chapters there is one pill, at the same place");
     assert_eq!(one[1], None, "…and no second");
 }
@@ -392,7 +418,8 @@ fn the_control_row_picks_the_most_specific_occupant() {
 
     // an intro is always Skip, successor or not — "what's next" is an end-of-episode idea
     for has_next in [false, true] {
-        let slot = slot_for(Some(marker(MarkerKind::Intro, false)), has_next, NextEpisodeMode::Countdown);
+        let slot = slot_for(Some(marker(MarkerKind::Intro, false)), has_next, NextEpisodeMode::Countdown,
+        );
         assert!(matches!(slot, ControlSlot::Skip(p) if p.kind == MarkerKind::Intro));
         assert_eq!(slot.items(), 1, "a Skip pill is the row's only item");
         assert_eq!(
@@ -403,7 +430,8 @@ fn the_control_row_picks_the_most_specific_occupant() {
     }
 
     // credits WITH somewhere to go → Up Next outranks Skip Credits…
-    let up = slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown);
+    let up = slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown,
+    );
     assert!(matches!(up, ControlSlot::UpNext(_)));
     // …and it is the ONE stand-in with a pair, whose primary is the RIGHT-hand item. Asserted
     // together because they are one fact: an `items()` of 2 with a `primary_btn()` of 0 would
@@ -424,7 +452,8 @@ fn the_control_row_picks_the_most_specific_occupant() {
 /// plain Skip Credits pill that seeks past it, not a countdown into the next episode.
 #[test]
 fn up_next_needs_a_final_credits_marker() {
-    let mid = slot_for(Some(marker(MarkerKind::Credits, false)), true, NextEpisodeMode::Countdown);
+    let mid = slot_for(Some(marker(MarkerKind::Credits, false)), true, NextEpisodeMode::Countdown,
+    );
     assert!(
         matches!(mid, ControlSlot::Skip(p) if p.kind == MarkerKind::Credits
             && p.action == SkipAction::Seek(2_000 * 1_000_000)),
@@ -462,20 +491,23 @@ fn after_credits_and_off_offer_nothing_during_the_credits() {
 /// seeks — seeking to its stated end would race the decoder against its own last frames.
 #[test]
 fn only_a_final_credits_segment_finishes_the_item() {
-    let fin = match slot_for(Some(marker(MarkerKind::Credits, true)), false, NextEpisodeMode::Countdown) {
+    let fin = match slot_for(Some(marker(MarkerKind::Credits, true)), false, NextEpisodeMode::Countdown,
+    ) {
         ControlSlot::Skip(p) => p.action,
         _ => unreachable!(),
     };
     assert_eq!(fin, SkipAction::Finish);
 
     // a mid-item credits segment (a post-credits scene follows) seeks past it and plays on
-    let mid = match slot_for(Some(marker(MarkerKind::Credits, false)), false, NextEpisodeMode::Countdown) {
+    let mid = match slot_for(Some(marker(MarkerKind::Credits, false)), false, NextEpisodeMode::Countdown,
+    ) {
         ControlSlot::Skip(p) => p.action,
         _ => unreachable!(),
     };
     assert_eq!(mid, SkipAction::Seek(2_000 * 1_000_000));
     // …as does an intro, `final` flag or not (PMS only sets it on credits)
-    let intro = match slot_for(Some(marker(MarkerKind::Intro, true)), false, NextEpisodeMode::Countdown) {
+    let intro = match slot_for(Some(marker(MarkerKind::Intro, true)), false, NextEpisodeMode::Countdown,
+    ) {
         ControlSlot::Skip(p) => p.action,
         _ => unreachable!(),
     };
@@ -490,7 +522,8 @@ fn only_a_final_credits_segment_finishes_the_item() {
 #[test]
 fn only_a_vanishing_standin_takes_the_focus_ring_back() {
     let discs = slot_for(None, false, NextEpisodeMode::Countdown);
-    let skip = slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown);
+    let skip = slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown,
+    );
 
     // the edge it exists for: the pill was there last frame, the discs are back, ring on the row
     assert!(standin_left_the_ring(true, discs, true));
@@ -828,8 +861,10 @@ fn a_dead_producer_reads_out_whether_or_not_a_picture_was_up() {
 }
 
 fn readout_of(e: &plx_media::player::ErrorShape) -> FailureReadout {
-    let cx = plx_media::player::FailureContext { forced: true, can_retry: true, repair_idle: true };
-    FailureReadout::of(e, plx_media::player::failure_actions(e.kind, cx), "0.7.0 · webOS 4.5 · code".into())
+    let cx = plx_media::player::FailureContext { forced: true, can_retry: true, repair_idle: true,
+    };
+    FailureReadout::of(e, plx_media::player::failure_actions(e.kind, cx), "0.7.0 · webOS 4.5 · code".into(),
+    )
 }
 
 /// **Say it once.** Under Force the reason IS the route's verdict (what happened and why), no
@@ -846,7 +881,8 @@ fn the_forced_readout_says_what_and_why_once_and_draws_the_diagnostics_as_the_fo
     assert_eq!(r.actions(), &[A::PlayAutomatically, A::Back]);
     assert_eq!(r.footer(), "0.7.0 · webOS 4.5 · code");
     let log = plx_ui::draw_census::capture(|| {
-        r.draw(plx_ui::Painter::recording(), 0, &plx_ui::fixture::FixtureMeasure);
+        r.draw(plx_ui::Painter::recording(), 0, &plx_ui::fixture::FixtureMeasure,
+        );
     });
     let texts: Vec<Rect> = log.iter().filter(|(tag, _)| *tag == 100).map(|(_, r)| *r).collect();
     assert!(texts.iter().any(|t| (t.y - FOOTER_TOP).abs() < theme::size::CAPTION as f32 * 2.0),
@@ -876,9 +912,9 @@ fn the_diagnostics_footer_sits_below_the_row_inside_the_safe_bottom_band() {
 #[test]
 fn every_failure_row_fits_the_screen_in_every_language() {
     use plx_base::fontcov::advances::ShippedMeasure;
-    use plx_ui::fit::HEADROOM;
-    use plx_platform::i18n::{language_on_this_thread_for_test};
     use plx_media::player::FailureAction as A;
+    use plx_platform::i18n::language_on_this_thread_for_test;
+    use plx_ui::fit::HEADROOM;
     let rows: [&[A]; 3] = [
         &[A::PlayAutomatically, A::TryAgain, A::Back],
         &[A::TryAgain, A::ChangeQuality, A::Back],
@@ -888,18 +924,38 @@ fn every_failure_row_fits_the_screen_in_every_language() {
     for language in plx_platform::i18n::SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
         for row in rows {
-            let labels: Vec<&'static std::ffi::CStr> = row.iter().map(|a| failure_action_label(*a)).collect();
-            let o = StatusOverlay::new(Rect::FULL, c"", StatusKind::Failed).page(plx_ui::icons::Icon::Alert).reason(c"x").row(&labels);
+            let labels: Vec<&'static std::ffi::CStr> =
+                row.iter().map(|a| failure_action_label(*a)).collect();
+            let o = StatusOverlay::new(Rect::FULL, c"", StatusKind::Failed)
+                .page(plx_ui::icons::Icon::Alert)
+                .reason(c"x")
+                .row(&labels);
             let frames = o.row_frames_measured(&ShippedMeasure);
-            let lo = frames.iter().flatten().map(|f| f.x).fold(f32::MAX, f32::min);
-            let hi = frames.iter().flatten().map(|f| f.x + f.w).fold(0.0, f32::max);
+            let lo = frames
+                .iter()
+                .flatten()
+                .map(|f| f.x)
+                .fold(f32::MAX, f32::min);
+            let hi = frames
+                .iter()
+                .flatten()
+                .map(|f| f.x + f.w)
+                .fold(0.0, f32::max);
             let limit = SCR_W - 2.0 * plx_ui::consts::MARGIN_X;
             if (hi - lo) > limit * HEADROOM || lo < plx_ui::consts::MARGIN_X {
-                out.push(format!("{}: {row:?} spans {:.0}px of {limit:.0}", language.tag(), hi - lo));
+                out.push(format!(
+                    "{}: {row:?} spans {:.0}px of {limit:.0}",
+                    language.tag(),
+                    hi - lo
+                ));
             }
         }
     }
-    assert!(out.is_empty(), "rows wider than the screen:\n  {}", out.join("\n  "));
+    assert!(
+        out.is_empty(),
+        "rows wider than the screen:\n  {}",
+        out.join("\n  ")
+    );
 }
 
 /// The sandbox failure's help sentence ends in a URL that cannot break, and it is drawn as the
@@ -908,9 +964,9 @@ fn every_failure_row_fits_the_screen_in_every_language() {
 #[test]
 fn the_jail_help_note_fits_the_note_slot_in_every_language() {
     use plx_base::fontcov::advances::ShippedMeasure;
+    use plx_platform::i18n::{language_on_this_thread_for_test, msg};
     use plx_ui::fit::HEADROOM;
     use plx_ui::text_view::TextView;
-    use plx_platform::i18n::{language_on_this_thread_for_test, msg};
     let mut out = Vec::new();
     for language in plx_platform::i18n::SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
@@ -931,15 +987,16 @@ fn the_jail_help_note_fits_the_note_slot_in_every_language() {
 #[test]
 fn every_forced_verdict_fits_the_reason_slot_in_every_language() {
     use plx_base::fontcov::advances::ShippedMeasure;
-    use plx_ui::fit::HEADROOM;
     use plx_platform::i18n::{language_on_this_thread_for_test, msg};
+    use plx_ui::fit::HEADROOM;
     let mut out = Vec::new();
     for language in plx_platform::i18n::SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
         for s in [msg::widgets_verdict_forced_no_original(), msg::widgets_verdict_forced_container(),
             msg::widgets_verdict_forced_video(), msg::widgets_verdict_forced_audio(),
             msg::widgets_verdict_forced_unauthorized(), msg::widgets_verdict_forced_open(),
-            msg::widgets_verdict_forced_audio_conversion(), msg::widgets_reason_forced_playback_help()] {
+            msg::widgets_verdict_forced_audio_conversion(), msg::widgets_reason_forced_playback_help(),
+        ] {
             let c = std::ffi::CString::new(s).unwrap();
             if StatusOverlay::failed_reason_truncates(&c, &ShippedMeasure, HEADROOM) {
                 out.push(format!("{}: {s}", language.tag()));
@@ -1309,7 +1366,8 @@ fn min_controls_top_y_is_where_the_largest_block_just_fits() {
     let height = CAPTION_ANCHOR_LINES as f32 * CAPTION_LINE_PITCH * size_scale(size);
     let bottom = SUB_BASE_Y - position_lift(position);
     let block = Rect::new(300.0, bottom - height, 1320.0, height);
-    for band in [HudBand::from_controls_top(bound), HudBand::from_controls_top(bound - 1.0)] {
+    for band in [HudBand::from_controls_top(bound), HudBand::from_controls_top(bound - 1.0),
+    ] {
         let lift = hud_lift([block].into_iter(), true, band);
         assert!(close(block.y + block.h - lift, band.ceil_y), "{band:?}: bottom on the ceiling");
         assert!(block.y - lift >= SAFE.y, "{band:?}: lifted top {}", block.y - lift);
@@ -1329,9 +1387,12 @@ fn the_layouts_band_is_classics_in_every_slot() {
     let compiled = super::loaded::classic_for_test();
     let slots = [
         ControlSlot::Discs(Controls::NONE),
-        ControlSlot::Discs(Controls { previous: true, next: true, restart: true }),
-        slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown),
-        slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown),
+        ControlSlot::Discs(Controls { previous: true, next: true, restart: true,
+        }),
+        slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown,
+        ),
+        slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown,
+        ),
     ];
     for slot in slots {
         assert_eq!(geometry(&compiled, 0, slot, true, false).band(), HudBand::CLASSIC);
@@ -1398,50 +1459,51 @@ fn the_capsule_edge_is_fixed_and_a_taller_block_grows_away_from_it() {
 
 mod playback_navigation_tests {
     use super::*;
-    use plx_ui::icons::Icon;
 
     #[test]
-    fn episode_pair_uses_custom_gap_without_moving_existing_discs() {
+    fn queue_neighbors_do_not_add_controls_to_the_builtin_row() {
         let compiled = super::super::loaded::classic_for_test();
-        let pair = Controls::for_item(true, false, true, false);
         let rects = |c: Controls| geometry(&compiled, 0, ControlSlot::Discs(c), false, false).items;
-        let (pair_rects, none_rects) = (rects(pair), rects(Controls::NONE));
-        for i in BTN_SUBTITLES..=BTN_MORE {
-            assert_eq!(pair_rects[i as usize], none_rects[i as usize]);
-            assert!(pair_rects[i as usize].is_some());
+        let (episode_rects, none_rects) = (rects(Controls::for_item(true, true, true, true)), rects(Controls::NONE),
+        );
+        for i in 0..BTN_N as usize {
+            assert_eq!(
+                episode_rects[i], none_rects[i],
+                "episode neighbors do not alter disc {i}"
+            );
+            assert!(episode_rects[i].is_some());
         }
-        let previous = pair_rects[BTN_PREVIOUS as usize].unwrap();
-        let next = pair_rects[BTN_NEXT as usize].unwrap();
-        let subtitles = pair_rects[BTN_SUBTITLES as usize].unwrap();
-        assert_eq!(next.x - previous.x - previous.w, plx_ui::widgets::CONTROL_GAP);
-        assert_eq!(subtitles.x - next.x - next.w, 2.0 * plx_ui::widgets::CONTROL_GAP);
-        assert!(none_rects[BTN_PREVIOUS as usize].is_none());
-        assert!(none_rects[BTN_NEXT as usize].is_none());
-        assert_eq!(pair.primary(), BTN_NEXT);
-        assert_eq!(pair.action(BTN_PREVIOUS), None);
-        assert_eq!(pair.icon(BTN_PREVIOUS), Icon::Previous);
-        let restarting = Controls::for_item(true, false, true, true);
-        assert_eq!(restarting.icon(BTN_PREVIOUS), Icon::Restart);
-        assert_eq!(restarting.action(BTN_PREVIOUS), Some(Action::Previous));
+        assert_eq!(
+            Controls::for_item(true, true, true, true).primary(),
+            BTN_SUBTITLES
+        );
+        assert_eq!(
+            Controls::for_item(true, true, true, true).command(BTN_SUBTITLES), Some(crate::player_hud::command::HudCommand::OpenTracks(
+                crate::player_hud::command::TrackTab::Subtitles
+            )));
     }
 
     #[test]
     fn episode_pair_is_absent_for_movies_extras_and_single_items() {
         for controls in [Controls::for_item(false, true, true, true),
-            Controls::for_item(true, false, false, true)] {
+            Controls::for_item(true, false, false, true),
+        ] {
             assert_eq!(controls, Controls::NONE);
             assert_eq!(controls.primary(), BTN_SUBTITLES);
         }
-        let last = Controls::for_item(true, true, false, false);
-        assert_eq!(last.primary(), BTN_PREVIOUS);
-        assert_eq!(last.action(BTN_NEXT), None);
+        let previous_only = Controls::for_item(true, true, false, false);
+        assert!(previous_only.previous && !previous_only.next);
+        assert_eq!(
+            previous_only.primary(),
+            BTN_SUBTITLES,
+            "queue navigation does not take a built-in focus slot"
+        );
     }
 }
 
-/// **Under `builtin:classic`, the row resolved through the compile is the row resolved through `Controls`.**
-/// The page now asks the package's control at an index what a press performs and whether it has a stop;
-/// for classic's five discs that must be exactly classic's table, for every valuation of the pair and of
-/// Previous's restart target, and the cursor parks where `Controls::primary` parks it.
+/// **Under `builtin:classic`, the row resolved through the compile is the three-control table.**
+/// Queue state does not add Previous/Next to the built-in row; those commands remain available to
+/// package-defined controls and folded More rows.
 #[test]
 fn classic_resolved_through_the_compile_is_classics_table() {
     use super::command::HudCommand;
@@ -1475,7 +1537,8 @@ mod playbar_options {
     use crate::hud_format::compile::{ClockMode, KnobMode, MarkMode};
 
     fn bar(knob: Knob, mark: TransportMark) -> Playbar {
-        Playbar { pos_ns: 600_000_000_000, dur_ns: 1_200_000_000_000, knob, mark, now: 0, clock_grow: 0.0 }
+        Playbar { pos_ns: 600_000_000_000, dur_ns: 1_200_000_000_000, knob, mark, now: 0, clock_grow: 0.0,
+        }
     }
     fn census(b: Playbar, look: PlaybarLook) -> Vec<(u64, Rect)> {
         plx_ui::draw_census::capture(|| draw_playbar_look(Painter::recording(), b, look, &FM))
@@ -1488,7 +1551,8 @@ mod playbar_options {
     fn the_default_look_is_classics() {
         let look = PlaybarLook::default();
         assert_eq!((look.knob, look.clocks, look.mark), (KnobMode::Tick, ClockMode::FollowHead, MarkMode::AfterElapsed));
-        for (knob, mark) in [(Knob::Tick, TransportMark::Pause), (Knob::Focused, TransportMark::Play), (Knob::Held, TransportMark::None)] {
+        for (knob, mark) in [(Knob::Tick, TransportMark::Pause), (Knob::Focused, TransportMark::Play), (Knob::Held, TransportMark::None),
+        ] {
             let b = bar(knob, mark);
             let classic = plx_ui::draw_census::capture(|| draw_playbar(Painter::recording(), b, &FM));
             assert_eq!(classic, census(b, look), "{knob:?}");
@@ -1498,9 +1562,12 @@ mod playbar_options {
     #[test]
     fn an_always_knob_replaces_the_tick_at_rest() {
         let tick = census(bar(Knob::Tick, TransportMark::None), PlaybarLook::default());
-        let always = census(bar(Knob::Tick, TransportMark::None), PlaybarLook { knob: KnobMode::Always, ..PlaybarLook::default() });
+        let always = census(bar(Knob::Tick, TransportMark::None), PlaybarLook { knob: KnobMode::Always, ..PlaybarLook::default() },
+        );
         let thin = |v: &[(u64, Rect)]| v.iter().any(|(_, r)| (r.w - 3.0).abs() < 0.01);
-        let round = |v: &[(u64, Rect)]| v.iter().any(|(_, r)| (r.w - 18.0).abs() < 0.01 && (r.h - 18.0).abs() < 0.01);
+        let round = |v: &[(u64, Rect)]| {
+            v.iter().any(|(_, r)| (r.w - 18.0).abs() < 0.01 && (r.h - 18.0).abs() < 0.01)
+        };
         assert!(thin(&tick) && !round(&tick), "classic rests as a tick: {tick:?}");
         assert!(round(&always) && !thin(&always), "`always` rests as a knob: {always:?}");
         // a knob already shown (focused or held) is unchanged by the option
@@ -1514,7 +1581,9 @@ mod playbar_options {
     fn ends_clocks_sit_at_the_bars_two_ends() {
         let look = PlaybarLook { clocks: ClockMode::Ends, ..PlaybarLook::default() };
         let b = bar(Knob::Tick, TransportMark::None);
-        let elapsed = |look| runs(b, look).into_iter().find(|r| r.align == 1).expect("the elapsed clock");
+        let elapsed = |look| {
+            runs(b, look).into_iter().find(|r| r.align == 1).expect("the elapsed clock")
+        };
         let follow = elapsed(PlaybarLook::default());
         let ends = elapsed(look);
         let l = look.track.x;
@@ -1530,9 +1599,14 @@ mod playbar_options {
 
     #[test]
     fn a_busy_only_mark_draws_the_spinner_and_nothing_else() {
-        let glyphs = |b: Playbar, look| plx_ui::draw_census::capture_icons(|| draw_playbar_look(Painter::recording(), b, look, &FM));
+        let glyphs = |b: Playbar, look| {
+            plx_ui::draw_census::capture_icons(|| {
+                draw_playbar_look(Painter::recording(), b, look, &FM)
+            })
+        };
         let busy_only = PlaybarLook { mark: MarkMode::BusyOnly, ..PlaybarLook::default() };
-        for mark in [TransportMark::Pause, TransportMark::Play, TransportMark::Rewind, TransportMark::FastForward] {
+        for mark in [TransportMark::Pause, TransportMark::Play, TransportMark::Rewind, TransportMark::FastForward,
+        ] {
             let b = bar(Knob::Tick, mark);
             assert_eq!(glyphs(b, PlaybarLook::default()).len(), 1, "classic draws the {mark:?} glyph");
             assert!(glyphs(b, busy_only).is_empty(), "`busy_only` suppresses it: {mark:?}");
@@ -1545,12 +1619,14 @@ mod playbar_options {
 // --- PR8 stage 2a: what the screen reads to open, travel and close a section ---
 
 fn compiled_classic() -> std::sync::Arc<crate::hud_format::compile::Compiled> {
-    super::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &plx_base::fontcov::advances::ShippedMeasure).compiled
+    super::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &plx_base::fontcov::advances::ShippedMeasure,
+    ).compiled
 }
 
 fn compiled_reference() -> std::sync::Arc<crate::hud_format::compile::Compiled> {
     let text = include_str!("../hud_format/fixtures/reference.plxhud.json");
-    super::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &plx_base::fontcov::advances::ShippedMeasure)
+    super::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &plx_base::fontcov::advances::ShippedMeasure,
+    )
         .expect("the reference loads")
         .compiled
 }
@@ -1559,7 +1635,8 @@ fn compiled_reference() -> std::sync::Arc<crate::hud_format::compile::Compiled> 
 fn an_open_section_is_looked_up_over_the_discs_whatever_the_slot_is() {
     use crate::hud_format::compile::OPEN_CHAPTERS;
     let compiled = compiled_classic();
-    let skip = slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown);
+    let skip = slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown,
+    );
     assert!(matches!(skip, ControlSlot::Skip(_)), "the fixture is a Skip occupant");
     let (compact, _) = frame_state(&compiled, 0, skip, true, false).expect("classic has the Skip state");
     let (open, _) = frame_state(&compiled, OPEN_CHAPTERS, skip, true, false).expect("an open section has a state under a Skip slot");
@@ -1576,11 +1653,13 @@ fn the_opener_of_a_section_is_its_tab_in_classic_and_its_disc_in_the_reference()
     assert_eq!(opener_elem(state, Section::Info), Some(ELEM_TAB_BASE));
     assert_eq!(opener_elem(state, Section::Chapters), Some(ELEM_TAB_BASE + 1));
     // the open state keeps the tab that opened it (classic's tabs are always there)
-    let (open, _) = frame_state(&classic, crate::hud_format::compile::OPEN_CHAPTERS, ControlSlot::Discs(Controls::NONE), true, false).unwrap();
+    let (open, _) = frame_state(&classic, crate::hud_format::compile::OPEN_CHAPTERS, ControlSlot::Discs(Controls::NONE), true, false,
+    ).unwrap();
     assert_eq!(opener_elem(open, Section::Chapters), Some(ELEM_TAB_BASE + 1));
 
     let reference = compiled_reference();
-    let (state, _) = frame_state(&reference, 0, ControlSlot::Discs(Controls::NONE), true, false).unwrap();
+    let (state, _) = frame_state(&reference, 0, ControlSlot::Discs(Controls::NONE), true, false,
+    ).unwrap();
     let chapters = opener_elem(state, Section::Chapters).expect("the reference opens Chapters with a disc in its row");
     assert!(chapters >= super::state::ELEM_CONTROL_BASE, "a row disc, not a tab: {chapters:#x}");
     assert_ne!(chapters, opener_elem(state, Section::Info).unwrap());
@@ -1592,7 +1671,8 @@ fn the_opener_of_a_section_is_its_tab_in_classic_and_its_disc_in_the_reference()
 fn an_open_info_section_has_two_buttons_that_run_their_commands() {
     use super::command::Section;
     let compiled = compiled_classic();
-    let (state, _) = frame_state(&compiled, crate::hud_format::compile::OPEN_INFO, ControlSlot::Discs(Controls::NONE), true, false).unwrap();
+    let (state, _) = frame_state(&compiled, crate::hud_format::compile::OPEN_INFO, ControlSlot::Discs(Controls::NONE), true, false,
+    ).unwrap();
     assert_eq!(section_buttons(state).count(), 2);
     assert_eq!(section_command(state, 0), Some(super::command::HudCommand::FromBeginning));
     assert_eq!(section_command(state, 1), Some(super::command::HudCommand::GoToDetail));
@@ -1603,7 +1683,8 @@ fn an_open_info_section_has_two_buttons_that_run_their_commands() {
 }
 
 fn chapter(start_ms: i64) -> plx_data::metadata::Chapter {
-    plx_data::metadata::Chapter { index: 0, start_ms, title: String::new(), thumb: String::new() }
+    plx_data::metadata::Chapter { index: 0, start_ms, end_ms: 0, title: String::new(), thumb: String::new(),
+    }
 }
 
 #[test]
@@ -1621,13 +1702,13 @@ fn chapters_seat_on_the_chapter_that_holds_the_position_the_bar_shows() {
 /// the limit is `min(P, S - 12)`, kept as a rise per Position, moved on the sections' own spring, and only
 /// ever raised while a section stays open.
 mod caption_rise_pins {
+    use super::command::Section;
     use super::*;
     use crate::hud_format::compile::{Compiled, OPEN_CHAPTERS, OPEN_INFO};
     use plx_machine::machine::{PresentHandle, Tick};
     use plx_machine::present::Present;
     use plx_plex::plex::session::{SubtitlePosition as Pos, SubtitleSize};
     use std::sync::Arc;
-    use super::command::Section;
 
     const LOW: usize = 0;
 
@@ -1647,7 +1728,8 @@ mod caption_rise_pins {
 
     impl Rig {
         fn new(c: Arc<Compiled>) -> Self {
-            Self { c, m: HudMotion::new(), bits: 0, ms: 1_000, present: Present::new() }
+            Self { c, m: HudMotion::new(), bits: 0, ms: 1_000, present: Present::new(),
+            }
         }
         fn open(&mut self, bits: u8) {
             self.m.follow(bits);
@@ -1661,7 +1743,9 @@ mod caption_rise_pins {
         fn frame(&mut self) {
             self.m.follow_captions(self.bits, self.c.band(), top_of(&self.c, self.bits));
             let mut ph = PresentHandle::of(&mut self.present);
-            self.m.step_appear(Tick { ms: self.ms, dt_us: 16_667 }, &mut ph);
+            self.m.step_appear(Tick { ms: self.ms, dt_us: 16_667,
+                }, &mut ph,
+            );
             self.ms += 16;
         }
         fn settle(&mut self) {
@@ -1697,7 +1781,10 @@ mod caption_rise_pins {
     #[test]
     fn the_hud_reports_the_open_blocks_height_from_the_compile() {
         let classic = super::loaded::classic_for_test();
-        let g = |open| geometry(&classic, open, ControlSlot::Discs(Controls::NONE), true, false);
+        let g = |open| {
+            geometry(&classic, open, ControlSlot::Discs(Controls::NONE), true, false,
+            )
+        };
         assert_eq!((g(0).open_height, g(0).open_top()), (0.0, None), "a compact state has no block");
         assert_eq!((g(OPEN_INFO).open_height, g(OPEN_INFO).open_top()), (412.0, Some(668.0)));
         assert_eq!((g(OPEN_CHAPTERS).open_height, g(OPEN_CHAPTERS).open_top()), (396.0, Some(684.0)));
@@ -1718,10 +1805,12 @@ mod caption_rise_pins {
         same(rig.limits(), [656.0, 620.0, 460.0], "built-in Info (668)");
         rig.close(0, Section::Info);
         rig.settle();
-        same(rig.limits(), [780.0, 620.0, 460.0], "the last close returns to P");
+        same(rig.limits(), [780.0, 620.0, 460.0], "the last close returns to P",
+        );
         rig.open(OPEN_CHAPTERS);
         rig.settle();
-        same(rig.limits(), [672.0, 620.0, 460.0], "built-in Chapters (684)");
+        same(rig.limits(), [672.0, 620.0, 460.0], "built-in Chapters (684)",
+        );
     }
 
     /// The image reader (Low's ceiling, no Position) and the bespoke reader land on the same limit, and the HUD
@@ -1748,11 +1837,13 @@ mod caption_rise_pins {
         let band = rig.c.band();
         let p = [Pos::Low, Pos::Middle, Pos::High].map(|p| band.rest_limit(p));
         same(rig.limits(), p, "HUD up, nothing open");
-        for (open, top) in [(OPEN_CHAPTERS, 542.8), (OPEN_INFO, 572.2), (OPEN_CHAPTERS | OPEN_INFO, 377.8)] {
+        for (open, top) in [(OPEN_CHAPTERS, 542.8), (OPEN_INFO, 572.2), (OPEN_CHAPTERS | OPEN_INFO, 377.8),
+        ] {
             let mut rig = reference();
             rig.open(open);
             rig.settle();
-            same(rig.limits(), p.map(|p| p.min(top - 12.0)), &format!("reference open {open}"));
+            same(rig.limits(), p.map(|p| p.min(top - 12.0)), &format!("reference open {open}"),
+            );
         }
         // with both open at Low and High: Low stands on the block, High (already above) is the lower of the two
         rig.open(OPEN_CHAPTERS | OPEN_INFO);
@@ -1770,7 +1861,8 @@ mod caption_rise_pins {
         rig.settle();
         rig.open(OPEN_CHAPTERS);
         rig.settle();
-        same(rig.limits(), [656.0, 620.0, 460.0], "Info -> Chapters holds");
+        same(rig.limits(), [656.0, 620.0, 460.0], "Info -> Chapters holds",
+        );
 
         let mut rig = classic();
         rig.open(OPEN_CHAPTERS);
@@ -1778,7 +1870,8 @@ mod caption_rise_pins {
         same(rig.limits(), [672.0, 620.0, 460.0], "Chapters");
         rig.open(OPEN_INFO);
         rig.settle();
-        same(rig.limits(), [656.0, 620.0, 460.0], "Chapters -> Info rises 16 px");
+        same(rig.limits(), [656.0, 620.0, 460.0], "Chapters -> Info rises 16 px",
+        );
 
         let mut rig = reference();
         let p = [Pos::Low, Pos::Middle, Pos::High].map(|p| rig.c.band().rest_limit(p));
@@ -1835,10 +1928,12 @@ mod caption_rise_pins {
         let lay = caption_layout(CAPTION_ANCHOR_LINES, scale, baseline, floor);
         assert!(close(lay.top, SAFE.y), "top {}", lay.top);
         assert!(baseline > 200.0, "it overlaps the section instead (captions draw above it)");
-        let rest = caption_layout(CAPTION_ANCHOR_LINES, scale, caption_geometry_for(size, Pos::Low, true, HudBand::CLASSIC).1, floor);
+        let rest = caption_layout(CAPTION_ANCHOR_LINES, scale, caption_geometry_for(size, Pos::Low, true, HudBand::CLASSIC).1, floor,
+        );
         assert_eq!((lay.face, lay.pitch), (rest.face, rest.pitch), "size never gives way");
         // a block that fits is not clamped
-        let (_, free, _) = caption_geometry_for_block(SubtitleSize::Medium, Pos::Low, true, HudBand::CLASSIC.with_rise(HudBand::CLASSIC.rise_to_clear(668.0)), 144.0);
+        let (_, free, _) = caption_geometry_for_block(SubtitleSize::Medium, Pos::Low, true, HudBand::CLASSIC.with_rise(HudBand::CLASSIC.rise_to_clear(668.0)), 144.0,
+        );
         assert!(close(free, 656.0), "{free}");
     }
 
@@ -1849,7 +1944,8 @@ mod caption_rise_pins {
         rig.open(OPEN_INFO);
         rig.settle();
         let band = rig.band();
-        let (l1, l2) = (Rect::new(300.0, 900.0, 1320.0, 60.0), Rect::new(300.0, 960.0, 1320.0, 75.0));
+        let (l1, l2) = (Rect::new(300.0, 900.0, 1320.0, 60.0), Rect::new(300.0, 960.0, 1320.0, 75.0),
+        );
         let above = Rect::new(300.0, 590.0, 1320.0, 60.0); // bottom 650: above Info's limit 656
         let sign = Rect::new(300.0, 100.0, 600.0, 50.0);
         let set = [l1, l2, above, sign];
@@ -1858,7 +1954,10 @@ mod caption_rise_pins {
         let lift = hud_lift(set.iter().copied(), true, band);
         assert!(close(lift, 1035.0 - 656.0), "{lift}");
         // the pair keeps its gap; the rest do not move
-        let moved = |r: Rect| if overhangs(r, band) { Rect::new(r.x, r.y - lift, r.w, r.h) } else { r };
+        let moved = |r: Rect| {
+            if overhangs(r, band) { Rect::new(r.x, r.y - lift, r.w, r.h) } else { r
+            }
+        };
         assert!(close(moved(l2).y - moved(l1).y, l2.y - l1.y));
         assert_eq!((moved(above), moved(sign)), (above, sign));
         assert!(set.iter().all(|r| (moved(*r).w, moved(*r).h) == (r.w, r.h)), "nothing is rescaled");
@@ -1877,7 +1976,8 @@ mod caption_rise_pins {
         let now = rig.limit(Pos::Low);
         assert!(close(now, 780.0 - rise));
         for lines in 1..=CAPTION_ANCHOR_LINES {
-            let (scale, baseline, floor) = caption_geometry_for_block(SubtitleSize::Medium, Pos::Low, true, rig.band(), anchored_height(lines, 1.0));
+            let (scale, baseline, floor) = caption_geometry_for_block(SubtitleSize::Medium, Pos::Low, true, rig.band(), anchored_height(lines, 1.0),
+            );
             let lay = caption_layout(lines, scale, baseline, floor);
             assert!(close(lay.top + lines as f32 * lay.pitch, now), "{lines} lines end at the limit's current y");
         }
@@ -1919,7 +2019,8 @@ mod caption_rise_pins {
         let (mut held, mut started) = (0, None);
         for i in 0..40 {
             rig.frame();
-            let (appear, rise) = (rig.m.section_appear(Section::Info), rig.m.caption_rise()[LOW]);
+            let (appear, rise) = (rig.m.section_appear(Section::Info), rig.m.caption_rise()[LOW],
+            );
             assert_eq!(appear > 0.0, rise > 0.0, "frame {i}: appear {appear}, rise {rise}");
             if appear == 0.0 { held += 1 } else if started.is_none() { started = Some(i) }
         }

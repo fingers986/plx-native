@@ -450,10 +450,10 @@ fn header_matches_the_plan() {
     assert_eq!(lines.len(), 9);
     assert_eq!(
         lines[0],
-        "Style: Default,PlxSubs,51.49,&H00FFFFFF,&H00FFFFFF,&H26000000,&HFF000000,0,0,0,0,100,100,0,0,1,2,0,2,580,580,97,-1"
+        "Style: Default,PlxSubs,51.49,&H00FFFFFF,&H00FFFFFF,&H26000000,&HFF000000,0,0,0,0,100,100,0,0,1,4,0,2,580,580,97,-1"
     );
-    assert!(h.contains("Style: An8,PlxSubs,51.49,&H00FFFFFF,&H00FFFFFF,&H26000000,&HFF000000,0,0,0,0,100,100,0,0,1,2,0,8,580,580,100,-1"));
-    assert!(h.contains(",0,0,1,2,0,5,580,580,0,-1\n"), "Middle ignores MarginV");
+    assert!(h.contains("Style: An8,PlxSubs,51.49,&H00FFFFFF,&H00FFFFFF,&H26000000,&HFF000000,0,0,0,0,100,100,0,0,1,4,0,8,580,580,100,-1"));
+    assert!(h.contains(",0,0,1,4,0,5,580,580,0,-1\n"), "Middle ignores MarginV");
 }
 
 #[test]

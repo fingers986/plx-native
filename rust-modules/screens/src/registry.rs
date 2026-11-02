@@ -182,6 +182,13 @@ pub enum PlayerReq {
     /// Seek to this position in ns and resume if paused — the Chapters strip's OK, and OK or PLAY
     /// taking the scrub's pending key target (a playing film simply seeks and plays on).
     SeekTo(i64),
+    /// A visible-HUD key or pointer preview began. The app remembers whether this request paused
+    /// a playing film so cancellation can restore it and confirmation can resume it at the target.
+    BeginScrubPreview,
+    /// A visible-HUD preview was abandoned (Back, HUD dismissal, or a panel taking focus).
+    CancelScrubPreview,
+    /// Confirm a visible-HUD scrub. Resume only if the preview had paused a playing film.
+    ConfirmScrubSeek(i64),
     /// **Commit a SCRUB to this position, and leave a paused film paused** (restructure phase 12,
     /// PX-PLAYER) — `app::playback::commit_seek`, the other half of the pair above.
     ///
@@ -2298,7 +2305,10 @@ where
                 // overlay opening on this page's own stack changes the input owner and must not
                 // be mistaken for a new origin.
                 page.origin = self.player_origin.take();
-                page.hud.extend(cx.tick.ms, self.player_hud_ms.take().unwrap_or(crate::player::input::HUD_LINGER_MS));
+                page.hud.show_until_playing(
+                    cx.tick.ms,
+                    self.player_hud_ms.take().unwrap_or(crate::player::input::HUD_LINGER_MS),
+                );
                 page.publish();
                 Box::new(page)
             }

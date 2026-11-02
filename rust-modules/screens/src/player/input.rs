@@ -66,8 +66,9 @@ pub fn hud_visible(ps: &plx_media::route::PlaybackSession, now: u32, until: u32,
 /// engage the continuous scrub. A held key's keyup is provisional — the driver can bounce `Up`
 /// then `Down` mid-hold — so the hold ends only after `SCRUB_RELEASE_DEBOUNCE_MS` passes without
 /// the same key returning (`appkit::held_key::HeldKey`). **Neither a hold's end nor a D-pad tap's keyup
-/// seeks:** the keys only move the TARGET, which stays pending (the film plays on underneath)
-/// until OK / PLAY takes it or BACK drops it — click-to-confirm. Only a pointer drag commits by
+/// seeks:** the keys only move the TARGET, which stays pending until OK / PLAY takes it or BACK
+/// drops it — click-to-confirm. A visible-HUD preview pauses a playing film until confirmation;
+/// the hidden-HUD path keeps its existing playback behavior. Only a pointer drag commits by
 /// itself, on its release. Dedicated FF/REW taps are handled by `seek_jump` before this release path.
 pub struct Scrub {
     /// The key-hold half — direction, the engaged ramp, the bounce debounce and the lost-keyup net —
@@ -99,6 +100,9 @@ pub struct Scrub {
     /// the accelerating ramp from `Tick`, and a drag must not — the pointer says where the preview
     /// is, once per motion event, and an advance underneath it would fight the hand.
     pub drag: bool,
+    /// A visible-HUD preview asked the app to pause a previously playing film. Confirmation or
+    /// cancellation must settle that request exactly once; hidden-HUD jump seeking never sets it.
+    pub preview_pause: bool,
 }
 impl Scrub {
     /// No scrub in progress and no target pending — where the loop starts.
@@ -107,6 +111,7 @@ impl Scrub {
         reveal: false,
         ns: -1,
         drag: false,
+        preview_pause: false,
     };
     /// Start a WHOLE gesture in `now`/`fwd` — every field, not the four a press happens to care
     /// about.
@@ -121,6 +126,7 @@ impl Scrub {
         self.key.begin(now, fwd);
         self.reveal = false;
         self.drag = false; // a key gesture supersedes a pointer one
+        self.preview_pause = false;
     }
     /// End the KEY/POINTER gesture — no direction, no continuous hold, no drag and no reveal
     /// pending — and leave the target ([`ns`](Self::ns)) where it is: a hold's end hands its
@@ -140,6 +146,7 @@ impl Scrub {
     pub fn cancel(&mut self) {
         self.ns = -1;
         self.disengage();
+        self.preview_pause = false;
     }
     /// **Where a target may legally land**: never before zero, and never inside the last three
     /// seconds, which is a seek past the point the pipeline can prime from. The one place the two
@@ -269,6 +276,10 @@ pub struct HudState {
     /// `TX::reset_for_reload` used to clear it from underneath, which is the cross-owner write the
     /// spec's rule exists to remove; a teardown now DELIVERS the reset and the screen answers it.
     pub until: u32,
+    /// The initial play request keeps the HUD visible while loading, but its startup linger must
+    /// not keep the HUD up after the first frame is playing. Any later user-driven extension
+    /// clears this marker and retains the ordinary linger behavior.
+    pub startup_until_playing: bool,
     /// UP-from-the-top explicitly dismisses the HUD even while paused; any other player
     /// input clears it. Without this, paused() would force the HUD permanently visible.
     pub dismissed: bool,
@@ -295,12 +306,10 @@ pub struct HudState {
     /// A hide done in normal play never sets it: a rebuffer that pops the transport back up after
     /// the viewer hid it must still cost two presses, because that viewer has not asked to leave.
     pub exit_armed: bool,
-    /// Does the BACK being handled leave? Sampled by `note_fresh_press` from
-    /// [`exit_armed`](Self::exit_armed) AND [`dismissed`](Self::dismissed), BEFORE the press
-    /// un-dismisses, for the same reason [`visible_at_press`](Self::visible_at_press) is: by the
-    /// time an arm runs the press has already cleared what it would have read. Requiring
-    /// `dismissed` is what makes anything that un-dismisses the transport in between (a segment
-    /// offer, a new episode, pointer motion) disarm it too.
+    /// Does this BACK leave? Sampled by `note_fresh_press` before it clears the startup marker or
+    /// dismissal. An automatically shown startup HUD exits on its first BACK; after any user input
+    /// extends the HUD, the usual two-step hide/leave behavior applies. A busy hide also arms the
+    /// next BACK through [`exit_armed`](Self::exit_armed) and [`dismissed`](Self::dismissed).
     pub back_leaves_at_press: bool,
     /// The last SEGMENT the control row offered. Sticky: it is never cleared back to None,
     /// so each segment raises the HUD exactly once per playback however often the row
@@ -320,6 +329,7 @@ impl HudState {
     pub const IDLE: HudState = HudState {
         nav: HudNav::HOME,
         until: 0,
+        startup_until_playing: false,
         dismissed: false,
         visible_at_press: false,
         exit_armed: false,
@@ -345,10 +355,28 @@ impl HudState {
     /// review). Comparison is plain `>`, matching [`hud_visible`]'s own non-wrapping `now < until`.
     #[inline]
     pub fn extend(&mut self, now: u32, ms: u32) {
+        self.startup_until_playing = false;
         let want = now.saturating_add(ms).max(1);
         if want > self.until {
             self.until = want;
         }
+    }
+
+    /// Show the HUD during the initial load without carrying its startup linger into playback.
+    pub fn show_until_playing(&mut self, now: u32, ms: u32) {
+        self.extend(now, ms);
+        self.startup_until_playing = true;
+    }
+
+    /// Hide the startup HUD at the first Playing state unless a later interaction took ownership
+    /// of its timer. Returns whether it consumed the startup marker.
+    pub fn hide_startup_on_playing(&mut self) -> bool {
+        if !self.startup_until_playing {
+            return false;
+        }
+        self.startup_until_playing = false;
+        self.until = 0;
+        true
     }
 
     /// A fresh key the app BINDS has arrived: record what the transport LOOKED like to the user,
@@ -363,13 +391,14 @@ impl HudState {
     /// That caller is `note_global_press`, NOT `begin_fresh_press` as it once was, and the
     /// difference is the point of the split: an unsupported key never gets here at all.
     ///
-    /// **[`back_leaves_at_press`](Self::back_leaves_at_press) obeys the same order:** it reads
-    /// [`exit_armed`](Self::exit_armed) and `dismissed` BEFORE the clear below, and the press then
-    /// spends the arming, so only a BACK that follows the arming BACK with nothing bound in between
-    /// can leave.
+    /// **[`back_leaves_at_press`](Self::back_leaves_at_press) obeys the same order:** startup's
+    /// auto-show marker and a busy-hide arming are read BEFORE the clears below, then the press
+    /// spends them. Any user interaction clears `startup_until_playing` through `extend`, so it
+    /// keeps the ordinary hide-then-leave behavior.
     pub fn note_fresh_press(&mut self, ps: &plx_media::route::PlaybackSession, now: u32, is_paused: bool) {
         self.visible_at_press = self.visible(ps, now, is_paused);
-        self.back_leaves_at_press = self.exit_armed && self.dismissed;
+        self.back_leaves_at_press = self.startup_until_playing || (self.exit_armed && self.dismissed);
+        self.startup_until_playing = false;
         self.exit_armed = false;
         // Any BOUND fresh key un-dismisses the HUD (UP-hide re-sets it). "Bound" and not "any" is
         // the whole of `note_global_press`, the ONLY caller: an unsupported press never reaches
@@ -385,6 +414,7 @@ impl HudState {
     /// not an arming one also clears a stale arming instead of inheriting it.
     pub fn hide(&mut self, while_busy: bool) {
         self.dismissed = true;
+        self.startup_until_playing = false;
         self.exit_armed = while_busy;
     }
 
@@ -708,7 +738,7 @@ mod hud_visibility_tests {
         key.press(11, true);
         key.repeat(12);
         key.release(13);
-        let mut scrub = Scrub { key, reveal: true, ns: 15, drag: true };
+        let mut scrub = Scrub { key, reveal: true, ns: 15, drag: true, preview_pause: false };
         scrub.disengage();
         assert_eq!((scrub.key.dir, scrub.key.engaged, scrub.reveal, scrub.drag), (0, false, false, false));
         assert!(!scrub.key.release_pending(), "…nor a release still waiting out the bounce window");

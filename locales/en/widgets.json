@@ -201,9 +201,21 @@
     "value": "Skip Intro",
     "description": "Player action that skips the currently offered introduction or credits marker."
   },
+  "widgets.skip.intro.watch": {
+    "value": "Watch Intro",
+    "description": "Player action shown during the automatic intro-skip countdown; activating it lets the intro play."
+  },
   "widgets.skip.credits": {
     "value": "Skip Credits",
     "description": "Player action that skips the currently offered introduction or credits marker."
+  },
+  "widgets.skip.recap": {
+    "value": "Watch Recap",
+    "description": "Player action that lets the recap play instead of automatically skipping it."
+  },
+  "widgets.skip.recap.action": {
+    "value": "Skip Recap",
+    "description": "Player action that skips the recap after its automatic countdown has been cancelled."
   },
   "widgets.next.episode": {
     "value": "Next Episode",

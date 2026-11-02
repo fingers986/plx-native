@@ -38,26 +38,26 @@
 
 use std::ffi::CStr;
 
-use plx_screens::family::SettingsPage;
-use plx_screens::player::HudPolicy;
-use plx_screens::registry::{AppArg, AppFx, AppMounter, AppMsg, ConsentCmd, ContentArg, ContentReq, HomeCmd, HomeLike, HomeReq, HomeTab, ItemMenuKind, LibraryReq, LoopReq, PageMemory};
 use plx_data::stores::{StoreCmd, StoreId};
-use plx_ui::containers::modal::{HostRender, HostUpdate, Phase, Style};
-use plx_ui::dispatch::{CxParts, Dispatcher, FrameReport, Rig, Split};
-#[cfg(test)]
-use plx_screens::registry::every_surface_arg;
-#[cfg(test)]
-use plx_ui::dispatch::NoTap;
-use plx_ui::frame::Budget;
 use plx_machine::machine::{
-    Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, Handled, Host,
-    InputEvent, InputKind, InputOwner, InstanceId, Key, LogicalState, Machine, MachineId, Measure, NavOp,
+    Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, Handled, Host, InputEvent,
+    InputKind, InputOwner, InstanceId, Key, LogicalState, Machine, MachineId, Measure, NavOp,
     Source, Tick, TimerId,
 };
 use plx_machine::present::Present;
-use plx_ui::screen::{
-    At, Enter, FocusSource, FocusTarget, ReturnState, Screen, ScreenEvent,
+use plx_screens::family::SettingsPage;
+use plx_screens::player::HudPolicy;
+#[cfg(test)]
+use plx_screens::registry::every_surface_arg;
+use plx_screens::registry::{AppArg, AppFx, AppMounter, AppMsg, ConsentCmd, ContentArg, ContentReq, HomeCmd, HomeLike, HomeReq, HomeTab, ItemMenuKind, LibraryReq, LoopReq, PageMemory,
 };
+use plx_ui::containers::modal::{HostRender, HostUpdate, Phase, Style};
+#[cfg(test)]
+use plx_ui::dispatch::NoTap;
+use plx_ui::dispatch::{CxParts, Dispatcher, FrameReport, Rig, Split};
+use plx_ui::frame::Budget;
+use plx_ui::screen::{
+    At, Enter, FocusSource, FocusTarget, ReturnState, Screen, ScreenEvent};
 
 
 // ---------------------------------------------------------------------------------------------
@@ -87,7 +87,10 @@ fn refresh_chrome(
     chrome: &mut super::chrome::ChromeSnapshot,
     measure: &dyn Measure,
     directory: plx_data::stores::browse::DirectoryView<'_>,
-    captured: Option<(&plx_plex::plex::session::CurrentProfile, &plx_plex::plex::session::Session)>,
+    captured: Option<(
+        &plx_plex::plex::session::CurrentProfile,
+        &plx_plex::plex::session::Session,
+    )>,
 ) {
     match captured {
         Some(captured) => chrome.refresh_with_profile(measure, directory, Some(captured)),
@@ -138,11 +141,24 @@ impl Bridge {
 
     /// [`Self::views`] reading `session` as the playback publication — what a test rig with no
     /// player of its own passes.
-    pub(crate) fn views_with<'a>(&'a self, session: &'a plx_media::route::PlaybackSession) -> AppViews<'a> {
-        AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
-            directory: self.directory.view(), section_hubs: self.section_hubs.view(),
-            search: self.search.view(), metadata: self.stores.metadata_view(),
-            person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session, today: self.today, beneath: None }
+    pub(crate) fn views_with<'a>(&'a self,
+        session: &'a plx_media::route::PlaybackSession,
+    ) -> AppViews<'a> {
+        AppViews {
+            auth: self.session.read(),
+            hubs: self.hubs.view(),
+            listing: self.listing.view(),
+            directory: self.directory.view(),
+            section_hubs: self.section_hubs.view(),
+            search: self.search.view(),
+            metadata: self.stores.metadata_view(),
+            person: self.stores.person_view(),
+            collection: self.stores.collection_view(),
+            subtitle_search: self.stores.subtitle_search_view(),
+            session,
+            today: self.today,
+            beneath: None,
+        }
     }
 }
 
@@ -186,7 +202,9 @@ impl Host for AppHost {
             | AppFx::Library(LibraryReq::PublishShelves { .. }))
     }
 
-    fn views_over<'a>(views: Self::Views<'a>, beneath: Option<plx_machine::machine::ScreenId>) -> Self::Views<'a> {
+    fn views_over<'a>(
+        views: Self::Views<'a>, beneath: Option<plx_machine::machine::ScreenId>,
+    ) -> Self::Views<'a> {
         AppViews { beneath, ..views }
     }
 }
@@ -206,7 +224,9 @@ impl plx_screens::registry::CollectionLike for AppHost {
 }
 
 impl plx_screens::registry::AuthLike for AppHost {
-    fn auth<'a>(cx: &Cx<'a, Self>) -> plx_session::auth::SessionRead<'a> { cx.views.auth }
+    fn auth<'a>(cx: &Cx<'a, Self>) -> plx_session::auth::SessionRead<'a> {
+        cx.views.auth
+    }
 }
 
 impl plx_session::auth::owner::SessionHost for AppHost {
@@ -222,12 +242,25 @@ impl plx_data::stores::StoreEffectHost for AppHost {
 }
 
 /// Queue an application command on the same drain as screen effects and worker observations.
-pub(crate) fn execute_session_command(d: &mut Dispatcher<AppHost>, command: plx_session::auth::SessionCmd) {
-    d.emit(MachineId::Nav, Fx::Deliver(MachineId::Session,
-        Delivery::Machine(AppMsg::Session(plx_session::auth::owner::SessionEvent::Command(command)))));
+pub(crate) fn execute_session_command(
+    d: &mut Dispatcher<AppHost>,
+    command: plx_session::auth::SessionCmd,
+) {
+    d.emit(
+        MachineId::Nav,
+        Fx::Deliver(
+            MachineId::Session,
+            Delivery::Machine(AppMsg::Session(
+                plx_session::auth::owner::SessionEvent::Command(command),
+            )),
+        ),
+    );
 }
 
-pub(crate) fn execute_endpoint_outcomes(d: &mut Dispatcher<AppHost>, endpoints: plx_data::stores::EndpointRefreshSet) {
+pub(crate) fn execute_endpoint_outcomes(
+    d: &mut Dispatcher<AppHost>,
+    endpoints: plx_data::stores::EndpointRefreshSet,
+) {
     execute_endpoint_outcomes_with(endpoints, |command| execute_session_command(d, command));
 }
 
@@ -245,21 +278,29 @@ impl plx_screens::registry::PlayerLike for AppHost {
 }
 
 impl plx_screens::registry::SearchLike for AppHost {
-    fn search<'a>(cx: &Cx<'a, Self>) -> plx_data::search::view::SearchView<'a> { cx.views.search }
+    fn search<'a>(cx: &Cx<'a, Self>) -> plx_data::search::view::SearchView<'a> {
+        cx.views.search
+    }
 }
 
 impl plx_screens::registry::LibraryLike for AppHost {
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
-    fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
+    fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> {
+        cx.views.directory
+    }
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.section_hubs }
-    fn collections_count(cx: &Cx<'_, Self>, section: usize) -> Option<Result<u32, plx_screens::registry::Forbidden>> {
+    fn collections_count(cx: &Cx<'_, Self>,
+        section: usize,
+    ) -> Option<Result<u32, plx_screens::registry::Forbidden>> {
         super::collections_probe::count(cx.views.directory, section, cx.tick.ms)
     }
     fn today(cx: &Cx<'_, Self>) -> Option<[i32; 3]> { cx.views.today }
 }
 
 impl plx_screens::registry::PersonLike for AppHost {
-    fn person<'a>(cx: &Cx<'a, Self>) -> plx_data::person::PersonView<'a> { cx.views.person }
+    fn person<'a>(cx: &Cx<'a, Self>) -> plx_data::person::PersonView<'a> {
+        cx.views.person
+    }
 }
 
 impl plx_screens::registry::MetadataLike for AppHost {
@@ -286,9 +327,11 @@ impl ConsentMachine {
     fn from_initial(current: plx_telemetry::telemetry::consent::Consent) -> Self { Self { current } }
 
     fn record(&mut self, adapter: &mut super::adapters::consent::ConsentAdapter,
-        errors: bool, usage: bool) {
+        errors: bool, usage: bool,
+    ) {
         let next = plx_telemetry::telemetry::consent::apply(
-            &self.current, errors, usage, plx_telemetry::telemetry::mint_id);
+            &self.current, errors, usage, plx_telemetry::telemetry::mint_id,
+        );
         for (asked, got, channel) in [
             (errors, next.errors, "crash reports"),
             (usage, next.usage, "usage analytics"),
@@ -352,7 +395,8 @@ struct SeatWatch {
 
 impl SeatWatch {
     fn new() -> Self {
-        Self { restored: plx_plex::plex::session::Seat::Unseated, arm_pending: true }
+        Self { restored: plx_plex::plex::session::Seat::Unseated, arm_pending: true,
+        }
     }
 
     /// The process now occupies `seat`. Restore for it if that is a change; say whether it was.
@@ -361,7 +405,9 @@ impl SeatWatch {
             return false;
         }
         plx_media::route::restore_profile_rows(&plx_plex::plex::session::peek(), &seat,
-            plx_media::route::Overrides { quality: crate::dev::playback_quality_override() });
+            plx_media::route::Overrides { quality: crate::dev::playback_quality_override(),
+            },
+        );
         let seated = seat.user().is_some();
         self.restored = seat;
         if seated && std::mem::take(&mut self.arm_pending) {
@@ -390,7 +436,13 @@ pub(crate) struct Bridge {
     initial_subhash: u64,
     session: plx_session::auth::SessionMachine,
     session_adapter: super::adapters::session::SessionAdapter,
-    session_ready: Option<(u64, plx_session::auth::owner::ProfileScope, plx_plex::plex::session::ServerRef, String, plx_session::auth::owner::ReadyInstall)>,
+    session_ready: Option<(
+        u64,
+        plx_session::auth::owner::ProfileScope,
+        plx_plex::plex::session::ServerRef,
+        String,
+        plx_session::auth::owner::ReadyInstall,
+    )>,
     /// The seat the per-profile cells (the player settings and trailer autoplay) were last restored for ([`SeatWatch`]).
     seat_watch: SeatWatch,
     consent_adapter: super::adapters::consent::ConsentAdapter,
@@ -449,7 +501,8 @@ pub(crate) struct Bridge {
     content_reqs: Vec<(MachineId, ContentReq, ReturnState<u32, PageMemory>)>,
     home_reqs: Vec<(MachineId, HomeReq, ReturnState<u32, PageMemory>)>,
     library_reqs: Vec<(MachineId, LibraryReq, ReturnState<u32, PageMemory>)>,
-    search_reqs: Vec<(MachineId, plx_screens::registry::SearchReq, ReturnState<u32, PageMemory>)>,
+    search_reqs: Vec<(MachineId, plx_screens::registry::SearchReq, ReturnState<u32, PageMemory>,
+    )>,
     /// What the player's overlay surfaces asked of the loop this frame (§14) — drained by
     /// `playback::player_requests`, which holds the `MainThread` token they cannot.
     player_reqs: Vec<plx_screens::registry::PlayerReq>,
@@ -458,7 +511,8 @@ pub(crate) struct Bridge {
     item_menu_reqs: Vec<plx_screens::registry::ItemMenuReq>,
     /// What the Watchlist page and its Sort & Filter surface asked, drained by
     /// `content::watchlist_requests` (the Search pattern).
-    watchlist_reqs: Vec<(MachineId, plx_screens::watchlist::page::WatchlistOut, ReturnState<u32, PageMemory>)>,
+    watchlist_reqs: Vec<(MachineId, plx_screens::watchlist::page::WatchlistOut, ReturnState<u32, PageMemory>,
+    )>,
     /// What the Watchlist page was last handed from the store (`watchlist::Feed`).
     watchlist: watchlist::Feed,
     /// The catalog page instance the store was last opened for (`watchlist::catalog_feed`).
@@ -482,10 +536,12 @@ impl Bridge {
     /// The measurer every screen of this bridge lays out with (a host test's has no fonts): the HUD
     /// package is compiled with it, outside the draw, so the plan's widths are the draw's.
     pub(crate) fn measure(&self) -> &dyn Measure { &self.measure }
-    pub(crate) fn prepare_measurements(&mut self, replay: Option<&std::collections::HashMap<plx_ui::rec::MetricKey,u32>>) {
+    pub(crate) fn prepare_measurements(&mut self, replay: Option<&std::collections::HashMap<plx_ui::rec::MetricKey,u32>>,
+    ) {
         self.measure.prepare(replay);
     }
-    pub(crate) fn take_measurements(&self) -> Result<Vec<(plx_ui::rec::MetricKey,u32)>, &'static str> {
+    pub(crate) fn take_measurements(&self,
+    ) -> Result<Vec<(plx_ui::rec::MetricKey,u32)>, &'static str> {
         self.measure.drain()
     }
     pub(crate) fn is_controlled_replay(&self) -> bool {
@@ -509,7 +565,8 @@ impl Bridge {
         }
         self.home_io.as_mut().map_or_else(Vec::new, |io| std::mem::take(&mut io.requests))
     }
-    pub(crate) fn supply_admissions(&mut self, admissions: std::collections::VecDeque<serde_json::Value>) {
+    pub(crate) fn supply_admissions(&mut self, admissions: std::collections::VecDeque<serde_json::Value>,
+    ) {
         if let Some(io) = &mut self.home_io {
             if !io.admissions.is_empty() { io.failure = Some("unconsumed synchronous admission"); }
             io.admissions = admissions;
@@ -523,7 +580,8 @@ impl Bridge {
     /// test that needs to choose when a fetch settles builds its Bridge with `Held`
     /// (`StoreRunner::held`) instead.
     pub(crate) fn controlled_home(now_us: fn() -> u64, initial: &super::bootstrap::Initial,
-        mt: &plx_base::task::MainThread, replay: bool) -> Self {
+        mt: &plx_base::task::MainThread, replay: bool,
+    ) -> Self {
         static TTF: plx_gfx::text::TtfMeasure = plx_gfx::text::TtfMeasure;
         let preferences = initial.session.persisted.clone();
         let (state, adapter) = initial.home.restore(mt).expect("validated Home initial state");
@@ -543,17 +601,20 @@ impl Bridge {
                 hubs, listing:plx_data::stores::browse::ListingSnapshot::empty(),
                 directory:Default::default(), section_hubs:plx_data::stores::browse::HubsSnapshot::empty(),
                 search:Default::default(),
-            }, stores);
+            }, stores,
+        );
         bridge.initial_subhash = initial.hash();
         bridge.measure = if replay {
             plx_ui::rec::Measurements::Pending(Default::default())
         } else { plx_ui::rec::Measurements::record(&TTF) };
         bridge.home_io = Some(super::bootstrap::HomeIo { replay, preferences, requests: Vec::new(), admissions: Default::default(),
-            failure: None, profile: bridge.session_adapter.profile_resource_view().expect("controlled publisher") });
+            failure: None, profile: bridge.session_adapter.profile_resource_view().expect("controlled publisher"),
+        });
         bridge
     }
     pub(crate) fn new(now_us: fn() -> u64, init: plx_session::auth::SessionInit,
-        consent: plx_telemetry::telemetry::consent::Consent, mt: &plx_base::task::MainThread) -> Self {
+        consent: plx_telemetry::telemetry::consent::Consent, mt: &plx_base::task::MainThread,
+    ) -> Self {
         // A `static`, not `&TtfMeasure` inline: a unit-struct literal DOES const-promote to
         // `'static` today, but that is a rule about the expression rather than a promise about
         // this field, and a `static` states the lifetime outright. Same reasoning as the one
@@ -561,7 +622,8 @@ impl Bridge {
         static TTF: plx_gfx::text::TtfMeasure = plx_gfx::text::TtfMeasure;
         Self::with_measure(&TTF, now_us, init, super::adapters::session::SessionAdapter::live(mt),
             consent, super::adapters::consent::ConsentAdapter::live(),
-            super::adapters::stores::StoreRunner::live())
+            super::adapters::stores::StoreRunner::live(),
+        )
     }
 
     /// The same bridge over a measure that needs no fonts — the ONLY constructor a host test may
@@ -574,84 +636,128 @@ impl Bridge {
             plx_session::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
             super::adapters::session::SessionAdapter::fixture(), Default::default(),
             super::adapters::consent::ConsentAdapter::fixture(),
-            super::adapters::stores::StoreRunner::held())
+            super::adapters::stores::StoreRunner::held(),
+        )
     }
 
-    fn with_measure(measure: &'static dyn Measure, now_us: fn() -> u64,
-        init: plx_session::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
+    fn with_measure(measure: &'static dyn Measure,
+        now_us: fn() -> u64,
+        init: plx_session::auth::SessionInit,
+        session_adapter: super::adapters::session::SessionAdapter,
         consent: plx_telemetry::telemetry::consent::Consent,
         consent_adapter: super::adapters::consent::ConsentAdapter,
-        store_runner: super::adapters::stores::StoreRunner) -> Self {
+        store_runner: super::adapters::stores::StoreRunner,
+    ) -> Self {
         let stores = plx_data::stores::Stores::default();
         let mut directory = plx_data::stores::browse::DirectorySnapshot::default();
         let browse = stores.capture_browse(&mut directory);
         let search = stores.search_snapshot(browse.directory.view(), &Self::household_ids());
-        Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
-            consent_adapter, store_runner,
+        Self::with_publications_and_stores(
+            measure,
+            now_us,
+            init,
+            session_adapter,
+            consent,
+            consent_adapter,
+            store_runner,
             StorePublications {
-            hubs: stores.hubs.snapshot(), listing: browse.listing,
-            directory: browse.directory, section_hubs: browse.section_hubs,
-            search,
-        }, stores)
+                hubs: stores.hubs.snapshot(),
+                listing: browse.listing,
+                directory: browse.directory,
+                section_hubs: browse.section_hubs,
+                search,
+            },
+            stores,
+        )
     }
 
     #[cfg(test)]
     fn for_session_test(init: plx_session::auth::SessionInit) -> Self {
         static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
-        let adapter = super::adapters::session::SessionAdapter::fixture_with(init.persisted.clone());
-        Self::with_publications(&FIXTURE, || 0, init, adapter, Default::default(),
-            super::adapters::consent::ConsentAdapter::fixture(), StorePublications {
-            hubs: plx_data::pms::HubsSnapshot::empty_for_test(),
-            listing: plx_data::stores::browse::ListingSnapshot::empty_for_test(),
-            directory: Default::default(), section_hubs: plx_data::stores::browse::HubsSnapshot::empty_for_test(),
-            search: Default::default(),
-        })
+        let adapter =
+            super::adapters::session::SessionAdapter::fixture_with(init.persisted.clone());
+        Self::with_publications(
+            &FIXTURE,
+            || 0,
+            init,
+            adapter,
+            Default::default(),
+            super::adapters::consent::ConsentAdapter::fixture(),
+            StorePublications {
+                hubs: plx_data::pms::HubsSnapshot::empty_for_test(),
+                listing: plx_data::stores::browse::ListingSnapshot::empty_for_test(),
+                directory: Default::default(),
+                section_hubs: plx_data::stores::browse::HubsSnapshot::empty_for_test(),
+                search: Default::default(),
+            },
+        )
     }
 
     #[cfg(test)]
     fn for_consent_test(consent: plx_telemetry::telemetry::consent::Consent) -> Self {
         static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
-        Self::with_publications(&FIXTURE, || 0,
+        Self::with_publications(
+            &FIXTURE,
+            || 0,
             plx_session::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
-            super::adapters::session::SessionAdapter::fixture(), consent,
-            super::adapters::consent::ConsentAdapter::fixture(), StorePublications {
+            super::adapters::session::SessionAdapter::fixture(),
+            consent,
+            super::adapters::consent::ConsentAdapter::fixture(),
+            StorePublications {
                 hubs: plx_data::pms::HubsSnapshot::empty_for_test(),
                 listing: plx_data::stores::browse::ListingSnapshot::empty(),
-                directory: Default::default(), section_hubs: plx_data::stores::browse::HubsSnapshot::empty(),
+                directory: Default::default(),
+                section_hubs: plx_data::stores::browse::HubsSnapshot::empty(),
                 search: Default::default(),
-            })
+            },
+        )
     }
 
     #[cfg(test)]
-    pub(crate) fn for_consent_resource_test(consent: plx_telemetry::telemetry::consent::Consent) -> Self {
+    pub(crate) fn for_consent_resource_test(
+        consent: plx_telemetry::telemetry::consent::Consent,
+    ) -> Self {
         static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
-        Self::with_publications(&FIXTURE, || 0,
+        Self::with_publications(
+            &FIXTURE,
+            || 0,
             plx_session::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
-            super::adapters::session::SessionAdapter::fixture(), consent,
-            super::adapters::consent::ConsentAdapter::live(), StorePublications {
+            super::adapters::session::SessionAdapter::fixture(),
+            consent,
+            super::adapters::consent::ConsentAdapter::live(),
+            StorePublications {
                 hubs: plx_data::pms::HubsSnapshot::empty_for_test(),
                 listing: plx_data::stores::browse::ListingSnapshot::empty(),
-                directory: Default::default(), section_hubs: plx_data::stores::browse::HubsSnapshot::empty(),
+                directory: Default::default(),
+                section_hubs: plx_data::stores::browse::HubsSnapshot::empty(),
                 search: Default::default(),
-            })
+            },
+        )
     }
 
     #[cfg(test)]
-    fn with_publications(measure: &'static dyn Measure, now_us: fn() -> u64,
+    fn with_publications(
+        measure: &'static dyn Measure, now_us: fn() -> u64,
         init: plx_session::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
         consent: plx_telemetry::telemetry::consent::Consent,
         consent_adapter: super::adapters::consent::ConsentAdapter,
-        reads: StorePublications) -> Self {
+        reads: StorePublications,
+    ) -> Self {
         Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
-            consent_adapter, super::adapters::stores::StoreRunner::held(), reads, Default::default())
+            consent_adapter, super::adapters::stores::StoreRunner::held(), reads, Default::default(),
+        )
     }
 
-    fn with_publications_and_stores(measure: &'static dyn Measure, now_us: fn() -> u64,
-        init: plx_session::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
+    fn with_publications_and_stores(measure: &'static dyn Measure,
+        now_us: fn() -> u64,
+        init: plx_session::auth::SessionInit,
+        session_adapter: super::adapters::session::SessionAdapter,
         consent: plx_telemetry::telemetry::consent::Consent,
         consent_adapter: super::adapters::consent::ConsentAdapter,
         store_runner: super::adapters::stores::StoreRunner,
-        reads: StorePublications, stores: plx_data::stores::Stores) -> Self {
+        reads: StorePublications,
+        stores: plx_data::stores::Stores,
+    ) -> Self {
         Self {
             session_cache_generation: plx_plex::plex::session::visible_generation(),
             cache_refresh_begun: None,
@@ -726,27 +832,36 @@ impl Bridge {
             if self.cache_refresh_begun != Some(req)
                 || self.session_adapter.cache_refresh_req() == Some(req) { return; }
             plx_session::auth::owner::SessionEvent::CacheRefreshed { req,
-                outcome: plx_plex::plex::session::CacheRefreshOutcome::Refused }
+                outcome: plx_plex::plex::session::CacheRefreshOutcome::Refused,
+            }
         } else {
-            let Some(need) = plx_plex::plex::session::refresh_need() else { return };
+            let Some(need) = plx_plex::plex::session::refresh_need() else { return;
+            };
             plx_session::auth::owner::SessionEvent::CacheObserved(need)
         };
-        d.emit(MachineId::Nav, Fx::Deliver(MachineId::Session, Delivery::Machine(AppMsg::Session(event))));
+        d.emit(MachineId::Nav, Fx::Deliver(MachineId::Session, Delivery::Machine(AppMsg::Session(event)),
+            ),
+        );
     }
 
     pub(crate) fn take_reqs(&mut self) -> Vec<LoopReq> {
         std::mem::take(&mut self.reqs)
     }
 
-    pub(crate) fn auth_read(&self) -> plx_session::auth::SessionRead<'_> { self.session.read() }
+    pub(crate) fn auth_read(&self) -> plx_session::auth::SessionRead<'_> {
+        self.session.read()
+    }
 
     /// Cached logical Session hash, including pending work even when its UI read is unchanged.
-    pub fn session_subhash(&self) -> u64 { self.session.subhash() }
+    pub fn session_subhash(&self) -> u64 {
+        self.session.subhash()
+    }
     /// Physical Consent owner's decision hash; identifiers are folded, never serialized here.
     pub fn consent_subhash(&self) -> u64 { self.consent.subhash() }
     pub(crate) fn initial_subhash(&self) -> u64 { self.initial_subhash }
     #[cfg(test)]
-    pub(crate) fn profile_resource_view(&self) -> Option<std::sync::Arc<plx_plex::plex::session::CurrentProfile>> {
+    pub(crate) fn profile_resource_view(&self,
+    ) -> Option<std::sync::Arc<plx_plex::plex::session::CurrentProfile>> {
         self.session_adapter.profile_resource_view()
     }
     pub(crate) fn snapshot_session_init(&self) -> plx_session::auth::SessionInit { self.session.snapshot_init() }
@@ -755,18 +870,22 @@ impl Bridge {
         let (epoch, scope, server, token, install) = self.session_ready.take()?;
         if !self.session.ready_is_current(epoch, scope) { return None; }
         Some(plx_session::auth::ReadyCreds { origin: server.origin(), address: server.address.clone(),
-            token, install, tier: server.tier, pin: server.resolve_pin() })
+            token, install, tier: server.tier, pin: server.resolve_pin(),
+        })
     }
 
-    pub(crate) fn take_content_reqs(&mut self) -> Vec<(MachineId, ContentReq, ReturnState<u32, PageMemory>)> {
+    pub(crate) fn take_content_reqs(&mut self,
+    ) -> Vec<(MachineId, ContentReq, ReturnState<u32, PageMemory>)> {
         std::mem::take(&mut self.content_reqs)
     }
 
-    pub(crate) fn take_home_reqs(&mut self) -> Vec<(MachineId, HomeReq, ReturnState<u32, PageMemory>)> {
+    pub(crate) fn take_home_reqs(&mut self,
+    ) -> Vec<(MachineId, HomeReq, ReturnState<u32, PageMemory>)> {
         std::mem::take(&mut self.home_reqs)
     }
 
-    pub(crate) fn take_library_reqs(&mut self) -> Vec<(MachineId, LibraryReq, ReturnState<u32, PageMemory>)> {
+    pub(crate) fn take_library_reqs(&mut self,
+    ) -> Vec<(MachineId, LibraryReq, ReturnState<u32, PageMemory>)> {
         std::mem::take(&mut self.library_reqs)
     }
 
@@ -778,20 +897,25 @@ impl Bridge {
         std::mem::take(&mut self.item_menu_reqs)
     }
 
-    pub(crate) fn take_search_reqs(&mut self) -> Vec<(MachineId, plx_screens::registry::SearchReq, ReturnState<u32, PageMemory>)> {
+    pub(crate) fn take_search_reqs(&mut self,
+    ) -> Vec<(MachineId, plx_screens::registry::SearchReq, ReturnState<u32, PageMemory>,
+    )> {
         std::mem::take(&mut self.search_reqs)
     }
 
-    pub(crate) fn search_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
+    pub(crate) fn search_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>,
+    )
         -> Option<(plx_data::search::Item, plx_ui::popover::Opener)> {
         let e = d.nav.entry(entry).filter(|e| e.arg == AppArg::Search)?;
         let screen = &e.inst.as_ref()?.screen;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
-            focus: plx_machine::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry) };
+            focus: plx_machine::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry),
+        };
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         let card = screen.focused_card(&cx, focus, Some(At::Drawn))?;
         let item = card.item.downcast_ref::<plx_data::search::Item>()?.clone();
-        Some((item, plx_ui::popover::Opener { rect: Some(card.rest_rect?), ..plx_ui::popover::Opener::NONE }))
+        Some((item, plx_ui::popover::Opener { rect: Some(card.rest_rect?), ..plx_ui::popover::Opener::NONE },
+        ))
     }
 
     pub(crate) fn search_tab_available(&self, tab: HomeTab) -> bool {
@@ -802,37 +926,47 @@ impl Bridge {
         }
     }
 
-    pub(crate) fn library_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
+    pub(crate) fn library_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>,
+    )
         -> Option<(plx_data::pms::PmsMovie, plx_ui::popover::Opener)> {
         // The grid and the two pages its header pushes (Collections, Recommended) are all the
         // library screen: a card pressed on any of them is read from the same place.
         let e = d.nav.entry(entry).filter(|e| e.arg.is_library_family())?;
         let screen = &e.inst.as_ref()?.screen;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
-            focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry) };
+            focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry),
+        };
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         let card = screen.focused_card(&cx, focus, Some(At::Drawn))?;
         let item = card.item.downcast_ref::<plx_data::pms::PmsMovie>()?.clone();
-        Some((item, plx_ui::popover::Opener { rect: Some(card.rest_rect?), ..plx_ui::popover::Opener::NONE }))
+        Some((item, plx_ui::popover::Opener { rect: Some(card.rest_rect?), ..plx_ui::popover::Opener::NONE },
+        ))
     }
 
-    pub(crate) fn library_command(d: &mut Dispatcher<AppHost>, command: plx_screens::registry::LibraryCmd) {
+    pub(crate) fn library_command(d: &mut Dispatcher<AppHost>, command: plx_screens::registry::LibraryCmd,
+    ) {
         if let plx_screens::registry::LibraryCmd::SwitchStep(_) = command {
             if let Some(InputOwner::Entry(owner)) = d.nav.input_owner() {
                 if let Some(entry) = d.nav.entry(owner).filter(|entry| matches!(entry.arg, AppArg::LibraryMenu(_))) {
                     if let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) {
                         d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
-                            Delivery::Screen(ScreenEvent::App(AppMsg::Library(command)))));
+                            Delivery::Screen(ScreenEvent::App(AppMsg::Library(command))),
+                            ),
+                        );
                         return;
                     }
                 }
             }
         }
-        let Some(entry) = d.nav.top_page() else { return };
+        let Some(entry) = d.nav.top_page() else { return;
+        };
         if !entry.arg.is_library_family() { return; }
-        let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) else { return };
+        let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) else { return;
+        };
         d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
-            Delivery::Screen(ScreenEvent::App(AppMsg::Library(command)))));
+            Delivery::Screen(ScreenEvent::App(AppMsg::Library(command))),
+            ),
+        );
     }
 
     /// The Library page's focused grid cell, `(row, col)`, if focus is on its grid.
@@ -869,9 +1003,11 @@ impl Bridge {
     }
 
     pub(crate) fn library_card_focused(d: &Dispatcher<AppHost>) -> bool {
-        let Some(entry) = d.nav.top_page() else { return false };
+        let Some(entry) = d.nav.top_page() else { return false;
+        };
         let Some(page) = entry.inst.as_ref().and_then(|instance| instance.screen.as_any())
-            .and_then(|page| page.downcast_ref::<plx_screens::library::LibraryScreen>()) else { return false };
+            .and_then(|page| page.downcast_ref::<plx_screens::library::LibraryScreen>()) else { return false;
+        };
         matches!(page.probe_viewport(d.input.engine.current(InputOwner::Entry(entry.id))).0, "grid" | "shelf")
     }
 
@@ -899,7 +1035,9 @@ impl Bridge {
         };
         if let Some(target) = target {
             self.browse_run(plx_data::stores::browse::BrowseCmd::Addressed { target,
-                work: plx_data::stores::browse::LibraryWork::Commit { select: true, choice: false, query: None } });
+                work: plx_data::stores::browse::LibraryWork::Commit { select: true, choice: false, query: None,
+                },
+            });
         }
     }
 
@@ -909,11 +1047,13 @@ impl Bridge {
     }
 
     pub(crate) fn home_opener(&self, d: &Dispatcher<AppHost>, entry: EntryId,
-        focus: Option<FocusKey<u32>>) -> plx_ui::popover::Opener {
+        focus: Option<FocusKey<u32>>,
+    ) -> plx_ui::popover::Opener {
         let rect = focus.filter(|key| key.entry == entry).and_then(|key| {
             let screen = &d.nav.entry(entry).filter(|e| e.arg == AppArg::Home)?.inst.as_ref()?.screen;
             let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
-                focus: plx_machine::machine::FocusRead { current: Some(key) , ..Default::default() }, owner: InputOwner::Entry(entry) };
+                focus: plx_machine::machine::FocusRead { current: Some(key) , ..Default::default() }, owner: InputOwner::Entry(entry),
+            };
             let cx = parts.cx::<AppHost>(self.views(), &self.measure);
             screen.focused_card_rect(&cx, Some(key), At::Drawn)
         });
@@ -922,8 +1062,10 @@ impl Bridge {
 
     /// Restore a detail page that is about to mount to a `Spot` no `ReturnState` holds — see
     /// [`plx_screens::registry::DetailSeed`].
-    pub(crate) fn seed_detail(&mut self, sid: plx_plex::plex::ServerId, rk: &str, spot: plx_data::metadata::Spot) {
-        self.mounter.seed = Some(plx_screens::registry::DetailSeed { sid, rk: rk.to_string(), spot });
+    pub(crate) fn seed_detail(&mut self, sid: plx_plex::plex::ServerId, rk: &str, spot: plx_data::metadata::Spot,
+    ) {
+        self.mounter.seed = Some(plx_screens::registry::DetailSeed { sid, rk: rk.to_string(), spot,
+        });
     }
 
     /// Where the next player instance returns to — see `AppMounter::player_origin`.
@@ -939,7 +1081,8 @@ impl Bridge {
 
     /// The compiled HUD every player instance from now on is constructed with — see
     /// [`AppMounter::player_compiled`]. Set at boot and again by `run::refresh_hud` when a controlled run or a dev package compiles on the first player frame.
-    pub(crate) fn seed_player_compiled(&mut self, compiled: std::sync::Arc<plx_appkit::hud_format::compile::Compiled>) {
+    pub(crate) fn seed_player_compiled(&mut self, compiled: std::sync::Arc<plx_appkit::hud_format::compile::Compiled>,
+    ) {
         self.mounter.player_compiled = compiled;
     }
 
@@ -960,13 +1103,29 @@ impl Bridge {
         d.input.engine.current(InputOwner::Entry(entry))
     }
 
-    fn with_home<R>(&self, d: &Dispatcher<AppHost>, f: impl for<'a> FnOnce(&plx_screens::home::HomeScreen,
-        &'a Cx<'a, AppHost>, Option<FocusKey<u32>>) -> R) -> Option<R> {
+    fn with_home<R>(&self, d: &Dispatcher<AppHost>, f: impl for<'a> FnOnce(
+            &plx_screens::home::HomeScreen,
+            &'a Cx<'a, AppHost>,
+            Option<FocusKey<u32>>,
+        ) -> R,
+    ) -> Option<R> {
         let entry = d.nav.top_page()?;
-        let home = entry.inst.as_ref()?.screen.as_any()?.downcast_ref::<plx_screens::home::HomeScreen>()?;
+        let home = entry
+            .inst
+            .as_ref()?
+            .screen
+            .as_any()?
+            .downcast_ref::<plx_screens::home::HomeScreen>()?;
         let focus = Self::home_focus(d);
-        let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
-            focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry.id) };
+        let parts = CxParts {
+            tick: Tick { ms: 0, dt_us: 0 },
+            press: Default::default(),
+            focus: plx_machine::machine::FocusRead {
+                current: focus,
+                ..Default::default()
+            },
+            owner: InputOwner::Entry(entry.id),
+        };
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         Some(f(home, &cx, focus))
     }
@@ -974,29 +1133,38 @@ impl Bridge {
     /// Is a MEMBER CARD focused on the mounted Collection page (not its header)? The press bench's
     /// precondition on a `cards::Stack` page.
     pub(crate) fn collection_card_focused(&self, d: &Dispatcher<AppHost>) -> bool {
-        let Some(entry) = d.nav.top_page() else { return false };
+        let Some(entry) = d.nav.top_page() else { return false;
+        };
         let Some(page) = entry.inst.as_ref().and_then(|i| i.screen.as_any())
-            .and_then(|s| s.downcast_ref::<plx_screens::collection::CollectionScreen>()) else { return false };
+            .and_then(|s| s.downcast_ref::<plx_screens::collection::CollectionScreen>()) else { return false;
+        };
         let focus = d.input.engine.current(InputOwner::Entry(entry.id));
         let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
-            focus: plx_machine::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry.id) };
+            focus: plx_machine::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry.id),
+        };
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         page.focused_item::<AppHost>(focus, &cx).is_some()
     }
 
     pub(crate) fn home_grid_focused(&self, d: &Dispatcher<AppHost>) -> bool {
-        self.with_home(d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx).is_some()).unwrap_or(false)
+        self.with_home(d, |home, cx, focus| {
+            home.grid_position::<AppHost>(focus, cx).is_some()
+        }).unwrap_or(false)
     }
 
     /// The catalog row Home's focus is on, when it is on a card of one (`None`: the billboard, a
     /// heading, the top bar or no Home mounted).
     pub(crate) fn home_focused_hub(&self, d: &Dispatcher<AppHost>) -> Option<usize> {
-        self.with_home(d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx)).flatten().map(|(row, _)| row)
+        self.with_home(d, |home, cx, focus| {
+            home.grid_position::<AppHost>(focus, cx)
+        }).flatten().map(|(row, _)| row)
     }
 
     #[cfg(feature = "devtriggers")]
     pub(crate) fn home_grid_position(&self, d: &Dispatcher<AppHost>) -> Option<(usize, usize)> {
-        self.with_home(d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx)).flatten()
+        self.with_home(d, |home, cx, focus| {
+            home.grid_position::<AppHost>(focus, cx)
+        }).flatten()
     }
 
     #[cfg(feature = "devtriggers")]
@@ -1033,7 +1201,8 @@ impl Bridge {
             });
             if let Some(io) = &self.home_io {
                 refresh_chrome(&mut self.chrome, &self.measure, self.directory.view(),
-                    Some((&io.profile, &io.preferences)));
+                    Some((&io.profile, &io.preferences)),
+                );
             } else {
                 refresh_chrome(&mut self.chrome, &self.measure, self.directory.view(), None);
             }
@@ -1052,14 +1221,16 @@ impl Bridge {
     /// **Publish the strip's members and the pill that is the page's own** — one write, so the
     /// landing rule (`TabContainer::strip_selected`) cannot name a pill the members do not hold.
     fn publish_strip(&mut self, d: &mut Dispatcher<AppHost>, selected: i32) {
-        self.chrome.members(selected, Self::home_focus(d), self.strip.scroll_pos(), &mut d.nav.tabs.strip);
+        self.chrome.members(selected, Self::home_focus(d), self.strip.scroll_pos(), &mut d.nav.tabs.strip,
+        );
         d.nav.tabs.strip_selected = self.chrome.key_at(selected);
     }
 
     /// Return publication changes so the frame can coalesce them with store notices.
     fn capture_views(&mut self, _d: &mut Dispatcher<AppHost>) -> (bool, bool, bool) {
         let directory_before = self.directory.clone();
-        let hubs_before = (self.section_hubs.view().id(), self.section_hubs.view().revision());
+        let hubs_before = (self.section_hubs.view().id(), self.section_hubs.view().revision(),
+        );
         // One owner borrow, in the load-bearing order: directory capture resolves profile pins
         // and may repoint the current section, so listing and shelves are captured only after it.
         let owned = self.stores.capture_browse(&mut self.directory);
@@ -1069,7 +1240,8 @@ impl Bridge {
             || self.listing.view().fetch() != listing.view().fetch();
         self.listing = listing;
         let browse_changed = listing_changed || !self.directory.same_publication(&directory_before)
-            || hubs_before != (self.section_hubs.view().id(), self.section_hubs.view().revision());
+            || hubs_before != (self.section_hubs.view().id(), self.section_hubs.view().revision(),
+                );
         let search = if self.home_io.is_some() { self.search.clone() } else {
             self.stores.search_snapshot(self.directory.view(), &Self::household_ids())
         };
@@ -1085,7 +1257,8 @@ impl Bridge {
     }
 
     pub(crate) fn update_home_chrome(&mut self, d: &mut Dispatcher<AppHost>,
-        glass: &mut plx_ui::frame::glass::GlassPlan, dt: f32) {
+        glass: &mut plx_ui::frame::glass::GlassPlan, dt: f32,
+    ) {
         let selected = self.navigation_presentation().view_tab.unwrap_or(self.chrome_selection) as i32;
         let focus = Self::home_focus(d);
         if let Some(idx) = self.chrome.take_pulse() {
@@ -1111,10 +1284,12 @@ impl Bridge {
     }
 
     fn deliver_home_commands(&mut self, d: &mut Dispatcher<AppHost>) {
-        let Some(entry) = d.nav.top_page() else { return };
+        let Some(entry) = d.nav.top_page() else { return;
+        };
         if !matches!(entry.arg, AppArg::Home)
             || d.nav.input_owner() != Some(InputOwner::Entry(entry.id)) { return; }
-        let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) else { return };
+        let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) else { return;
+        };
         let snapshot = self.stores.hubs.snapshot();
         let ready = snapshot.view().hub_count() > 0;
         // Retain data-dependent boot intentions until the first catalog arrives. A command
@@ -1124,17 +1299,22 @@ impl Bridge {
                 break;
             }
             self.home_commands.pop_front();
-            d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance), Delivery::Screen(ScreenEvent::App(AppMsg::Home(command)))));
+            d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance), Delivery::Screen(ScreenEvent::App(AppMsg::Home(command))),
+                ),
+            );
         }
     }
 
     pub(crate) fn request_home_menu(&mut self, d: &Dispatcher<AppHost>) -> bool {
-        let Some(entry) = d.nav.top_page() else { return false };
+        let Some(entry) = d.nav.top_page() else { return false;
+        };
         let Some(home) = entry.inst.as_ref().and_then(|i| i.screen.as_any())
-            .and_then(|s| s.downcast_ref::<plx_screens::home::HomeScreen>()) else { return false };
+            .and_then(|s| s.downcast_ref::<plx_screens::home::HomeScreen>()) else { return false;
+        };
         if <plx_screens::home::HomeScreen as Screen<AppHost>>::strip_reachable(home) { return false; }
         let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
-            focus: plx_machine::machine::FocusRead { current: Self::home_focus(d) , ..Default::default() }, owner: InputOwner::Entry(entry.id) };
+            focus: plx_machine::machine::FocusRead { current: Self::home_focus(d) , ..Default::default() }, owner: InputOwner::Entry(entry.id),
+        };
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         if home.grid_position::<AppHost>(parts.focus.current, &cx).is_none() { return false; }
         self.home_command(HomeCmd::ItemMenu)
@@ -1145,28 +1325,35 @@ impl Bridge {
     /// presents it. It used to CALL the three `ui::item_menu::open*` entry points and answer with
     /// a `MenuHost` for the loop to put on `app.route`; the surface's argument carries all of it
     /// now, including the two bits that variant existed to say.
-    pub(crate) fn content_menu_arg(&self, d: &Dispatcher<AppHost>, entry: EntryId, ret: &ReturnState<u32, PageMemory>)
+    pub(crate) fn content_menu_arg(&self, d: &Dispatcher<AppHost>, entry: EntryId, ret: &ReturnState<u32, PageMemory>,
+    )
         -> Option<plx_screens::registry::ItemMenuArg> {
         let e = d.nav.entry(entry)?;
         let real = &e.inst.as_ref()?.screen;
         let screen = real.as_any()?;
         let mut parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
-            press: plx_machine::machine::PressRead { scale: 1.0, is_long: false, held_ms: None, owner: None },
+            press: plx_machine::machine::PressRead { scale: 1.0, is_long: false, held_ms: None, owner: None,
+            },
             focus: plx_machine::machine::FocusRead { current: None , ..Default::default() },
-            owner: plx_machine::machine::InputOwner::Entry(entry) };
+            owner: plx_machine::machine::InputOwner::Entry(entry),
+        };
         parts.owner = plx_machine::machine::InputOwner::Entry(entry);
         parts.focus.current = ret.focus;
         let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         if let Some(page) = screen.downcast_ref::<plx_screens::detail::DetailScreen>() {
-            let sid = match &e.arg { AppArg::Content(ContentArg::Detail { sid, .. }) => *sid, _ => return None };
+            let sid = match &e.arg { AppArg::Content(ContentArg::Detail { sid, .. }) => *sid, _ => return None,
+            };
             let rect = page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn);
             let meta = <AppHost as plx_screens::registry::MetadataLike>::metadata(&cx);
             if let Some((rk, show_rk, index, mark)) = page.focused_season(ret.focus, meta) {
                 // the season's address rides on the menu: the strip's item is no catalog row, so
                 // the write's scope cannot be read off one (`apply_item_action`)
-                let mut arg = strip_menu_arg(sid, &rk, ItemMenuKind::Season { mark, show_rk, index }, entry, ret.focus, rect);
+                let mut arg = strip_menu_arg(sid, &rk, ItemMenuKind::Season { mark, show_rk, index,
+                    }, entry, ret.focus, rect,
+                );
                 // a season acts on its show: the page's own catalog id, when the page is the show
-                arg.watchlist = self.watchlist_face(page.watchlist_hex(), plx_data::watchlist::model::Kind::Show, true);
+                arg.watchlist = self.watchlist_face(page.watchlist_hex(), plx_data::watchlist::model::Kind::Show, true,
+                );
                 return Some(arg);
             }
             if let Some((rk, mark)) = page.focused_episode(ret.focus, meta) {
@@ -1175,8 +1362,10 @@ impl Bridge {
                     .and_then(|d| d.episodes.position(&rk).and_then(|i| d.episodes.get(i)))
                     .map(|ep| ep.versions.clone())
                     .unwrap_or_default();
-                let mut arg = strip_menu_arg(sid, &rk, ItemMenuKind::Episode { mark, versions }, entry, ret.focus, rect);
-                arg.watchlist = self.watchlist_face(page.watchlist_hex(), plx_data::watchlist::model::Kind::Show, true);
+                let mut arg = strip_menu_arg(sid, &rk, ItemMenuKind::Episode { mark, versions }, entry, ret.focus, rect,
+                );
+                arg.watchlist = self.watchlist_face(page.watchlist_hex(), plx_data::watchlist::model::Kind::Show, true,
+                );
                 return Some(arg);
             }
         }
@@ -1323,7 +1512,8 @@ impl Bridge {
 
     /// Run one Collection command with the registry's answer as of now. A command emits no job
     /// (the page's request is the pump's), so there is nothing to drain.
-    pub(crate) fn collection_run(&mut self, cmd: plx_data::stores::collection::CollectionCmd) -> bool {
+    pub(crate) fn collection_run(&mut self, cmd: plx_data::stores::collection::CollectionCmd,
+    ) -> bool {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         self.stores.collection_run(cmd, &self.client_keys)
     }
@@ -1535,9 +1725,17 @@ impl Bridge {
     /// The outcome's `endpoints` are the refreshes the edit's Hubs step settled (a launch the
     /// runner refused since the last Hubs step is settled by whatever steps Hubs next): the caller
     /// carries them.
-    pub(crate) fn viewstate_run(&mut self, cmd: plx_data::stores::viewstate::ViewStateCmd) -> plx_data::stores::StoreOutcome {
+    pub(crate) fn viewstate_run(
+        &mut self,
+        cmd: plx_data::stores::viewstate::ViewStateCmd,
+    ) -> plx_data::stores::StoreOutcome {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
-        let outcome = self.stores.viewstate_run(cmd, self.directory.view(), &self.client_keys, Self::profile_scope());
+        let outcome = self.stores.viewstate_run(
+            cmd,
+            self.directory.view(),
+            &self.client_keys,
+            Self::profile_scope(),
+        );
         self.start_store_jobs_in(plx_data::stores::Stores::VIEWSTATE_FILLS);
         outcome
     }
@@ -1558,7 +1756,9 @@ impl Bridge {
         let stops = plx_data::stores::take_landings_owed(
             &self.stores.landgate,
             plx_data::stores::StoreId::ViewStop,
-            |got: &[plx_data::viewstate::StopRecord]| got.is_empty() && plx_media::route::stops_owed(),
+            |got: &[plx_data::viewstate::StopRecord]| {
+                got.is_empty() && plx_media::route::stops_owed()
+            },
             plx_media::route::take_landed_stops,
         );
         if stops.is_empty() {
@@ -1580,7 +1780,8 @@ impl Bridge {
 
     pub(crate) fn viewstate_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
-        let endpoints = self.stores.viewstate_pump(self.directory.view(), &self.client_keys, Self::profile_scope());
+        let endpoints = self.stores.viewstate_pump(self.directory.view(), &self.client_keys, Self::profile_scope(),
+        );
         self.start_store_jobs_in(plx_data::stores::Stores::VIEWSTATE_FILLS);
         endpoints
     }
@@ -1593,7 +1794,8 @@ impl Bridge {
     /// other fan-outs emit no jobs of their own.
     pub(crate) fn reconcile_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
-        let mut outcome = self.stores.reconcile_pump(self.directory.view(), &self.client_keys, Self::profile_scope());
+        let mut outcome = self.stores.reconcile_pump(self.directory.view(), &self.client_keys, Self::profile_scope(),
+        );
         self.start_store_jobs_in(plx_data::stores::Stores::RECONCILE_FILLS);
         if outcome.changed {
             plx_machine::idle::invalidate();
@@ -1622,7 +1824,8 @@ impl Bridge {
     /// only server slots and counts, never a session, key or identifier.
     /// `true` when a feed came back after a gap, so the caller owes the covered pages a re-read;
     /// and the endpoint refreshes the map's quiet refetches settled, for the caller to carry.
-    pub(crate) fn notify_pump(&mut self, pages: &[ContentArg], shown: plx_data::stores::notify_map::Shown)
+    pub(crate) fn notify_pump(&mut self, pages: &[ContentArg], shown: plx_data::stores::notify_map::Shown,
+    )
         -> (bool, plx_data::stores::EndpointRefreshSet) {
         let out = self.stores.notify_pump();
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
@@ -1638,7 +1841,8 @@ impl Bridge {
         for (sid, epoch) in &out.resynced {
             plx_base::eventlog::log(&format!("notify: sid={} resync epoch={epoch}", sid.raw()));
         }
-        (!out.resynced.is_empty(), std::mem::take(&mut spent.endpoints))
+        (!out.resynced.is_empty(), std::mem::take(&mut spent.endpoints),
+        )
     }
 
     /// WILL background: the feed's connections are cancelled now and stay closed until resume.
@@ -1683,9 +1887,12 @@ impl Bridge {
             arg if arg.is_library_family() => self.stores.library_held_keys(),
             AppArg::Search => self.stores.search.held_keys(),
             AppArg::Watchlist => self.stores.watchlist.held_keys(),
-            AppArg::Content(content @ (ContentArg::Person { .. } | ContentArg::Filmography { .. })) =>
+            AppArg::Content(content @ (ContentArg::Person { .. } | ContentArg::Filmography { .. }),
+            ) =>
                 self.stores.person.held_keys(content),
-            AppArg::Content(content @ ContentArg::Collection(_)) => self.stores.collection.held_keys(content),
+            AppArg::Content(content @ ContentArg::Collection(_)) => {
+                self.stores.collection.held_keys(content)
+            }
             _ => Default::default(),
         }
     }
@@ -1791,7 +1998,8 @@ impl Bridge {
 
     /// Synchronous addressed Hubs command against this owner's retained Browse directory. Used by
     /// callers outside the per-frame dispatch (server activation, boot).
-    pub(crate) fn hubs_run(&mut self, cmd: plx_data::stores::hubs::HubsCmd) -> plx_data::stores::StoreOutcome {
+    pub(crate) fn hubs_run(&mut self, cmd: plx_data::stores::hubs::HubsCmd,
+    ) -> plx_data::stores::StoreOutcome {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let directory = self.directory.view();
         let out = self.stores.hubs.run_with_directory(cmd, directory, &self.client_keys);
@@ -1834,12 +2042,17 @@ impl Bridge {
         // found would leave a request nothing runs, and the pump below would wait on it; it is
         // started now, so the request settles, and counted and logged so the bypass is not silent.
         self.start_late_store_jobs();
-        self.stores.metadata.pump_detail_with_gate(&self.stores.landgate)
+        self.stores
+            .metadata
+            .pump_detail_with_gate(&self.stores.landgate)
     }
 
     /// The `MetadataStore`'s own async season landing — `app/run.rs`'s route-unconditional pump.
     pub(crate) fn metadata_pump_season(&mut self) -> bool {
-        let changed = self.stores.metadata.pump_season_with_gate(&self.stores.landgate);
+        let changed = self
+            .stores
+            .metadata
+            .pump_season_with_gate(&self.stores.landgate);
         // A guard, not a sender: neither `pump_season_with_gate` nor `pump_episode_pages` emits a
         // job today (they install landings and request nothing), so this finds nothing. A season or
         // page request a landing one day emits is started in the call that emitted it.
@@ -1863,8 +2076,7 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn seed_registered_browse_for_test(
         &mut self,
-        sids: [plx_plex::plex::ServerId; 2],
-    ) {
+        sids: [plx_plex::plex::ServerId; 2]) {
         self.stores.browse.borrow_mut().seed_registered_table_for_test(sids);
         self.refresh_browse_directory();
     }
@@ -1872,7 +2084,8 @@ impl Bridge {
     /// The Library grid holds `count` items of `sid` (ratingKeys "1"...), none watched, on a
     /// registered two-source table.
     #[cfg(all(test, feature = "hostsim"))]
-    pub(crate) fn seed_library_grid_for_test(&mut self, sid: plx_plex::plex::ServerId, count: usize) {
+    pub(crate) fn seed_library_grid_for_test(&mut self, sid: plx_plex::plex::ServerId, count: usize,
+    ) {
         self.seed_registered_browse_for_test([sid, sid]);
         self.stores.browse.borrow_mut().seed_items_for_test(count);
     }
@@ -2011,7 +2224,8 @@ impl Bridge {
         self.video_plane = bound;
     }
 
-    pub(crate) fn publish_playback(&mut self, session: &plx_media::route::PlaybackSession, live: bool) {
+    pub(crate) fn publish_playback(&mut self, session: &plx_media::route::PlaybackSession, live: bool,
+    ) {
         if live {
             self.playback = session.publication();
             self.playback_live = true;
@@ -2035,7 +2249,8 @@ impl Bridge {
     /// `deliver_inner`'s caller emits them; every store-step arm ends here so none can forget.
     ///
     /// An associated function over the field (not `&mut self`) so an arm holding `home_io` can call it.
-    fn carry(carried: &mut plx_data::stores::EndpointRefreshSet, due: plx_data::stores::EndpointRefreshSet) -> Handled {
+    fn carry(carried: &mut plx_data::stores::EndpointRefreshSet, due: plx_data::stores::EndpointRefreshSet,
+    ) -> Handled {
         carried.merge(due);
         Handled::Yes
     }
@@ -2047,44 +2262,76 @@ impl Bridge {
     /// ordered queue. An associated function over the fields (not `&mut self`) so an arm holding
     /// `home_io` can call it.
     fn admit_home_jobs(stores: &mut plx_data::stores::Stores,
-        runner: &mut super::adapters::stores::StoreRunner, io: &mut super::bootstrap::HomeIo, id: StoreId) {
+        runner: &mut super::adapters::stores::StoreRunner, io: &mut super::bootstrap::HomeIo, id: StoreId,
+    ) {
         for job in stores.take_jobs_of(id) {
             runner.start_admitted(job, Some(io));
         }
     }
 
-    fn deliver_inner(&mut self, to: MachineId, msg: &AppMsg, parts: &CxParts<u32>, fx: &mut Effects<'_, AppHost>) -> Handled {
+    fn deliver_inner(&mut self, to: MachineId, msg: &AppMsg, parts: &CxParts<u32>, fx: &mut Effects<'_, AppHost>,
+    ) -> Handled {
         if let AppMsg::Consent(command) = msg {
-            if to != MachineId::Consent { return Handled::No; }
+            if to != MachineId::Consent {
+                return Handled::No;
+            }
             match command {
                 ConsentCmd::Record { errors, usage } => {
-                    self.consent.record(&mut self.consent_adapter, *errors, *usage);
+                    self.consent
+                        .record(&mut self.consent_adapter, *errors, *usage);
                 }
             }
             return Handled::Yes;
         }
         if let AppMsg::Session(event) = msg {
             use plx_session::auth::owner::SessionEvent;
-            if to != MachineId::Session { return Handled::No; }
+            if to != MachineId::Session {
+                return Handled::No;
+            }
             match event {
-                SessionEvent::Result(envelope) if !self.session_adapter.admitted(envelope) => return Handled::No,
-                SessionEvent::Admission(reply) if !reply.accepted
-                    && self.session_adapter.resource_admitted(reply) => return Handled::No,
+                SessionEvent::Result(envelope) if !self.session_adapter.admitted(envelope) => {
+                    return Handled::No
+                }
+                SessionEvent::Admission(reply)
+                    if !reply.accepted && self.session_adapter.resource_admitted(reply) =>
+                {
+                    return Handled::No
+                }
                 SessionEvent::Command(plx_session::auth::owner::Command::BackAtRoot { .. })
-                    if !self.session_adapter.claim_root_press() => return Handled::No,
+                    if !self.session_adapter.claim_root_press() =>
+                {
+                    return Handled::No
+                }
                 _ => {}
             }
             // The owner reads its retained publication, not a borrow through its own mutable
             // field. Every other view still comes from this same Bridge frame boundary.
             let publication = self.session.publication();
-            let cx = parts.cx::<AppHost>(AppViews { auth: publication.read(),
-                hubs: self.hubs.view(), listing: self.listing.view(), directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, today: self.today, beneath: None,
-            }, &self.measure);
+            let cx = parts.cx::<AppHost>(
+                AppViews {
+                    auth: publication.read(),
+                    hubs: self.hubs.view(),
+                    listing: self.listing.view(),
+                    directory: self.directory.view(),
+                    section_hubs: self.section_hubs.view(),
+                    search: self.search.view(),
+                    metadata: self.stores.metadata_view(),
+                    person: self.stores.person_view(),
+                    collection: self.stores.collection_view(),
+                    subtitle_search: self.stores.subtitle_search_view(),
+                    session: &self.playback,
+                    today: self.today,
+                    beneath: None,
+                },
+                &self.measure,
+            );
             let handled = self.session.step(event, &cx, fx);
             // #132: the owner logs nothing, and the Profiles screen cannot see a read-out that
             // existed before it mounted — so the one step that ENTERED it is announced here.
-            if let Some(line) = plx_session::auth::owner::roster_readout_entered(&publication, &self.session.publication()) {
+            if let Some(line) = plx_session::auth::owner::roster_readout_entered(
+                &publication,
+                &self.session.publication(),
+            ) {
                 plx_base::eventlog::log(&line);
             }
             return handled;
@@ -2111,13 +2358,27 @@ impl Bridge {
                 AppMsg::Store(StoreCmd::Hubs(cmd)) => {
                     super::adapters::stores::refill_client_keys(&mut self.client_keys);
                     let directory = self.directory.view();
-                    let due = self.stores.hubs.run_with_directory(cmd.clone(), directory, &self.client_keys).endpoints;
-                    Self::admit_home_jobs(&mut self.stores, &mut self.store_runner, io, StoreId::Hubs);
+                    let due = self
+                        .stores
+                        .hubs
+                        .run_with_directory(cmd.clone(), directory, &self.client_keys)
+                        .endpoints;
+                    Self::admit_home_jobs(
+                        &mut self.stores,
+                        &mut self.store_runner,
+                        io,
+                        StoreId::Hubs,
+                    );
                     return Self::carry(&mut self.endpoint_carry, due);
                 }
-                AppMsg::Store(StoreCmd::Browse(plx_data::stores::browse::BrowseCmd::Discovery(result))) => {
+                AppMsg::Store(StoreCmd::Browse(
+                    plx_data::stores::browse::BrowseCmd::Discovery(result),
+                )) => {
                     let mut endpoints = plx_data::stores::EndpointRefreshSet::default();
-                    let outcome = self.stores.browse.borrow_mut()
+                    let outcome = self
+                        .stores
+                        .browse
+                        .borrow_mut()
                         .apply_discovery(result, &io.preferences);
                     endpoints.merge(outcome.endpoints);
                     // Results are ingested after the frame's ordinary publication capture. Make
@@ -2132,13 +2393,15 @@ impl Bridge {
                     super::adapters::stores::refill_client_keys(&mut self.client_keys);
                     let directory = self.directory.view();
                     let due = self.stores.hubs.tick_with_directory(parts.tick.dt(), directory, &self.client_keys).endpoints;
-                    Self::admit_home_jobs(&mut self.stores, &mut self.store_runner, io, StoreId::Hubs);
+                    Self::admit_home_jobs(&mut self.stores, &mut self.store_runner, io, StoreId::Hubs,
+                    );
                     return Self::carry(&mut self.endpoint_carry, due);
                 }
                 AppMsg::StoreWork(plx_data::stores::StoreWork::BrowseDiscovery) => {
                     super::adapters::stores::refill_client_keys(&mut self.client_keys);
                     self.stores.browse_controlled_discover(&self.client_keys);
-                    Self::admit_home_jobs(&mut self.stores, &mut self.store_runner, io, StoreId::Browse);
+                    Self::admit_home_jobs(&mut self.stores, &mut self.store_runner, io, StoreId::Browse,
+                    );
                     return Handled::Yes;
                 }
                 _ => {}
@@ -2226,7 +2489,8 @@ impl Bridge {
 impl Rig<AppHost> for Bridge {
     fn draw_chrome(&mut self, arg: &AppArg, _parts: &CxParts<u32>,
         nav: plx_ui::screen::NavPresentation,
-        glass: Option<&mut plx_ui::frame::glass::GlassPlan>) {
+        glass: Option<&mut plx_ui::frame::glass::GlassPlan>,
+    ) {
         if !Self::draws_chrome_for(arg) { return; }
         let Some(glass) = glass else { return };
         let p = plx_ui::Painter::root().alpha(nav.chrome_alpha).translate(0.0, -nav.chrome_lift);
@@ -2236,22 +2500,24 @@ impl Rig<AppHost> for Bridge {
             p,
             chrome.profile,
             chrome.chip_expand,
-            glass.tab_face(),
-        );
+            glass.tab_face());
     }
     /// The chip's DRAWN rect: `chip_cap` at the strip's live unfurl and the captured name's width,
     /// through the host page's tuck (`presented`), exactly what [`Bridge::draw_chrome`] draws.
-    fn bar_member_rect(&self, elem: u32, presented: plx_ui::screen::NavPresentation) -> Option<plx_ui::Rect> {
+    fn bar_member_rect(&self, elem: u32, presented: plx_ui::screen::NavPresentation,
+    ) -> Option<plx_ui::Rect> {
         (elem == plx_ui::widgets::TAB_KEY_CHIP).then(|| {
             let chrome = self.chrome.read(self.strip.chip_expand_pos());
-            presented.chrome_rect(plx_ui::widgets::chip_cap(chrome.chip_expand.clamp(0.0, 1.0), chrome.profile.name_w))
+            presented.chrome_rect(plx_ui::widgets::chip_cap(chrome.chip_expand.clamp(0.0, 1.0), chrome.profile.name_w,
+            ))
         })
     }
     /// The account menu's chip lift (the dispatcher's `Z::OPENER` pass): the SAME captured profile and
     /// unfurl [`Bridge::draw_chrome`] used, on the same painter (the host page's tuck, alpha and
     /// lift), over the stack's frozen ground. The material is this frame's tab face from `GlassPlan`.
     fn lift_bar_member(&mut self, elem: u32, presented: plx_ui::screen::NavPresentation,
-        material: Option<plx_gfx::gfx::GlassFace>, ground: &plx_ui::underlay::UnderlayField) {
+        material: Option<plx_gfx::gfx::GlassFace>, ground: &plx_ui::underlay::UnderlayField,
+    ) {
         if elem != plx_ui::widgets::TAB_KEY_CHIP { return; }
         let chrome = self.chrome.read(self.strip.chip_expand_pos());
         let p = plx_ui::Painter::root().alpha(presented.chrome_alpha).translate(0.0, -presented.chrome_lift);
@@ -2273,16 +2539,31 @@ impl Rig<AppHost> for Bridge {
     fn split(&mut self) -> Split<'_, AppHost> {
         Split {
             mounter: &mut self.mounter,
-            views: AppViews { auth: self.session.read(),
+            views: AppViews {
+                auth: self.session.read(),
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, today: self.today, beneath: None,
+                section_hubs: self.section_hubs.view(),
+                search: self.search.view(),
+                metadata: self.stores.metadata_view(),
+                person: self.stores.person_view(),
+                collection: self.stores.collection_view(),
+                subtitle_search: self.stores.subtitle_search_view(),
+                session: &self.playback,
+                today: self.today,
+                beneath: None,
             },
             measure: &self.measure,
         }
     }
-    fn deliver(&mut self, to: MachineId, msg: &AppMsg, parts: &CxParts<u32>, fx: &mut Effects<'_, AppHost>) -> Handled {
+    fn deliver(
+        &mut self,
+        to: MachineId,
+        msg: &AppMsg,
+        parts: &CxParts<u32>,
+        fx: &mut Effects<'_, AppHost>,
+    ) -> Handled {
         let handled = self.deliver_inner(to, msg, parts, fx);
         // A store step queues the endpoint refreshes it owes; they leave here, as many as the step
         // has room for, and the rest wait for the next store step (the sixteen-server table is gone,
@@ -2293,11 +2574,19 @@ impl Rig<AppHost> for Bridge {
         handled
     }
 
-    fn timer(&mut self, _owner: MachineId, _id: TimerId, _parts: &CxParts<u32>, _fx: &mut Effects<'_, AppHost>) {}
+    fn timer(&mut self, _owner: MachineId, _id: TimerId, _parts: &CxParts<u32>, _fx: &mut Effects<'_, AppHost>,
+    ) {
+    }
     fn app_return(&mut self, _from: MachineId, ret: ReturnState<u32, PageMemory>) {
         self.effect_return = ret;
     }
-    fn app_fx(&mut self, from: MachineId, fx: AppFx, _parts: &CxParts<u32>, out: &mut Effects<'_, AppHost>) {
+    fn app_fx(
+        &mut self,
+        from: MachineId,
+        fx: AppFx,
+        _parts: &CxParts<u32>,
+        out: &mut Effects<'_, AppHost>,
+    ) {
         self.app_effect(from, fx, out);
     }
     fn log(&mut self, line: &str) {
@@ -2361,23 +2650,43 @@ impl Bridge {
             }
         }
         match fx {
-            AppFx::Session(command) => out.push(Fx::Deliver(MachineId::Session,
-                Delivery::Machine(AppMsg::Session(plx_session::auth::owner::SessionEvent::Command(command))))),
+            AppFx::Session(command) => out.push(Fx::Deliver(
+                MachineId::Session,
+                Delivery::Machine(AppMsg::Session(
+                    plx_session::auth::owner::SessionEvent::Command(command),
+                )),
+            )),
             AppFx::SessionEffect(effect) => self.session_effect(effect, out),
             AppFx::Preferences(command) => super::preferences::execute(command),
-            AppFx::Store(id, cmd) => out.push(Fx::Deliver(MachineId::Store(id.ord()), Delivery::Machine(AppMsg::Store(cmd)))),
+            AppFx::Store(id, cmd) => out.push(Fx::Deliver(
+                MachineId::Store(id.ord()),
+                Delivery::Machine(AppMsg::Store(cmd)),
+            )),
             AppFx::StoreWork(work) => out.push(Fx::Deliver(
-                MachineId::Store(work.store().ord()), Delivery::Machine(AppMsg::StoreWork(work)))),
+                MachineId::Store(work.store().ord()),
+                Delivery::Machine(AppMsg::StoreWork(work)),
+            )),
             AppFx::Consent(command) => out.push(Fx::Deliver(
-                MachineId::Consent, Delivery::Machine(AppMsg::Consent(command)))),
+                MachineId::Consent,
+                Delivery::Machine(AppMsg::Consent(command)),
+            )),
             AppFx::Loop(req) => self.reqs.push(req),
-            AppFx::Content(req) => self.content_reqs.push((from, req, self.effect_return.clone())),
+            AppFx::Content(req) => self
+                .content_reqs
+                .push((from, req, self.effect_return.clone())),
             AppFx::Home(req) => self.home_reqs.push((from, req, self.effect_return.clone())),
-            AppFx::Library(req) => self.library_reqs.push((from, req, self.effect_return.clone())),
-            AppFx::Search(req) => self.search_reqs.push((from, req, self.effect_return.clone())),
+            AppFx::Library(req) => self
+                .library_reqs
+                .push((from, req, self.effect_return.clone())),
+            AppFx::Search(req) => self
+                .search_reqs
+                .push((from, req, self.effect_return.clone())),
             AppFx::Player(req) => self.player_reqs.push(req),
             AppFx::ItemMenu(req) => self.item_menu_reqs.push(req),
-            AppFx::Watchlist(req) => self.watchlist_reqs.push((from, req, self.effect_return.clone())),
+            AppFx::Watchlist(req) => {
+                self.watchlist_reqs
+                    .push((from, req, self.effect_return.clone()))
+            }
             // The catalog page's pill: the same write the item menu's rows make, so an Add pulses
             // the tab here too. The page flips nothing itself; the store's ledger flips the face.
             AppFx::Catalog(out) => self.catalog_effect(out),
@@ -2386,21 +2695,37 @@ impl Bridge {
 
     /// Resource execution returns typed deliveries to the existing FIFO. In particular a
     /// commit acknowledgement never recursively steps the owner outside drain/carry budgets.
-    fn session_effect(&mut self, effect: plx_session::auth::owner::SessionFx, out: &mut Effects<'_, AppHost>) {
-        use plx_session::auth::owner::{SessionEvent, SessionFx, AdmissionReply};
+    fn session_effect(&mut self, effect: plx_session::auth::owner::SessionFx, out: &mut Effects<'_, AppHost>,
+    ) {
         use plx_machine::machine::{Addr, RequestId};
+        use plx_session::auth::owner::{AdmissionReply, SessionEvent, SessionFx};
         if let Some(io) = &mut self.home_io {
-            if matches!(effect, SessionFx::Capture { .. } | SessionFx::Work { .. }
-                | SessionFx::Coordinator(_) | SessionFx::Erase { .. } | SessionFx::Incident { .. }
-                | SessionFx::RefreshCache { .. }) {
+            if matches!(
+                effect,
+                SessionFx::Capture { .. }
+                    | SessionFx::Work { .. }
+                    | SessionFx::Coordinator(_)
+                    | SessionFx::Erase { .. }
+                    | SessionFx::Incident { .. }
+                    | SessionFx::RefreshCache { .. }
+            ) {
                 io.failure = Some("unsupported controlled Home Session operation");
                 return;
             }
         }
-        let mut deliver = |event| out.push(Fx::Deliver(MachineId::Session,
-            Delivery::Machine(AppMsg::Session(event))));
+        let mut deliver = |event| {
+            out.push(Fx::Deliver(
+                MachineId::Session,
+                Delivery::Machine(AppMsg::Session(event)),
+            ))
+        };
         match effect {
-            SessionFx::Commit { req, epoch, arrival, plan } => {
+            SessionFx::Commit {
+                req,
+                epoch,
+                arrival,
+                plan,
+            } => {
                 if let Some(permit) = self.session.commit_permit(req, epoch, arrival) {
                     if let Some(reply) = self.session_adapter.begin_commit(permit, &plan) {
                         deliver(SessionEvent::Commit(reply));
@@ -2420,20 +2745,41 @@ impl Bridge {
             }
             SessionFx::Retire { req } => self.session_adapter.cancel(RequestId(req)),
             SessionFx::Cancel { requests, .. } => {
-                for req in requests { self.session_adapter.cancel(RequestId(req)); }
+                for req in requests {
+                    self.session_adapter.cancel(RequestId(req));
+                }
             }
-            SessionFx::Capture { req, epoch, request } => {
+            SessionFx::Capture {
+                req,
+                epoch,
+                request,
+            } => {
                 if self.session.read_is_current(req, epoch, request) {
                     if let Some(reply) = self.session_adapter.begin_capture(req, epoch, request) {
                         deliver(SessionEvent::Read(reply));
                     }
                 }
             }
-            SessionFx::Work { req, key, admission, input } => {
+            SessionFx::Work {
+                req,
+                key,
+                admission,
+                input,
+            } => {
                 if self.session.work_is_current(req, key, admission) {
-                    let reply = self.session_adapter.start_work(RequestId(req), key, admission, input)
-                        .err().unwrap_or(AdmissionReply { addr: Addr { to: MachineId::Session, req: RequestId(req) },
-                            key, correlation: admission, accepted: true });
+                    let reply = self
+                        .session_adapter
+                        .start_work(RequestId(req), key, admission, input)
+                        .err()
+                        .unwrap_or(AdmissionReply {
+                            addr: Addr {
+                                to: MachineId::Session,
+                                req: RequestId(req),
+                            },
+                            key,
+                            correlation: admission,
+                            accepted: true,
+                        });
                     deliver(SessionEvent::Admission(reply));
                 }
             }
@@ -2443,20 +2789,34 @@ impl Bridge {
                         self.seat_watch.arrive(seat);
                     }
                     if let Some(io) = &mut self.home_io {
-                        io.profile = self.session_adapter.profile_resource_view().expect("controlled publisher");
+                        io.profile = self
+                            .session_adapter
+                            .profile_resource_view()
+                            .expect("controlled publisher");
                     }
                 }
             }
-            SessionFx::Ready { epoch, scope, server, token, install } => {
+            SessionFx::Ready {
+                epoch,
+                scope,
+                server,
+                token,
+                install,
+            } => {
                 if self.session.ready_is_current(epoch, scope) {
                     self.session_ready = Some((epoch, scope, server, token, install));
                 }
             }
             // Erase is ordered work, not a stale asynchronous completion: a subsequent login
             // may already have advanced the epoch, but cannot skip deleting old credentials.
-            SessionFx::Erase { epoch, all_local, .. } => {
+            SessionFx::Erase {
+                epoch, all_local, ..
+            } => {
                 self.session_ready = None;
-                if let Some(leftovers) = self.session_adapter.begin_erase(epoch, all_local, &mut self.stores.metadata) {
+                if let Some(leftovers) =
+                    self.session_adapter
+                        .begin_erase(epoch, all_local, &mut self.stores.metadata)
+                {
                     deliver(SessionEvent::Erased { epoch, leftovers });
                 }
             }
@@ -2476,28 +2836,68 @@ impl Bridge {
                 }
             }
             SessionFx::Coordinator(action) => {
-                if matches!(action, plx_session::auth::owner::CoordinatorAction::LocalDataErased) {
+                if matches!(
+                    action,
+                    plx_session::auth::owner::CoordinatorAction::LocalDataErased
+                ) {
                     self.reqs.push(LoopReq::LocalDataErased);
                 }
-                if matches!(action, plx_session::auth::owner::CoordinatorAction::CloseTelemetry) {
+                if matches!(
+                    action,
+                    plx_session::auth::owner::CoordinatorAction::CloseTelemetry
+                ) {
                     self.consent.forget(&mut self.consent_adapter);
                 }
                 self.session_adapter.coordinator(action);
             }
             SessionFx::RestartReply { to, accepted } => out.push(Fx::Deliver(
-                MachineId::Instance(InstanceId(to.instance)), Delivery::Screen(ScreenEvent::Async(
-                    RequestId(to.correlation), AppMsg::RestartReply { correlation: to.correlation, accepted })))),
-            SessionFx::SelectionReply { to, accepted, flow_epoch } => out.push(Fx::Deliver(
-                MachineId::Instance(InstanceId(to.instance)), Delivery::Screen(ScreenEvent::Async(
-                    RequestId(to.correlation), AppMsg::SelectionReply { correlation: to.correlation, accepted, flow_epoch })))),
-            SessionFx::PlaintextAnswer { machine_id, choice, account } => {
-                crate::app::adapters::session::record_plaintext_answer(&account, &machine_id, choice);
+                MachineId::Instance(InstanceId(to.instance)),
+                Delivery::Screen(ScreenEvent::Async(
+                    RequestId(to.correlation),
+                    AppMsg::RestartReply {
+                        correlation: to.correlation,
+                        accepted,
+                    },
+                )),
+            )),
+            SessionFx::SelectionReply {
+                to,
+                accepted,
+                flow_epoch,
+            } => out.push(Fx::Deliver(
+                MachineId::Instance(InstanceId(to.instance)),
+                Delivery::Screen(ScreenEvent::Async(
+                    RequestId(to.correlation),
+                    AppMsg::SelectionReply {
+                        correlation: to.correlation,
+                        accepted,
+                        flow_epoch,
+                    },
+                )),
+            )),
+            SessionFx::PlaintextAnswer {
+                machine_id,
+                choice,
+                account,
+            } => {
+                crate::app::adapters::session::record_plaintext_answer(
+                    &account,
+                    &machine_id,
+                    choice,
+                );
             }
             SessionFx::BackReply { to, resumed } => {
                 self.session_adapter.finish_back(resumed);
-                out.push(Fx::Deliver(MachineId::Instance(InstanceId(to.instance)),
-                    Delivery::Screen(ScreenEvent::Async(RequestId(to.correlation),
-                        AppMsg::BackReply { correlation: to.correlation, resumed }))));
+                out.push(Fx::Deliver(
+                    MachineId::Instance(InstanceId(to.instance)),
+                    Delivery::Screen(ScreenEvent::Async(
+                        RequestId(to.correlation),
+                        AppMsg::BackReply {
+                            correlation: to.correlation,
+                            resumed,
+                        },
+                    )),
+                ));
             }
         }
     }
@@ -2508,11 +2908,17 @@ fn step_store(cmd: &StoreCmd, _cx: &Cx<'_, AppHost>, _fx: &mut Effects<'_, AppHo
         StoreCmd::Browse(_) => unreachable!("Browse is stepped by Bridge's owned store"),
         StoreCmd::Hubs(_) => unreachable!("Hubs is stepped by Bridge with its Browse directory"),
         StoreCmd::Metadata(_) => unreachable!("Metadata is stepped by Bridge's owned store"),
-        StoreCmd::Search(_) => unreachable!("Search is stepped by Bridge with its Browse directory"),
+        StoreCmd::Search(_) => {
+            unreachable!("Search is stepped by Bridge with its Browse directory")
+        }
         StoreCmd::Person(_) => unreachable!("Person is stepped by Bridge's owned store"),
         StoreCmd::Collection(_) => unreachable!("Collection is stepped by Bridge's owned store"),
-        StoreCmd::ViewState(_) => unreachable!("ViewState is stepped by Bridge with its Browse owner"),
-        StoreCmd::SubtitleSearch(_) => unreachable!("SubtitleSearch is stepped by Bridge's owned store"),
+        StoreCmd::ViewState(_) => {
+            unreachable!("ViewState is stepped by Bridge with its Browse owner")
+        }
+        StoreCmd::SubtitleSearch(_) => {
+            unreachable!("SubtitleSearch is stepped by Bridge's owned store")
+        }
     }
 }
 
@@ -2530,8 +2936,10 @@ fn step_store(cmd: &StoreCmd, _cx: &Cx<'_, AppHost>, _fx: &mut Effects<'_, AppHo
 /// asked for at the press that wants it now, so there is nothing per-frame left to reconcile.
 #[cfg(test)]
 pub(crate) fn frame(
-    d: &mut Dispatcher<AppHost>, rig: &mut Bridge,
-    tick: Tick, inputs: Vec<InputEvent<u32>>,
+    d: &mut Dispatcher<AppHost>,
+    rig: &mut Bridge,
+    tick: Tick,
+    inputs: Vec<InputEvent<u32>>,
 ) -> (&'static str, FrameReport) {
     frame_with_tap(d, rig, tick, inputs, &mut NoTap)
 }
@@ -2544,7 +2952,9 @@ pub(crate) fn frame_with_tap(
     tap: &mut dyn plx_ui::dispatch::Tap<AppHost>,
 ) -> (&'static str, FrameReport) {
     let _frame_scope = plx_base::task::FrameScope::enter();
-    if matches!(d.top_arg(), Some(AppArg::Login | AppArg::Profiles)) && rig.session.needs_ready_commit() {
+    if matches!(d.top_arg(), Some(AppArg::Login | AppArg::Profiles))
+        && rig.session.needs_ready_commit()
+    {
         execute_session_command(d, plx_session::auth::SessionCmd::TakeReady);
     }
     frame_ingest(d, rig, tick, inputs, Bridge::take_live_results, tap)
@@ -2566,22 +2976,33 @@ impl Bridge {
         // frame's own work) spawned, so a request issued in iteration k lands in k+1 whatever the
         // worker's timing: the blocking dump waits for them, the frame dump's paced one holds the
         // frame until they are in. The claim is the adapter's own count (`HubsStore::owed`).
-        let mut results = self.stores.landgate.take_all_owed(StoreId::Hubs.ord(), StoreId::Hubs.name(),
-            |_| self.stores.hubs.owed(), || self.stores.hubs.take_results());
+        let mut results = self.stores.landgate.take_all_owed(
+            StoreId::Hubs.ord(),
+            StoreId::Hubs.name(),
+            |_| self.stores.hubs.owed(),
+            || self.stores.hubs.take_results(),
+        );
         results.sort_by_key(|result| result.request_id());
-        results.into_iter().map(|result| (
-            plx_machine::machine::Addr {
-                to: MachineId::Store(StoreId::Hubs.ord()),
-                req: plx_machine::machine::RequestId(result.request_id()),
-            },
-            AppMsg::HubsResult(result),
-        )).collect()
+        results
+            .into_iter()
+            .map(|result| {
+                (
+                    plx_machine::machine::Addr {
+                        to: MachineId::Store(StoreId::Hubs.ord()),
+                        req: plx_machine::machine::RequestId(result.request_id()),
+                    },
+                    AppMsg::HubsResult(result),
+                )
+            })
+            .collect()
     }
 
     #[cfg(test)]
     pub(crate) fn settle_session_io_for_test(&mut self, d: &mut Dispatcher<AppHost>) {
         for _ in 0..32 {
-            if !self.session_adapter.persistence_pending() { return; }
+            if !self.session_adapter.persistence_pending() {
+                return;
+            }
             plx_base::storage_worker::drain_for_test();
             frame_with_tap(d, self, Tick::default(), Vec::new(), &mut NoTap);
         }
@@ -2591,53 +3012,113 @@ impl Bridge {
     fn take_live_results(&mut self) -> AppResults {
         // Landing sequence within auth is authoritative. Do not sort it by request ID:
         // profile Ready and its late roster can be separated by other requests' progress.
-        let mut results: AppResults = self.session_adapter.take_results().into_iter()
-            .map(|envelope| (envelope.addr, AppMsg::Session(plx_session::auth::owner::SessionEvent::Result(envelope))))
+        let mut results: AppResults = self
+            .session_adapter
+            .take_results()
+            .into_iter()
+            .map(|envelope| {
+                (
+                    envelope.addr,
+                    AppMsg::Session(plx_session::auth::owner::SessionEvent::Result(envelope)),
+                )
+            })
             .collect();
         if let Some(reply) = self.session_adapter.take_capture() {
-            results.push((reply.addr, AppMsg::Session(plx_session::auth::owner::SessionEvent::Read(reply))));
+            results.push((
+                reply.addr,
+                AppMsg::Session(plx_session::auth::owner::SessionEvent::Read(reply)),
+            ));
         }
-        self.session_adapter.cancel_superseded_commits(|req, epoch, arrival|
-            self.session.commit_is_current(req, epoch, arrival));
+        self.session_adapter
+            .cancel_superseded_commits(|req, epoch, arrival| {
+                self.session.commit_is_current(req, epoch, arrival)
+            });
         if let Some(completed) = self.session_adapter.take_committed() {
             let disk_event = completed.disk_event();
-            let disk_addr = plx_machine::machine::Addr { to: MachineId::Session,
-                req: plx_machine::machine::RequestId(completed.req) };
-            if let Some(permit) = self.session.commit_permit(completed.req, completed.epoch, completed.arrival) {
+            let disk_addr = plx_machine::machine::Addr {
+                to: MachineId::Session,
+                req: plx_machine::machine::RequestId(completed.req),
+            };
+            if let Some(permit) =
+                self.session
+                    .commit_permit(completed.req, completed.epoch, completed.arrival)
+            {
                 let reply = self.session_adapter.finish_commit(permit, completed);
-                let addr = plx_machine::machine::Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(reply.req) };
-                results.push((addr, AppMsg::Session(plx_session::auth::owner::SessionEvent::Commit(reply))));
+                let addr = plx_machine::machine::Addr {
+                    to: MachineId::Session,
+                    req: plx_machine::machine::RequestId(reply.req),
+                };
+                results.push((
+                    addr,
+                    AppMsg::Session(plx_session::auth::owner::SessionEvent::Commit(reply)),
+                ));
                 if let Some(completion) = self.session_adapter.take_live_completion() {
-                    results.push((addr, AppMsg::Session(plx_session::auth::owner::SessionEvent::Persistence(completion))));
+                    results.push((
+                        addr,
+                        AppMsg::Session(plx_session::auth::owner::SessionEvent::Persistence(
+                            completion,
+                        )),
+                    ));
                 }
             }
             // Losing the permit forbids registry/profile publication, not accounting for a
             // durable write that already happened. Never strand the owner's next disk fence.
-            if let Some(event) = disk_event { results.push((disk_addr, AppMsg::Session(event))); }
+            if let Some(event) = disk_event {
+                results.push((disk_addr, AppMsg::Session(event)));
+            }
         }
         if let Some(event) = self.session_adapter.take_erased(&mut self.stores.metadata) {
-            results.push((plx_machine::machine::Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(0) },
-                AppMsg::Session(event)));
+            results.push((
+                plx_machine::machine::Addr {
+                    to: MachineId::Session,
+                    req: plx_machine::machine::RequestId(0),
+                },
+                AppMsg::Session(event),
+            ));
         }
         if let Some((req, outcome)) = self.session_adapter.take_cache_refresh() {
-            results.push((plx_machine::machine::Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(0) },
-                AppMsg::Session(plx_session::auth::owner::SessionEvent::CacheRefreshed { req, outcome })));
+            results.push((
+                plx_machine::machine::Addr {
+                    to: MachineId::Session,
+                    req: plx_machine::machine::RequestId(0),
+                },
+                AppMsg::Session(plx_session::auth::owner::SessionEvent::CacheRefreshed {
+                    req,
+                    outcome,
+                }),
+            ));
         }
         // What became of the report whose Report ID the sign-in screen shows: held, delivered or
         // dropped.
         if let Some((id, delivery)) = self.session_adapter.take_incident_delivery() {
-            results.push((plx_machine::machine::Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(0) },
-                AppMsg::Session(plx_session::auth::owner::SessionEvent::IncidentReported { id, delivery })));
+            results.push((
+                plx_machine::machine::Addr {
+                    to: MachineId::Session,
+                    req: plx_machine::machine::RequestId(0),
+                },
+                AppMsg::Session(plx_session::auth::owner::SessionEvent::IncidentReported {
+                    id,
+                    delivery,
+                }),
+            ));
         }
         results.extend(self.take_hubs_results());
         if self.home_io.is_some() {
-            if let Some(result) = self.stores.landgate.take_owed(StoreId::Browse.ord(), StoreId::Browse.name(),
+            if let Some(result) = self.stores.landgate.take_owed(
+                StoreId::Browse.ord(),
+                StoreId::Browse.name(),
                 || self.stores.browse.borrow().discovery_owed(),
-                || self.stores.browse.borrow_mut().take_discovery()) {
-                results.push((plx_machine::machine::Addr {
-                    to: MachineId::Store(StoreId::Browse.ord()),
-                    req: plx_machine::machine::RequestId(result.request_id()),
-                }, AppMsg::Store(StoreCmd::Browse(plx_data::stores::browse::BrowseCmd::Discovery(result)))));
+                || self.stores.browse.borrow_mut().take_discovery(),
+            ) {
+                results.push((
+                    plx_machine::machine::Addr {
+                        to: MachineId::Store(StoreId::Browse.ord()),
+                        req: plx_machine::machine::RequestId(result.request_id()),
+                    },
+                    AppMsg::Store(StoreCmd::Browse(
+                        plx_data::stores::browse::BrowseCmd::Discovery(result),
+                    )),
+                ));
             }
         }
         results
@@ -2739,13 +3220,21 @@ fn frame_ingest(
     // driving again. `ModalStack::tick` and `Dispatcher`'s per-surface step and draw open one
     // scope each (§4.4) now; the page's tick runs in none.
     let results = take(rig);
-    let session_records: Vec<_> = results.iter().filter_map(|(addr, message)| match message {
-        AppMsg::Session(plx_session::auth::owner::SessionEvent::Result(envelope)) => Some((*addr, envelope.clone())),
-        _ => None,
-    }).collect();
-    rig.session_adapter.validate_supplied(&session_records)
+    let session_records: Vec<_> = results
+        .iter()
+        .filter_map(|(addr, message)| match message {
+            AppMsg::Session(plx_session::auth::owner::SessionEvent::Result(envelope)) => {
+                Some((*addr, envelope.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    rig.session_adapter
+        .validate_supplied(&session_records)
         .expect("Session ingest requires an exactly addressed, admitted transfer batch");
-    let report = plx_base::diag::spans::span("dframe", || d.frame_with(rig, tick, inputs, results, tap, false));
+    let report = plx_base::diag::spans::span("dframe", || {
+        d.frame_with(rig, tick, inputs, results, tap, false)
+    });
     d.prune(&report.unmounted);
     plx_base::diag::spans::span("dsync", || rig.sync_host(d, tick.dt()));
     // On the simulator, a frame the video plane alone presented is not reported as damage: the
@@ -2765,9 +3254,17 @@ fn frame_ingest(
     // `DrawFrame` (`ui::popover`'s panel and scrim, the profile chip's redraw, the glass track's
     // settled test, the navblur prototype). One writer, immediately after the container's own
     // frame, from the container's own transition — see `ui::nav`'s module doc.
-    let tab = d.nav.tabs.stack.pending_dest()
+    let tab = d
+        .nav
+        .tabs
+        .stack
+        .pending_dest()
         .and_then(|arg| pill_of_arg(arg, rig.directory.view()));
-    plx_ui::nav::publish(d.nav.tabs.stack.page_alpha(), d.nav.tabs.stack.chrome_alpha(), tab);
+    plx_ui::nav::publish(
+        d.nav.tabs.stack.page_alpha(),
+        d.nav.tabs.stack.chrome_alpha(),
+        tab,
+    );
     // **The heartbeat's `route=` word IS the top page's own name** (§15.2). It used to be
     // `route_word(app.route)` with this line asserting the two agreed every frame; there is one
     // source now, and the `debug_assert_eq!` that guarded the pair is gone with the pair.
@@ -2838,16 +3335,31 @@ pub(crate) fn content_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
 #[cfg(feature = "devtriggers")]
 fn push_card_probe(out: &mut String) {
     use std::fmt::Write;
-    if !plx_ui::card_probe::armed() { return; }
-    let Some(c) = plx_ui::card_probe::peek() else { return };
-    let rk = ["/library/metadata/", "/library/collections/"].iter()
+    if !plx_ui::card_probe::armed() {
+        return;
+    }
+    let Some(c) = plx_ui::card_probe::peek() else {
+        return;
+    };
+    let rk = ["/library/metadata/", "/library/collections/"]
+        .iter()
         .find_map(|root| c.key.strip_prefix(root))
         .and_then(|rest| rest.split('/').next())
         .filter(|rk| rk.bytes().all(|b| b.is_ascii_digit()))
         .unwrap_or("");
-    let _ = write!(out, " cdx={} cdy={} cdw={} cdi={} cdn={} cdg={} cda={} cdr={} cdb={} cdk=", c.x.round() as i64,
-        c.y.round() as i64, c.w.round() as i64, c.index, c.len, c.global,
-        c.ready.map_or(-1, i64::from), plx_ui::card_probe::regressions(), plx_ui::card_probe::returned_bare());
+    let _ = write!(
+        out,
+        " cdx={} cdy={} cdw={} cdi={} cdn={} cdg={} cda={} cdr={} cdb={} cdk=",
+        c.x.round() as i64,
+        c.y.round() as i64,
+        c.w.round() as i64,
+        c.index,
+        c.len,
+        c.global,
+        c.ready.map_or(-1, i64::from),
+        plx_ui::card_probe::regressions(),
+        plx_ui::card_probe::returned_bare()
+    );
     crate::focusprobe::push_rk(out, rk);
     if let Some((x, w)) = c.caption {
         let _ = write!(out, " cdc={} cdcw={}", x.round() as i64, w.round() as i64);
@@ -2856,7 +3368,9 @@ fn push_card_probe(out: &mut String) {
 
 fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     use std::fmt::Write;
-    let Some(page) = d.nav.top_page() else { return String::new() };
+    let Some(page) = d.nav.top_page() else {
+        return String::new();
+    };
     // **The player's panels and its countdown** — `focusprobe::push_player`'s other half. Every
     // one of these was a module global until restructure phase 9 and is a mounted instance's own
     // state now, so it is read here, where the container is in scope, exactly as Home's, the
@@ -2868,9 +3382,17 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     // comparable. `haschap=` stays in `push_player`: it is a fact about the ITEM, not the panel.
     if matches!(page.arg, AppArg::Player) {
         use plx_screens::player::overlay::{OverlayKind, Panel};
-        let player = page.inst.as_ref().and_then(|i| i.screen.as_any())
+        let player = page
+            .inst
+            .as_ref()
+            .and_then(|i| i.screen.as_any())
             .and_then(|s| s.downcast_ref::<plx_screens::player::PlayerScreen>());
-        let surface = d.nav.modals.surfaces.iter().rev()
+        let surface = d
+            .nav
+            .modals
+            .surfaces
+            .iter()
+            .rev()
             .filter(|s| matches!(s.entry.arg, AppArg::PlayerOverlay(_)))
             .find_map(|s| s.entry.inst.as_ref())
             .and_then(|i| i.screen.as_any())
@@ -2878,7 +3400,10 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         let kind = surface.map(|s| s.kind());
         let is = |want: fn(&OverlayKind) -> bool| kind.as_ref().is_some_and(want);
         let sel = surface.map_or(0, |s| s.sel());
-        let mut out = format!(" upnext={}", u8::from(player.is_some_and(|p| p.up_next.armed())));
+        let mut out = format!(
+            " upnext={}",
+            u8::from(player.is_some_and(|p| p.up_next.armed()))
+        );
         let (taudio, tsub) = match surface.map(|s| s.panel()) {
             Some(Panel::Tracks(t)) => (t.active_audio(), t.active_sub()),
             _ => (0, -1),
@@ -2886,17 +3411,29 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         let menu = is(|k| matches!(k, OverlayKind::Tracks { .. }));
         // Info and Chapters are the page's own sections (`hud.sections`), not surfaces; the spellings stay so a
         // recording taken before and one taken after remain comparable.
-        let sections = player.map(|p| p.hud.sections).unwrap_or(plx_screens::player::input::Sections::NONE);
+        let sections = player
+            .map(|p| p.hud.sections)
+            .unwrap_or(plx_screens::player::input::Sections::NONE);
         let info = sections.contains(plx_appkit::player_hud::command::Section::Info);
         let chap = sections.contains(plx_appkit::player_hud::command::Section::Chapters);
         // the section's own cursor: Info's button, or the chapter card the engine holds
         let section_sel = if sections.contains(plx_appkit::player_hud::command::Section::Chapters) {
-            d.input.engine.current(InputOwner::Entry(page.id))
-                .and_then(|k| k.elem.checked_sub(plx_appkit::player_hud::ELEM_CHAPTER_BASE)).unwrap_or(0) as usize
+            d.input
+                .engine
+                .current(InputOwner::Entry(page.id))
+                .and_then(|k| {
+                    k.elem
+                        .checked_sub(plx_appkit::player_hud::ELEM_CHAPTER_BASE)
+                })
+                .unwrap_or(0) as usize
         } else {
             player.map_or(0, |p| p.hud.nav.btn.max(0) as usize)
         };
-        let sel = if sections.any() { section_sel as i32 } else { sel };
+        let sel = if sections.any() {
+            section_sel as i32
+        } else {
+            sel
+        };
         let more = is(|k| matches!(k, OverlayKind::More { .. }));
         let _ = write!(
             out,
@@ -2909,23 +3446,50 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         return out;
     }
     if matches!(page.arg, AppArg::Home) {
-        let Some(home) = page.inst.as_ref().and_then(|i| i.screen.as_any())
-            .and_then(|s| s.downcast_ref::<plx_screens::home::HomeScreen>()) else { return String::new() };
+        let Some(home) = page
+            .inst
+            .as_ref()
+            .and_then(|i| i.screen.as_any())
+            .and_then(|s| s.downcast_ref::<plx_screens::home::HomeScreen>())
+        else {
+            return String::new();
+        };
         let focus = Bridge::home_focus(d);
-        let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
-            focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
+        let parts = CxParts {
+            tick: Tick { ms: 0, dt_us: 0 },
+            press: Default::default(),
+            focus: plx_machine::machine::FocusRead {
+                current: focus,
+                ..Default::default()
+            },
+            owner: InputOwner::Entry(page.id),
+        };
         let cx = parts.cx::<AppHost>(rig.views(), &rig.measure);
         let position = home.grid_position::<AppHost>(focus, &cx);
-        let (row, col) = position.map(|(r, c)| (r as i64, c as i64)).unwrap_or((-1, -1));
+        let (row, col) = position
+            .map(|(r, c)| (r as i64, c as i64))
+            .unwrap_or((-1, -1));
         let hf = match rig.chrome.focus(focus) {
             plx_ui::widgets::TopFocus::Chip => -1,
             plx_ui::widgets::TopFocus::Pill(i) => -(i as i64 + 2),
-            plx_ui::widgets::TopFocus::Away => focus.filter(|key| key.elem < 2).map_or(-1, |key| key.elem as i64),
+            plx_ui::widgets::TopFocus::Away => focus
+                .filter(|key| key.elem < 2)
+                .map_or(-1, |key| key.elem as i64),
         };
         let grid = home.snap_target() >= 0.5;
-        let mut out = format!(" snapt={} snapp={} hf={hf} row={row} col={col}", grid as u8,
-            (!<plx_screens::home::HomeScreen as Screen<AppHost>>::strip_reachable(home)) as u8);
-        crate::focusprobe::push_item(&mut out, if grid { home.focused_item::<AppHost>(focus, &cx) } else { home.hero_item::<AppHost>(&cx) });
+        let mut out = format!(
+            " snapt={} snapp={} hf={hf} row={row} col={col}",
+            grid as u8,
+            (!<plx_screens::home::HomeScreen as Screen<AppHost>>::strip_reachable(home)) as u8
+        );
+        crate::focusprobe::push_item(
+            &mut out,
+            if grid {
+                home.focused_item::<AppHost>(focus, &cx)
+            } else {
+                home.hero_item::<AppHost>(&cx)
+            },
+        );
         // `plxnative-focusx`: where the focused card is DRAWN, in whole canvas pixels. It moves
         // every frame a row scrolls, so an armed run logs a line per frame: that is the point.
         // `tests/paging_link.py` reads a row that jumps under the focus (the trailing-edge to
@@ -2934,8 +3498,12 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         #[cfg(feature = "devtriggers")]
         if plx_base::devtrig::flag("focusx") {
             let at = At::Drawn;
-            let _ = write!(out, " fx={}", home.focused_rect::<AppHost>(focus, &cx, at)
-                .map_or(-99999, |r| r.x.round() as i64));
+            let _ = write!(
+                out,
+                " fx={}",
+                home.focused_rect::<AppHost>(focus, &cx, at)
+                    .map_or(-99999, |r| r.x.round() as i64)
+            );
         }
         return out;
     }
@@ -2946,25 +3514,46 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         // page is not mounted yet) answers the empty line.
         let screen = page.inst.as_ref().and_then(|i| i.screen.as_any());
         let library = screen.and_then(|s| s.downcast_ref::<plx_screens::library::LibraryScreen>());
-        let recommended = screen.and_then(|s| s.downcast_ref::<plx_screens::library::RecommendedScreen>());
+        let recommended =
+            screen.and_then(|s| s.downcast_ref::<plx_screens::library::RecommendedScreen>());
         let focus = d.input.engine.current(InputOwner::Entry(page.id));
-        let parts = CxParts { tick: Tick::default(), press: Default::default(),
-            focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
+        let parts = CxParts {
+            tick: Tick::default(),
+            press: Default::default(),
+            focus: plx_machine::machine::FocusRead {
+                current: focus,
+                ..Default::default()
+            },
+            owner: InputOwner::Entry(page.id),
+        };
         let cx = parts.cx::<AppHost>(rig.views(), &rig.measure);
         let menu = d.top_surface_name() == Some("library_menu");
-        let pill = if menu { -1 } else { match rig.chrome.focus(focus) {
-            plx_ui::widgets::TopFocus::Pill(index) => index as i32, _ => -1,
-        }};
+        let pill = if menu {
+            -1
+        } else {
+            match rig.chrome.focus(focus) {
+                plx_ui::widgets::TopFocus::Pill(index) => index as i32,
+                _ => -1,
+            }
+        };
         let (item, (region, row, col, x, y)) = match (library, recommended) {
-            (Some(library), _) => (library.focused_item(focus, &cx), library.probe_viewport(focus)),
-            (None, Some(recommended)) => (recommended.focused_item(focus, &cx), recommended.probe_viewport(focus)),
+            (Some(library), _) => (
+                library.focused_item(focus, &cx),
+                library.probe_viewport(focus),
+            ),
+            (None, Some(recommended)) => (
+                recommended.focused_item(focus, &cx),
+                recommended.probe_viewport(focus),
+            ),
             (None, None) => return String::new(),
         };
         let mut out = format!(" pill={pill} card={} menu={} region={region} row={row} col={col} viewport_x={x:.3} viewport_y={y:.3} sid=", u8::from(item.is_some() && !menu), u8::from(menu));
         if let Some(item) = item {
             let _ = write!(out, "{} rk=", item.sid.raw());
             crate::focusprobe::push_rk(&mut out, &item.rk);
-        } else { out.push_str("- rk=-"); }
+        } else {
+            out.push_str("- rk=-");
+        }
         // `plxnative-focusx`: the handoff's two drawn alphas (chrome, capsule) -- off by default, so
         // the fingerprint grammar the replay recordings pin does not change.
         #[cfg(feature = "devtriggers")]
@@ -2977,8 +3566,14 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         return out;
     }
     if matches!(page.arg, AppArg::Search) {
-        let Some(search) = page.inst.as_ref().and_then(|i| i.screen.as_any())
-            .and_then(|s| s.downcast_ref::<plx_screens::search::SearchScreen>()) else { return String::new() };
+        let Some(search) = page
+            .inst
+            .as_ref()
+            .and_then(|i| i.screen.as_any())
+            .and_then(|s| s.downcast_ref::<plx_screens::search::SearchScreen>())
+        else {
+            return String::new();
+        };
         let focus = d.input.engine.current(InputOwner::Entry(page.id));
         // The shared bar decides Chip/Strip first — those elems live outside this screen's own
         // group space (`SearchScreen::probe`'s doc), so asking the screen about them would just
@@ -2989,22 +3584,43 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             plx_ui::widgets::TopFocus::Pill(_) => ("Strip", -1i64, -1i64, -1i64, false),
             plx_ui::widgets::TopFocus::Away => search.probe(focus),
         };
-        let pill = match top { plx_ui::widgets::TopFocus::Pill(i) => i as i64, _ => -1 };
+        let pill = match top {
+            plx_ui::widgets::TopFocus::Pill(i) => i as i64,
+            _ => -1,
+        };
         return format!(" zone={zone} editing={} row={row} col={col} recent={recent} pill={pill} card={} below={} clear={}",
             u8::from(search.is_editing()), u8::from(card), search.probe_below(), search.recents_shown());
     }
-    if !matches!(page.arg, AppArg::Content(_)) { return String::new(); }
-    let Some(InputOwner::Entry(owner)) = d.nav.input_owner() else { return String::new() };
-    let Some(instance) = d.nav.entry(owner).and_then(|e| e.inst.as_ref()) else { return String::new() };
+    if !matches!(page.arg, AppArg::Content(_)) {
+        return String::new();
+    }
+    let Some(InputOwner::Entry(owner)) = d.nav.input_owner() else {
+        return String::new();
+    };
+    let Some(instance) = d.nav.entry(owner).and_then(|e| e.inst.as_ref()) else {
+        return String::new();
+    };
     let focus = d.focus();
-    let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
-        press: plx_machine::machine::PressRead { scale: 1.0, is_long: false, held_ms: None, owner: None },
-        focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(owner) };
+    let parts = CxParts {
+        tick: Tick { ms: 0, dt_us: 0 },
+        press: plx_machine::machine::PressRead {
+            scale: 1.0,
+            is_long: false,
+            held_ms: None,
+            owner: None,
+        },
+        focus: plx_machine::machine::FocusRead {
+            current: focus,
+            ..Default::default()
+        },
+        owner: InputOwner::Entry(owner),
+    };
     let cx = parts.cx::<AppHost>(rig.views(), &rig.measure);
     let mut groups = Vec::new();
     instance.screen.groups(&cx, &mut groups);
     let group = focus.and_then(|f| instance.screen.group_of(&f.elem, &cx));
-    let card = group.and_then(|g| groups.iter().find(|x| x.id == g))
+    let card = group
+        .and_then(|g| groups.iter().find(|x| x.id == g))
         .is_some_and(|g| g.elem == plx_ui::screen::ElemKind::Card);
     let mut out = String::new();
     match &page.arg {
@@ -3012,27 +3628,57 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             // The probe's `col=` is the card's index in the Related row; a restore names a card of
             // the tail window by its listing position instead (`Spot::tail_col`).
             let listed = cx.views.metadata.current();
-            let col_of = |spot: &plx_data::metadata::Spot| spot.tail_position().zip(listed)
-                .and_then(|(at, d)| d.related_tail.positions.iter().position(|&p| p == at).map(|k| (d.related_tail.head + k) as i32))
-                .unwrap_or(spot.col);
+            let col_of = |spot: &plx_data::metadata::Spot| {
+                spot.tail_position()
+                    .zip(listed)
+                    .and_then(|(at, d)| {
+                        d.related_tail
+                            .positions
+                            .iter()
+                            .position(|&p| p == at)
+                            .map(|k| (d.related_tail.head + k) as i32)
+                    })
+                    .unwrap_or(spot.col)
+            };
             let mut sp = match instance.screen.memory_at(focus) {
-                PageMemory::Detail(s) => s.spot, _ => Default::default(),
+                PageMemory::Detail(s) => s.spot,
+                _ => Default::default(),
             };
             sp.col = col_of(&sp);
             for (_, elem) in d.return_state().remembered {
-                if let PageMemory::Detail(saved) = instance.screen.memory_at(Some(FocusKey { entry: owner, elem })) {
+                if let PageMemory::Detail(saved) = instance
+                    .screen
+                    .memory_at(Some(FocusKey { entry: owner, elem }))
+                {
                     let saved = saved.spot;
-                    if let Some(col) = sp.saved_col.get_mut(saved.section.max(0) as usize) { *col = col_of(&saved); }
+                    if let Some(col) = sp.saved_col.get_mut(saved.section.max(0) as usize) {
+                        *col = col_of(&saved);
+                    }
                 }
             }
-            let _ = write!(out, " sec={} col={} eptext={}", sp.section, sp.col, sp.ep_text as u8);
-            match sp.season { Some(n) => { let _ = write!(out, " season={n}"); }, None => out.push_str(" season=-") }
+            let _ = write!(
+                out,
+                " sec={} col={} eptext={}",
+                sp.section, sp.col, sp.ep_text as u8
+            );
+            match sp.season {
+                Some(n) => {
+                    let _ = write!(out, " season={n}");
+                }
+                None => out.push_str(" season=-"),
+            }
             out.push_str(" saved=");
             for (i, col) in sp.saved_col.iter().enumerate() {
-                if i > 0 { out.push(','); }
+                if i > 0 {
+                    out.push(',');
+                }
                 let _ = write!(out, "{col}");
             }
-            let show = cx.views.metadata.current().is_some_and(|m| m.sid == *sid && m.rk == *rk && m.kind == "show");
+            let show = cx
+                .views
+                .metadata
+                .current()
+                .is_some_and(|m| m.sid == *sid && m.rk == *rk && m.kind == "show");
             // `alt=` is now a question about the TREE — the *Also available* picker is a surface,
             // so "is it up" is the container's answer and not a module flag's.
             let alt = surface_up(d, |arg| matches!(arg, AppArg::AltSources(_)));
@@ -3045,12 +3691,26 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             // instance the way `alt=` reads its phase: one producer, the container.
             let (tracks, tpage) = tracks_probe(d);
             let _ = write!(out, " tracks={} tpage={}", tracks as u8, tpage);
-            let _ = write!(out, " card={} alt={} show={} sid={} rk=", card as u8, alt as u8, show as u8, sid.raw());
+            let _ = write!(
+                out,
+                " card={} alt={} show={} sid={} rk=",
+                card as u8,
+                alt as u8,
+                show as u8,
+                sid.raw()
+            );
             crate::focusprobe::push_rk(&mut out, rk);
             out.push_str(" ep=");
-            let episode = instance.screen.as_any()
+            let episode = instance
+                .screen
+                .as_any()
                 .and_then(|s| s.downcast_ref::<plx_screens::detail::DetailScreen>())
-                .and_then(|s| s.focused_episode(focus, <AppHost as plx_screens::registry::MetadataLike>::metadata(&cx)));
+                .and_then(|s| {
+                    s.focused_episode(
+                        focus,
+                        <AppHost as plx_screens::registry::MetadataLike>::metadata(&cx),
+                    )
+                });
             if let Some((rk, mark)) = episode {
                 crate::focusprobe::push_rk(&mut out, &rk);
                 out.push_str(match mark {
@@ -3058,21 +3718,40 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
                     plx_ui::widgets::PosterMark::InProgress => " epwatched=part",
                     plx_ui::widgets::PosterMark::Watched => " epwatched=yes",
                 });
-            } else { out.push_str("- epwatched=-"); }
+            } else {
+                out.push_str("- epwatched=-");
+            }
         }
         AppArg::Content(ContentArg::Person { .. }) => {
             let filmography = d.nav.is_surface(owner)
-                && d.nav.entry(owner).is_some_and(|e| matches!(e.arg, AppArg::Content(ContentArg::Filmography { .. })));
-            let _ = write!(out, " card={} filmography={}", card as u8, filmography as u8);
-            let item = instance.screen.focused_card(&cx, focus, None)
+                && d.nav.entry(owner).is_some_and(|e| {
+                    matches!(e.arg, AppArg::Content(ContentArg::Filmography { .. }))
+                });
+            let _ = write!(
+                out,
+                " card={} filmography={}",
+                card as u8, filmography as u8
+            );
+            let item = instance
+                .screen
+                .focused_card(&cx, focus, None)
                 .and_then(|card| card.item.downcast_ref::<plx_data::pms::PmsMovie>());
             if let Some(item) = item {
                 let _ = write!(out, " sid={} rk=", item.sid.raw());
                 crate::focusprobe::push_rk(&mut out, &item.rk);
-            } else { out.push_str(" sid=- rk=-"); }
+            } else {
+                out.push_str(" sid=- rk=-");
+            }
         }
-        AppArg::Content(ContentArg::Collection(plx_plex::plex::collections::CollectionRef { rk, sec, tag, .. })) => {
-            let item = instance.screen.focused_card(&cx, focus, None)
+        AppArg::Content(ContentArg::Collection(plx_plex::plex::collections::CollectionRef {
+            rk,
+            sec,
+            tag,
+            ..
+        })) => {
+            let item = instance
+                .screen
+                .focused_card(&cx, focus, None)
                 .and_then(|card| card.item.downcast_ref::<plx_data::pms::PmsMovie>());
             let _ = write!(out, " card={} collection_rk=", card as u8);
             crate::focusprobe::push_rk(&mut out, rk);
@@ -3080,12 +3759,18 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             if let Some(item) = item {
                 let _ = write!(out, " sid={} rk=", item.sid.raw());
                 crate::focusprobe::push_rk(&mut out, &item.rk);
-            } else { out.push_str(" sid=- rk=-"); }
+            } else {
+                out.push_str(" sid=- rk=-");
+            }
         }
         _ => {}
     }
-    let _ = write!(out, " group={} elem={}", group.map(|g| g.0 as i64).unwrap_or(-1),
-        focus.map(|f| f.elem as i64).unwrap_or(-1));
+    let _ = write!(
+        out,
+        " group={} elem={}",
+        group.map(|g| g.0 as i64).unwrap_or(-1),
+        focus.map(|f| f.elem as i64).unwrap_or(-1)
+    );
     out
 }
 
@@ -3114,7 +3799,9 @@ pub(crate) fn open_player_overlay(
         }
         return;
     }
-    d.nav.next_style = Style::PlayerPanel { survives_failure: kind.survives_failure() };
+    d.nav.next_style = Style::PlayerPanel {
+        survives_failure: kind.survives_failure(),
+    };
     d.request(
         MachineId::Nav,
         NavOp::Present(AppArg::PlayerOverlay(
@@ -3127,7 +3814,9 @@ pub(crate) fn open_player_overlay(
 pub(crate) fn player_overlay_kind(
     d: &Dispatcher<AppHost>,
 ) -> Option<plx_screens::player::overlay::OverlayKind> {
-    let InputOwner::Entry(id) = d.nav.input_owner()? else { return None };
+    let InputOwner::Entry(id) = d.nav.input_owner()? else {
+        return None;
+    };
     match &d.nav.entry(id)?.arg {
         AppArg::PlayerOverlay(arg) => Some(arg.kind),
         _ => None,
@@ -3224,7 +3913,9 @@ pub(crate) fn dismiss_player_overlays(d: &mut Dispatcher<AppHost>) {
 pub(crate) fn player_overlay_mut(
     d: &mut Dispatcher<AppHost>,
 ) -> Option<&mut plx_screens::player::overlay::PlayerOverlayScreen> {
-    let InputOwner::Entry(id) = d.nav.input_owner()? else { return None };
+    let InputOwner::Entry(id) = d.nav.input_owner()? else {
+        return None;
+    };
     d.nav
         .entry_mut(id)?
         .inst
@@ -3256,7 +3947,9 @@ pub(crate) fn open_content_panel(
     // (`ContentPanel::surface`), so a new page-owned panel is declared where the screen is. What is
     // this function's is the PRESENTING: refuse a second copy of one already up, hand the
     // container the style through its one-shot handshake, and request the op.
-    let Some((style, arg)) = panel.surface(host, subject) else { return };
+    let Some((style, arg)) = panel.surface(host, subject) else {
+        return;
+    };
     let id = plx_ui::screen::ScreenArg::id(&arg);
     if surface_up(d, move |up| plx_ui::screen::ScreenArg::id(up) == id) {
         return;
@@ -3289,7 +3982,10 @@ pub(crate) fn card_menu_arg(
     plx_screens::registry::ItemMenuArg {
         sid: item.sid, // the ROW's server, not the current one
         rk: item.rk.clone(),
-        kind: ItemMenuKind::Card { row: Box::new(item.clone()), from_deck },
+        kind: ItemMenuKind::Card {
+            row: Box::new(item.clone()),
+            from_deck,
+        },
         host,
         focus,
         anchor: anchor_bits(rect),
@@ -3363,7 +4059,9 @@ pub(crate) fn item_menu_up(d: &Dispatcher<AppHost>) -> bool {
 
 /// The item menu's own instance — its cursor and its captured opener, read where the container is
 /// in scope, exactly as the player's panels are.
-pub(crate) fn item_menu(d: &Dispatcher<AppHost>) -> Option<&plx_screens::item_menu::ItemMenuScreen> {
+pub(crate) fn item_menu(
+    d: &Dispatcher<AppHost>,
+) -> Option<&plx_screens::item_menu::ItemMenuScreen> {
     d.nav
         .modals
         .surfaces
@@ -3495,8 +4193,15 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
         // (`SeatWatch`, at the `PublishProfile` that precedes this `Ready`).
         let saved = plx_plex::plex::session::peek();
         plx_media::route::restore_install_rows(&saved);
-        let endpoints = super::boot::install_pms_owned(bridge, &c.origin,
-            &c.address, &c.token, c.tier, c.pin.as_ref(), &c.install);
+        let endpoints = super::boot::install_pms_owned(
+            bridge,
+            &c.origin,
+            &c.address,
+            &c.token,
+            c.tier,
+            c.pin.as_ref(),
+            &c.install,
+        );
         execute_endpoint_outcomes(pages, endpoints);
         // **A new user must never be able to walk BACK into the previous one's pages**, which is
         // the fourth store an identity change must not survive beside the `browse`/`pms`/`person`
@@ -3512,7 +4217,10 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
         // single-user account this is the earliest authorized moment there is.
         super::input::maybe_ask_consent(pages);
         bridge.refresh_browse_directory();
-        if plx_data::stores::browse::onboard::asks(bridge.browse_directory(), &plx_plex::plex::session::peek()) {
+        if plx_data::stores::browse::onboard::asks(
+            bridge.browse_directory(),
+            &plx_plex::plex::session::peek(),
+        ) {
             plx_base::eventlog::log("login: server installed — asking which sources feed Home");
             // no `enter()`: rooting the stack at the page is what mounts the owned screen
             // (`boot.rs`), and a ROOT is right because the sweep above has just emptied the tree.
@@ -3640,7 +4348,8 @@ pub(crate) fn wears_tab_bar(arg: &AppArg) -> bool {
 /// The Library's pill is its TYPE, and the argument carries none (which library the grid shows is
 /// the `browse` store's business): the answer is the section the store is pointing at, which
 /// `nav_tab`'s `LibraryCmd::Enter` has already aimed.
-fn pill_of_arg(arg: &AppArg, directory: plx_data::stores::browse::DirectoryView<'_>) -> Option<usize> {
+fn pill_of_arg(arg: &AppArg, directory: plx_data::stores::browse::DirectoryView<'_>,
+) -> Option<usize> {
     use crate::app::chrome::{pill_of, Pill};
     match arg {
         AppArg::Home => pill_of(directory, Pill::Home),
@@ -3742,7 +4451,8 @@ pub(crate) fn open_detail(
     ret: Option<ReturnState<u32, PageMemory>>,
 ) {
     use plx_ui::screen::ScreenArg;
-    let arg = AppArg::Content(ContentArg::Detail { sid, rk: rk.to_string() });
+    let arg = AppArg::Content(ContentArg::Detail { sid, rk: rk.to_string(),
+    });
     // The page is already on its way (a second press inside the push's dip-out): the pending push
     // is inert against its twin (`NavStack::is_inert`) and its prepared body has spent its seed,
     // so a seed written now would only linger for some later, unseeded mount of this item. The
@@ -3800,7 +4510,8 @@ pub(crate) fn nav_pop_to(d: &mut Dispatcher<AppHost>, entry: EntryId) {
 /// cur` route compare is `pending.from == top().id`, an ENTRY compare, which strictly dominates it
 /// — two detail pages are one route and two entries.
 pub(crate) fn nav_cancel(d: &mut Dispatcher<AppHost>) -> bool {
-    let Some(top) = d.nav.top_page().map(|e| e.id) else { return false };
+    let Some(top) = d.nav.top_page().map(|e| e.id) else { return false;
+    };
     d.nav.tabs.stack.cancel(top)
 }
 
@@ -3858,7 +4569,8 @@ pub(crate) fn open_first_run_consent_at(d: &mut Dispatcher<AppHost>, stage: u8) 
         return;
     }
     d.nav.next_style = Style::Opaque { snapshot: false };
-    d.request(MachineId::Nav, NavOp::Present(AppArg::FirstRunConsent(stage)));
+    d.request(MachineId::Nav, NavOp::Present(AppArg::FirstRunConsent(stage)),
+    );
 }
 
 /// Dismiss whichever surface is up (the loop's teardown paths: sign-out, a profile reset).
@@ -4025,12 +4737,14 @@ pub(crate) fn player_mut(
 /// (`app::playback::perform_hud_command`) addresses the page with `AppMsg::HudSection`. The page owns the
 /// sections, so it opens or closes under the package's policy and seats its own focus; the app writes nothing of
 /// it. A no-op when no player page is mounted.
-pub(crate) fn toggle_player_section(d: &mut Dispatcher<AppHost>, section: plx_appkit::player_hud::command::Section) {
+pub(crate) fn toggle_player_section(d: &mut Dispatcher<AppHost>, section: plx_appkit::player_hud::command::Section,
+) {
     let Some(instance) = d.top_page() else { return };
     let page = MachineId::Instance(instance);
     d.emit(
         page,
-        Fx::Deliver(page, Delivery::Screen(ScreenEvent::App(AppMsg::HudSection(section)))),
+        Fx::Deliver(page, Delivery::Screen(ScreenEvent::App(AppMsg::HudSection(section))),
+        ),
     );
 }
 
@@ -4044,7 +4758,9 @@ pub(crate) fn toggle_player_section(d: &mut Dispatcher<AppHost>, section: plx_ap
 pub(crate) fn close_player_sections(d: &mut Dispatcher<AppHost>) {
     let Some(instance) = d.top_page() else { return };
     let page = MachineId::Instance(instance);
-    d.emit(page, Fx::Deliver(page, Delivery::Screen(ScreenEvent::App(AppMsg::HudSectionsClose))));
+    d.emit(page, Fx::Deliver(page, Delivery::Screen(ScreenEvent::App(AppMsg::HudSectionsClose)),
+        ),
+    );
 }
 
 /// **Seat the player page's `FocusEngine` on the group its HUD cursor names** — the engine's half
@@ -4064,7 +4780,9 @@ pub(crate) fn close_player_sections(d: &mut Dispatcher<AppHost>) {
 /// A no-op when no player page is mounted. The engine acts on an `Enter` only for the page that owns
 /// input at the moment it drains; for a page under a panel it only reaches the screen, which mirrors it.
 pub(crate) fn reseat_player_focus(d: &mut Dispatcher<AppHost>) {
-    reseat_player(d, |player, _| Some(FocusTarget::ContainerGroup(player.hud.nav.focus)));
+    reseat_player(d, |player, _| {
+        Some(FocusTarget::ContainerGroup(player.hud.nav.focus))
+    });
 }
 
 /// Re-seat the player's ring on the element its row currently calls primary — the APP's half of a
@@ -4086,11 +4804,13 @@ fn reseat_player(
 ) {
     let Some(instance) = d.top_page() else { return };
     let entry = d.nav.entry_of_instance(instance);
-    let Some(focus) = player(d).and_then(|player| target(player, entry)) else { return };
+    let Some(focus) = player(d).and_then(|player| target(player, entry)) else { return;
+    };
     let page = MachineId::Instance(instance);
     d.emit(
         page,
-        Fx::Deliver(page, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus }))),
+        Fx::Deliver(page, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus })),
+        ),
     );
 }
 
@@ -4113,6 +4833,7 @@ pub(crate) fn search_owns_input(d: &Dispatcher<AppHost>) -> bool {
 
 /// **Does the page under the pointer glide at the screen's edges?** No surface is up and the top
 /// page scrolls itself by a wheel (`Screen::glides`): the pointer's edge glide is offered to it.
+#[allow(dead_code)] // Retained for screens/tests that describe wheel-glide capability.
 pub(crate) fn page_glides(d: &Dispatcher<AppHost>) -> bool {
     !d.surface_up() && d.owns_input() && d.top_screen().is_some_and(|screen| screen.glides())
 }
@@ -4205,16 +4926,30 @@ pub(crate) fn overlay_word(d: &Dispatcher<AppHost>) -> Option<&'static str> {
 pub(crate) fn every_surface_word() -> Vec<&'static str> {
     let mut out = Vec::new();
     for arg in every_surface_arg() {
-        let route = if matches!(arg, AppArg::PlayerOverlay(_)) { AppArg::Player } else { AppArg::Home };
+        let route = if matches!(arg, AppArg::PlayerOverlay(_)) {
+            AppArg::Player
+        } else {
+            AppArg::Home
+        };
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
         show_page(&mut d, route.clone());
-        frame(&mut d, &mut rig, Tick { ms: 0, dt_us: 16_000 }, vec![]);
+        frame(
+            &mut d,
+            &mut rig,
+            Tick {
+                ms: 0,
+                dt_us: 16_000,
+            },
+            vec![],
+        );
         // The style is the application's to choose per surface (`Navigation::next_style`), and it
         // does not change the word — `Compact` is enough for every one of them here.
         d.nav.next_style = Style::Compact;
         d.request(MachineId::Nav, NavOp::Present(arg));
-        frame(&mut d, &mut rig, Tick { ms: 16, dt_us: 16_000 }, vec![]);
+        frame(&mut d, &mut rig, Tick { ms: 16, dt_us: 16_000,
+            }, vec![],
+        );
         out.push(overlay_word(&d).expect("a presented surface names a word"));
     }
     out
@@ -4222,7 +4957,8 @@ pub(crate) fn every_surface_word() -> Vec<&'static str> {
 
 /// A key for the dispatcher: the raw SDL fields classified once (`ui::consts::classify`), the
 /// fork's packed state read as an edge.
-pub(crate) fn key_input(sym: u32, wcode: u32, state: u32, now: Tick, source: Source) -> InputEvent<u32> {
+pub(crate) fn key_input(sym: u32, wcode: u32, state: u32, now: Tick, source: Source,
+) -> InputEvent<u32> {
     use plx_ui::consts::{classify, Key as K};
     // Transport keys retain their raw identity under Other; only D-pad arrows navigate.
     let key = match classify(sym, wcode) {
@@ -4292,12 +5028,14 @@ pub(crate) fn wheel_input(dy: i32, now: Tick) -> Vec<InputEvent<u32>> {
         InputEvent {
             at: now,
             source: Source::Sdl,
-            kind: InputKind::Key { key, sym, wcode, edge: Edge::Down, at_edge: false },
+            kind: InputKind::Key { key, sym, wcode, edge: Edge::Down, at_edge: false,
+            },
         },
         InputEvent {
             at: now,
             source: Source::Sdl,
-            kind: InputKind::Key { key, sym, wcode, edge: Edge::Up, at_edge: false },
+            kind: InputKind::Key { key, sym, wcode, edge: Edge::Up, at_edge: false,
+            },
         },
     ]
 }
@@ -4334,7 +5072,8 @@ pub(crate) fn script_edge(key: Key, edge: Edge, now: Tick) -> InputEvent<u32> {
     InputEvent {
         at: now,
         source: Source::Script,
-        kind: InputKind::Key { key, sym: 0, wcode: 0, edge, at_edge: false },
+        kind: InputKind::Key { key, sym: 0, wcode: 0, edge, at_edge: false,
+        },
     }
 }
 
@@ -4356,23 +5095,23 @@ mod session_protocol_tests;
 mod session_profile_regression_tests;
 
 #[cfg(test)]
-#[path = "session_resource_tests.rs"]
-mod session_resource_tests;
+#[path = "consent_owner_tests.rs"]
+mod consent_owner_tests;
 #[cfg(test)]
 #[path = "recording_erasure_tests.rs"]
 mod recording_erasure_tests;
 #[cfg(test)]
-#[path = "consent_owner_tests.rs"]
-mod consent_owner_tests;
-#[cfg(test)]
-#[path = "session_worker_adapter_tests.rs"]
-mod session_worker_adapter_tests;
-#[cfg(test)]
 #[path = "session_erase_retry_tests.rs"]
 mod session_erase_retry_tests;
 #[cfg(test)]
+#[path = "session_resource_tests.rs"]
+mod session_resource_tests;
+#[cfg(test)]
 #[path = "session_roster_art_tests.rs"]
 mod session_roster_art_tests;
+#[cfg(test)]
+#[path = "session_worker_adapter_tests.rs"]
+mod session_worker_adapter_tests;
 
 #[cfg(test)]
 #[path = "session_controller_regression_tests.rs"]
@@ -4546,77 +5285,38 @@ mod overscan_audit_tests;
 mod viewstate_directory_policy_tests;
 
 #[cfg(test)]
-#[path = "person_lifecycle_tests.rs"]
-mod person_lifecycle_tests;
-#[cfg(test)]
-#[path = "collection_lifecycle_tests.rs"]
-mod collection_lifecycle_tests;
-#[cfg(test)]
-#[path = "store_admission_tests.rs"]
-mod store_admission_tests;
-#[cfg(test)]
-#[path = "viewstate_controlled_tests.rs"]
-mod viewstate_controlled_tests;
-#[cfg(test)]
-#[path = "browse_hubs_drain_tests.rs"]
-mod browse_hubs_drain_tests;
-#[cfg(test)]
 #[path = "browse_discovery_admission_tests.rs"]
 mod browse_discovery_admission_tests;
 #[cfg(test)]
 #[path = "browse_discovery_drain_tests.rs"]
 mod browse_discovery_drain_tests;
 #[cfg(test)]
+#[path = "browse_hubs_drain_tests.rs"]
+mod browse_hubs_drain_tests;
+#[cfg(test)]
 #[path = "browse_listing_admission_tests.rs"]
 mod browse_listing_admission_tests;
+#[cfg(test)]
+#[path = "collection_lifecycle_tests.rs"]
+mod collection_lifecycle_tests;
 #[cfg(test)]
 #[path = "home_admission_tests.rs"]
 mod home_admission_tests;
 #[cfg(test)]
 #[path = "person_admission_tests.rs"]
 mod person_admission_tests;
+#[cfg(test)]
+#[path = "person_lifecycle_tests.rs"]
+mod person_lifecycle_tests;
+#[cfg(test)]
+#[path = "store_admission_tests.rs"]
+mod store_admission_tests;
+#[cfg(test)]
+#[path = "viewstate_controlled_tests.rs"]
+mod viewstate_controlled_tests;
 
 // The route-test lanes: key-driven tests of the Library / Collections redesign's routes, over one
 // shared driver (`test_support::World`).
-#[cfg(test)]
-#[path = "library_switch_route_tests.rs"]
-mod library_switch_route_tests;
-#[cfg(test)]
-#[path = "library_scroll_route_tests.rs"]
-mod library_scroll_route_tests;
-#[cfg(test)]
-#[path = "header_cache_route_tests.rs"]
-mod header_cache_route_tests;
-#[cfg(test)]
-#[path = "library_reread_route_tests.rs"]
-mod library_reread_route_tests;
-#[cfg(test)]
-#[path = "library_memory_route_tests.rs"]
-mod library_memory_route_tests;
-#[cfg(test)]
-#[path = "under_posters_route_tests.rs"]
-mod under_posters_route_tests;
-#[cfg(test)]
-#[path = "under_posters_shelf_route_tests.rs"]
-mod under_posters_shelf_route_tests;
-#[cfg(test)]
-#[path = "under_posters_pages_route_tests.rs"]
-mod under_posters_pages_route_tests;
-#[cfg(test)]
-#[path = "under_posters_band_route_tests.rs"]
-mod under_posters_band_route_tests;
-#[cfg(test)]
-#[path = "home_chrome_route_tests.rs"]
-mod home_chrome_route_tests;
-#[cfg(test)]
-#[path = "home_hero_route_tests.rs"]
-mod home_hero_route_tests;
-#[cfg(test)]
-#[path = "watchlist_disc_route_tests.rs"]
-mod watchlist_disc_route_tests;
-#[cfg(test)]
-#[path = "sort_filter_vocabulary_route_tests.rs"]
-mod sort_filter_vocabulary_route_tests;
 #[cfg(test)]
 #[path = "account_menu_route_tests.rs"]
 mod account_menu_route_tests;
@@ -4626,6 +5326,45 @@ mod card_rest_route_tests;
 #[cfg(test)]
 #[path = "deep_shelves_route_tests.rs"]
 mod deep_shelves_route_tests;
+#[cfg(test)]
+#[path = "header_cache_route_tests.rs"]
+mod header_cache_route_tests;
+#[cfg(test)]
+#[path = "home_chrome_route_tests.rs"]
+mod home_chrome_route_tests;
+#[cfg(test)]
+#[path = "home_hero_route_tests.rs"]
+mod home_hero_route_tests;
+#[cfg(test)]
+#[path = "library_memory_route_tests.rs"]
+mod library_memory_route_tests;
+#[cfg(test)]
+#[path = "library_reread_route_tests.rs"]
+mod library_reread_route_tests;
+#[cfg(test)]
+#[path = "library_scroll_route_tests.rs"]
+mod library_scroll_route_tests;
+#[cfg(test)]
+#[path = "library_switch_route_tests.rs"]
+mod library_switch_route_tests;
+#[cfg(test)]
+#[path = "sort_filter_vocabulary_route_tests.rs"]
+mod sort_filter_vocabulary_route_tests;
+#[cfg(test)]
+#[path = "under_posters_band_route_tests.rs"]
+mod under_posters_band_route_tests;
+#[cfg(test)]
+#[path = "under_posters_pages_route_tests.rs"]
+mod under_posters_pages_route_tests;
+#[cfg(test)]
+#[path = "under_posters_route_tests.rs"]
+mod under_posters_route_tests;
+#[cfg(test)]
+#[path = "under_posters_shelf_route_tests.rs"]
+mod under_posters_shelf_route_tests;
+#[cfg(test)]
+#[path = "watchlist_disc_route_tests.rs"]
+mod watchlist_disc_route_tests;
 
 #[cfg(test)]
 mod preference_effect_tests {
@@ -4645,10 +5384,12 @@ mod preference_effect_tests {
             let initial = super::super::bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
             let mut bridge = Bridge::controlled_home(|| 0, &initial, &mt, replay);
             let mut emitted = Vec::new(); let mut present = Present::new();
-            let mut out = Effects::new(&mut emitted, MachineId::Instance(InstanceId(1)), &mut present);
+            let mut out = Effects::new(&mut emitted, MachineId::Instance(InstanceId(1)), &mut present,
+            );
             let (reply, receipt) = mpsc::channel();
             bridge.app_effect(MachineId::Instance(InstanceId(1)),
-                AppFx::Preferences(PreferenceCmd::Load { reply }), &mut out);
+                AppFx::Preferences(PreferenceCmd::Load { reply }), &mut out,
+            );
             assert!(matches!(receipt.try_recv(), Err(TryRecvError::Disconnected)),
                 "controlled account load must drop the reply without capturing a live profile");
             for save_quality in [false, true] {
@@ -4659,7 +5400,8 @@ mod preference_effect_tests {
                     plx_media::route::Choice::DirectPlay(plx_media::route::DirectPlayMode::Forced)
                 };
                 let command = PreferenceCmd::Choose(choice, reply);
-                bridge.app_effect(MachineId::Instance(InstanceId(1)), AppFx::Preferences(command), &mut out);
+                bridge.app_effect(MachineId::Instance(InstanceId(1)), AppFx::Preferences(command), &mut out,
+                );
                 assert!(matches!(receipt.try_recv(), Err(TryRecvError::Disconnected)),
                     "controlled local preference must not enqueue persistence");
             }
@@ -4677,7 +5419,8 @@ mod preference_effect_tests {
 fn transport_keys_keep_their_identity_through_dispatcher_input() {
     use plx_ui::consts::{self, Key as Physical};
     for (sym, wcode, expected) in [(0, consts::WCODE_FASTFORWARD, Physical::Right { alt: true }),
-        (consts::WCODE_REWIND, 0, Physical::Left { alt: true })] {
+        (consts::WCODE_REWIND, 0, Physical::Left { alt: true }),
+    ] {
         for state in [1, 0x101, 0] {
             let input = key_input(sym, wcode, state, Tick::default(), Source::Sdl);
             let InputKind::Key { key, sym, wcode, .. } = input.kind else { panic!("a key") };
@@ -4685,6 +5428,7 @@ fn transport_keys_keep_their_identity_through_dispatcher_input() {
             assert_eq!(consts::classify_input(key, sym, wcode), expected);
         }
     }
-    let input = key_input(consts::SDLK_LEFT, consts::WCODE_REWIND, 1, Tick::default(), Source::Sdl);
+    let input = key_input(consts::SDLK_LEFT, consts::WCODE_REWIND, 1, Tick::default(), Source::Sdl,
+    );
     assert!(matches!(input.kind, InputKind::Key { key: Key::Left, .. }), "plain D-pad precedence is unchanged");
 }

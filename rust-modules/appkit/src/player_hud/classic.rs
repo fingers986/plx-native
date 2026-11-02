@@ -14,12 +14,12 @@
 //! preview, the one that needs the frame's playhead and picks, takes the per-frame
 //! [`HudModel`](super::model::HudModel) snapshot), so this file names no player global. The logic it draws
 //! ([`super::state`]) and the animation state it reads ([`super::motion`]) are separate modules.
-use crate::hud_format::compile::{ClockMode, KnobMode, MarkMode};
 use super::geometry::{RowAnchor, GROUP_SCRUB, GROUP_TABS, HUD_TABS};
 use super::model::HudModel;
 use super::motion::*;
 use super::state::*;
 use super::HudBand;
+use crate::hud_format::compile::{ClockMode, KnobMode, MarkMode};
 use plx_machine::machine::{GroupId, Measure};
 use plx_ui::consts::{SCR_H, SCR_W};
 use plx_ui::hstack::{Align, HStack, Item};
@@ -98,23 +98,23 @@ pub const CTRL_RIGHT: f32 = SCR_W - plx_ui::consts::MARGIN_X;
 /// (Skip, Up Next) and a player menu's default anchor land on. The compiled package reports the same
 /// numbers for itself (`HudGeometry::row_anchor`); this is the named source for a reader that holds no
 /// package (a menu mounted without an opener, a pin that grades the menus against the row).
-pub const ROW_ANCHOR: RowAnchor = RowAnchor { right: CTRL_RIGHT, top: CTRL_Y, h: CTRL_H };
+pub const ROW_ANCHOR: RowAnchor = RowAnchor { right: CTRL_RIGHT, top: CTRL_Y, h: CTRL_H,
+};
 /// width the disc row occupies, the floor for anything replacing it
 pub fn ctrl_row_w() -> f32 {
     disc_row().width()
 }
 
-/// **The baseline disc row as ONE run**: absent Previous/Next followed by the three always-present
-/// discs of [`BTN_S`], `CONTROL_GAP` apart, anchored on [`CTRL_RIGHT`]. The row's width ([`ctrl_row_w`])
-/// and its band ([`ctrl_row_hit_rect`]) read this one stack.
+/// **The built-in disc row as ONE run**: Subtitles, Audio and More, [`BTN_S`] wide and
+/// `CONTROL_GAP` apart, anchored on [`CTRL_RIGHT`]. The row's width ([`ctrl_row_w`]) and its band
+/// ([`ctrl_row_hit_rect`]) read this one stack.
 fn disc_row() -> HStack<'static> {
-    const DISCS: [Item; BTN_N as usize] = disc_items(false);
-    disc_stack(&DISCS)
-}
-
-/// The disc row's one layout — its gap and its anchor on [`CTRL_RIGHT`] — over either item set.
-fn disc_stack(items: &[Item]) -> HStack<'_> {
-    HStack::new(items, plx_ui::widgets::CONTROL_GAP, Align::Trailing(CTRL_RIGHT))
+    const DISCS: [Item; BTN_N as usize] = [Item::new(BTN_S); BTN_N as usize];
+    HStack::new(
+        &DISCS,
+        plx_ui::widgets::CONTROL_GAP,
+        Align::Trailing(CTRL_RIGHT),
+    )
 }
 
 /// A stand-in pill's side padding: the air between its label and its edge, each side.
@@ -125,14 +125,6 @@ const STAND_IN_PAD_X: f32 = 34.0;
 /// supplies the floor its package's replaced segment gives) sizes the pill with this one formula.
 pub fn stand_in_w(advance: f32, floor: f32) -> f32 {
     (advance + 2.0 * STAND_IN_PAD_X).max(floor)
-}
-
-/// The five possible discs, in one right-anchored layout. Absent episode controls contribute
-/// neither width nor gaps, so Subtitles, Audio and More never move when the pair appears.
-const fn disc_items(pair: bool) -> [Item; BTN_N as usize] {
-    [if pair { Item::new(BTN_S) } else { Item::absent() },
-     if pair { Item::new(BTN_S).after(2.0 * plx_ui::widgets::CONTROL_GAP) } else { Item::absent() },
-     Item::new(BTN_S), Item::new(BTN_S), Item::new(BTN_S)]
 }
 
 /// The bottom scrim's height — the transport's dark ground, transparent at its top edge and
@@ -194,8 +186,11 @@ pub fn draw_readout(
 pub(super) const FOOTER_TOP: f32 = SCR_H - plx_ui::consts::MARGIN_Y - theme::space::XL;
 
 impl FailureReadout {
-    fn overlay(&self, labels: &[&'static std::ffi::CStr], focus: Option<usize>) -> StatusOverlay<'_> {
-        StatusOverlay::new(Rect::FULL, plx_platform::i18n::msg::widgets_status_failed_c(), StatusKind::Failed)
+    fn overlay(&self, labels: &[&'static std::ffi::CStr],
+        focus: Option<usize>,
+    ) -> StatusOverlay<'_> {
+        StatusOverlay::new(Rect::FULL, plx_platform::i18n::msg::widgets_status_failed_c(), StatusKind::Failed,
+        )
             .page(self.glyph)
             .reason(&self.reason)
             .row(labels)
@@ -204,25 +199,33 @@ impl FailureReadout {
     }
 
     fn labels(&self) -> Vec<&'static std::ffi::CStr> {
-        self.actions.iter().map(|a| failure_action_label(*a)).collect()
+        self.actions
+            .iter()
+            .map(|a| failure_action_label(*a))
+            .collect()
     }
 
     /// Each control's rect, by row index — the geometry the draw uses.
-    pub fn frames(&self, measure: &dyn plx_machine::machine::Measure) -> [Option<Rect>; plx_ui::widgets::STATUS_ROW_MAX] {
+    pub fn frames(&self, measure: &dyn plx_machine::machine::Measure,
+    ) -> [Option<Rect>; plx_ui::widgets::STATUS_ROW_MAX] {
         let labels = self.labels();
         self.overlay(&labels, None).row_frames_measured(measure)
     }
 
-    pub(super) fn draw(&self, p: Painter, focus: usize, measure: &dyn plx_machine::machine::Measure) {
+    pub(super) fn draw(&self, p: Painter, focus: usize, measure: &dyn plx_machine::machine::Measure,
+    ) {
         let labels = self.labels();
         self.overlay(&labels, Some(focus.min(labels.len().saturating_sub(1))))
             .draw_measured(&hud_env(), p, measure);
-        plx_ui::text_view::TextView::new(self.footer.to_str().unwrap_or(""), theme::size::CAPTION, theme::TEXT_TERTIARY)
+        plx_ui::text_view::TextView::new(self.footer.to_str().unwrap_or(""), theme::size::CAPTION, theme::TEXT_TERTIARY,
+        )
             .h(plx_ui::label::HAlign::Center)
             .max_lines(1)
             // the full safe width, not the reason's: the failure code is the line's LAST field
             // and the one support needs, so it must not be the part an ellipsis eats
-            .draw(p, Rect::new(plx_ui::consts::MARGIN_X, FOOTER_TOP, SCR_W - 2.0 * plx_ui::consts::MARGIN_X, 0.0));
+            .draw(p, Rect::new(plx_ui::consts::MARGIN_X, FOOTER_TOP, SCR_W - 2.0 * plx_ui::consts::MARGIN_X, 0.0,
+            ),
+        );
     }
 }
 
@@ -291,7 +294,7 @@ fn draw_failed_readout(
 //     floating near the right end of an otherwise empty rail. Reviewed cold on a screenshot it
 //     read as a RENDERING ARTIFACT, not as information, which is a complete failure of the thing.
 //
-// Neither loses anything: the Skip Intro / Skip Credits pill (`appkit/skip_pill.rs`) is driven from
+// Neither loses anything: the Skip Intro / Skip Recap / Skip Credits pill (`appkit/skip_pill.rs`) is driven from
 // the very same `metadata::playing_markers()` and appears exactly when a marker is reachable, so
 // the band was decoration duplicating a control that already announces itself. Do not re-add
 // either as a "cheap win" — the marker data is already in memory, which is precisely what makes
@@ -330,7 +333,8 @@ fn draw_clock(
 /// Returning to the transport restores its actionable tab focus without losing that cursor.
 pub(super) fn hud_tab_state(transport: bool, focus: GroupId, tab: i32, index: i32) -> (bool, bool) {
     let current = tab == index;
-    (transport && focus == GROUP_TABS && current, !transport && current)
+    (transport && focus == GROUP_TABS && current, !transport && current,
+    )
 }
 
 /// The transport's dark ground: transparent at its top edge, `theme::scrim_black(0.86)` at the
@@ -369,8 +373,10 @@ pub fn draw_title(p: Painter, kicker: Kicker, title: *const std::os::raw::c_char
         Kicker::Episode(text) => (text, theme::TEXT_PRIMARY, 1),
         Kicker::Context(text) => (text, theme::TEXT_SECONDARY, 0),
     };
-    p.text(text, SB_X, SCR_H - 312.0, theme::size::CAPTION, ink, 0, bold);
-    p.text(title, SB_X, SCR_H - 278.0, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1);
+    p.text(text, SB_X, SCR_H - 312.0, theme::size::CAPTION, ink, 0, bold,
+    );
+    p.text(title, SB_X, SCR_H - 278.0, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1,
+    );
 }
 
 /// Where the player title's two lines stand: `x` the left edge both start at, and the y each line is
@@ -412,7 +418,8 @@ pub(super) fn draw_player_title_at(
     paused: bool,
     clock: &plx_ui::marquee::Clock,
 ) {
-    let TitleLook { x: left, kicker_y, title_y, kicker_size, title_size } = look;
+    let TitleLook { x: left, kicker_y, title_y, kicker_size, title_size,
+    } = look;
     let width = (right - left).max(0.0);
     let _clip = plx_ui::screen::ClipScope::open_in(p, Rect::new(left, 0.0, width, SCR_H));
     let (text, ink, bold) = match kicker {
@@ -422,7 +429,8 @@ pub(super) fn draw_player_title_at(
     if !text.is_null() {
         let label = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
         let fitted = measure.fit_line(&label, width, kicker_size, bold);
-        p.text(fitted.as_ptr(), left, kicker_y, kicker_size, ink, 0, i32::from(bold));
+        p.text(fitted.as_ptr(), left, kicker_y, kicker_size, ink, 0, i32::from(bold),
+        );
     }
     if title.is_null() {
         clock.release();
@@ -449,14 +457,16 @@ pub(super) fn draw_player_title_at(
             // an Arabic or Hebrew title's end is on its left: it moves right instead
             let rtl = plx_gfx::text::is_rtl_paragraph(&label);
             let x = plx_ui::marquee::TITLE.reveal_once_at(elapsed, full_width, width, rtl);
-            p.text(title, left + x, title_y, title_size, theme::TEXT_PRIMARY, 0, 1);
+            p.text(title, left + x, title_y, title_size, theme::TEXT_PRIMARY, 0, 1,
+            );
             return;
         }
     } else {
         clock.release();
     }
     let fitted = measure.fit_line(&label, width, title_size, true);
-    p.text(fitted.as_ptr(), left, title_y, title_size, theme::TEXT_PRIMARY, 0, 1);
+    p.text(fitted.as_ptr(), left, title_y, title_size, theme::TEXT_PRIMARY, 0, 1,
+    );
 }
 
 /// How the playhead is drawn — see [`draw_playbar`].
@@ -571,7 +581,8 @@ pub fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine
 }
 
 /// [`draw_playbar`] over a [`PlaybarLook`]: the compiled package's bar (`DrawOp::Playbar`).
-pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &dyn plx_machine::machine::Measure) {
+pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &dyn plx_machine::machine::Measure,
+) {
     let e = hud_env();
     let white = look.fill;
     let dim = theme::TEXT_SECONDARY;
@@ -602,7 +613,8 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
     if bar.knob == Knob::Focused {
         let glow = [1.0f32, 1.0, 1.0, 0.22];
         p.rect(
-            Rect::new(hx - KNOB_GLOW_R, cy - KNOB_GLOW_R, 2.0 * KNOB_GLOW_R, 2.0 * KNOB_GLOW_R),
+            Rect::new(hx - KNOB_GLOW_R, cy - KNOB_GLOW_R, 2.0 * KNOB_GLOW_R, 2.0 * KNOB_GLOW_R,
+            ),
             KNOB_GLOW_R,
             glow,
             glow,
@@ -616,7 +628,8 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
             0.0,
         );
     } else if bar.knob == Knob::Held || look.knob == KnobMode::Always {
-        p.rect(Rect::new(hx - 9.0, cy - 9.0, 18.0, 18.0), 9.0, white, white, 0.0);
+        p.rect(Rect::new(hx - 9.0, cy - 9.0, 18.0, 18.0), 9.0, white, white, 0.0,
+        );
     } else {
         p.rect(
             Rect::new(hx - 1.5, sy - 4.0, 3.0, sh + 8.0),
@@ -641,7 +654,8 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
     let (mut el_l, mut el_r) = (f32::INFINITY, f32::NEG_INFINITY);
     for (sz, face_a) in crate::scrub_preview::clock_faces(look.clock_size, bar.clock_grow).into_iter().flatten() {
         let ety = plx_gfx::text::baseline_y(sz, 1, look.clock_size, 1, ty);
-        let (l, r) = draw_clock(p.alpha(face_a), &elapsed, clock_x, ety, sz, white, sx, sx + sw, measure);
+        let (l, r) = draw_clock(p.alpha(face_a), &elapsed, clock_x, ety, sz, white, sx, sx + sw, measure,
+        );
         el_l = el_l.min(l);
         el_r = el_r.max(r);
     }
@@ -727,9 +741,7 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
             el_r + GAP - ink.0 * bs
         };
         match glyph {
-            Some(id) => {
-                plx_ui::icons::draw(p, id, Rect::new(bx, icy - bs * 0.5, bs, bs), white)
-            }
+            Some(id) => plx_ui::icons::draw(p, id, Rect::new(bx, icy - bs * 0.5, bs, bs), white),
             // placeholder-exempt: the transport's inline busy mark on a button (R_INLINE), reported by the playback pipeline, not a content stand-in
             None => Spinner::new(bx + isz * 0.5, icy, Spinner::R_INLINE)
                 .phase(now)
@@ -747,8 +759,10 @@ fn bar_x(pos_ns: i64, dur_ns: i64) -> f32 {
 /// **The scrub preview** ([`crate::scrub_preview`]): while a live scrub preview is up, the still
 /// at the knob's position, floated above the knob; after it, the same still fading out. Draws
 /// nothing for a part with no BIF index, and nothing until the first still lands.
-pub(super) fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSession, model: &HudModel, row: &mut HudMotion, bar: Playbar) {
-    use crate::scrub_preview::{card_rect, card_size, draw, scaled_about, still_ms, PosterStills, Stills};
+pub(super) fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSession, model: &HudModel, row: &mut HudMotion, bar: Playbar,
+) {
+    use crate::scrub_preview::{card_rect, card_size, draw, scaled_about, still_ms, PosterStills, Stills,
+    };
     let mut stills = PosterStills {
         sid: plx_media::route::item_sid(plx_media::route::cur_sid(ps)).raw(),
         part: plx_media::route::cur_part_id(ps),
@@ -760,12 +774,16 @@ pub(super) fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSess
     } else {
         let generation = plx_media::route::sess(ps);
         let target = still_ms(bar.pos_ns);
-        let shown = row.preview.step((stills.part, &generation), target, bar.now, |ms| stills.look(ms));
+        let shown = row.preview.step((stills.part, &generation), target, bar.now, |ms| {
+                stills.look(ms)
+            });
         let absent = row.preview.absent();
-        row.preview.motion.observe(shown, target, absent, bar_x(bar.pos_ns, bar.dur_ns), bar.now)
+        row.preview.motion.observe(shown, target, absent, bar_x(bar.pos_ns, bar.dur_ns), bar.now,
+        )
     };
     let Some(sh) = show else { return };
-    let Some((tex, tw, th)) = stills.tex(sh.ms) else { return };
+    let Some((tex, tw, th)) = stills.tex(sh.ms) else { return;
+    };
     // In-place crossfade only between two resident stills of the same aspect; otherwise the swap is
     // immediate (the card's width would have to jump mid-fade).
     let prev = sh.prev.and_then(|(old, t)| {

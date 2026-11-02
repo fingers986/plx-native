@@ -3,7 +3,7 @@
 //! App text (tab and button labels, clocks, the chapters fallback, the kicker's numbering) must fit, in every
 //! language, inside the room it has: its box, the right edge of `SAFE`, the nearest control it would grow
 //! into on its line and the right edge of the fixed-width `vstack` it lives in. Server text (titles, chapter names, the
-//! synopsis) may elide or wrap and is never checked. A Skip state's credits layout is checked as well as the
+//! synopsis) may elide or wrap and is never checked. A Skip state's secondary Credits/Recap layout is checked as well as the
 //! intro one.
 //!
 //! **Which texts.** A compiled `DrawOp::Text` is app text by its `bind`, and the string it shows in THIS

@@ -52,9 +52,8 @@ pub struct HudModel {
     /// `plx_media::player::active_bitmap_key(plx_media::player::playpos_ns())`: the `start_ns` key
     /// of the selected track's image cue active now, `None` between cues.
     pub bitmap_key: Option<i64>,
-    /// `Controls::now(ps)`: which of the Previous/Next pair the playing episode has, and whether
-    /// Previous restarts. The enabled predicates of `Previous` and `Next` read it
-    /// ([`super::command::HudCommand::enabled`]).
+    /// `Controls::now(ps)`: queue availability and restart state for package-defined Previous/Next
+    /// controls, including folded rows in More. The built-in row does not display them.
     pub controls: super::state::Controls,
     /// `plx_appkit::chapters_panel::has_chapters(meta)`: the playing item has chapters.
     pub chapters: bool,

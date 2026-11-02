@@ -45,8 +45,8 @@
 //!   overlay and below content belongs to its card (the template op's origin lies under the strip's node:
 //!   it is checked against every OTHER target).
 //!
-//! A Skip state is read in both layouts (the Intro pill with the layout as compiled, the Credits pill with
-//! `skip_variant(Credits)`): the two labels have two widths. A fault is reported ONCE, by the first state that
+//! A Skip state is read in both layouts (the Intro pill with the layout as compiled, the wider Credits/Recap pill with
+//! `skip_variant(Credits)`): the labels have two widths. A fault is reported ONCE, by the first state that
 //! shows it ([`dedupe`], shared with `lint_safe` and `lint_text`).
 
 use plx_ui::consts::EDGE_TOL;

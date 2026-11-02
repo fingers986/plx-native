@@ -31,6 +31,10 @@ use super::*;
 pub(crate) struct Pointer {
     pub(crate) dpad_mode: bool,  // D-pad input owns focus; pointer motion below the gate is ignored
     pub(crate) cur_hidden: bool, // the pointer is hidden right now (LG's hide or the transparent cursor)
+    /// Motion continuing from initial buffering is ignored after the startup HUD auto-hides, until
+    /// the pointer has rested for the normal idle interval. This prevents that same gesture from
+    /// immediately waking the HUD and cursor on the next event.
+    pub(crate) startup_motion_suppressed: bool,
     pub(crate) mot_accum: f32,   // motion accumulated since D-pad mode was entered, in logical px
     pub(crate) prev_mx: f32,     // last motion's position, for that accumulation (-1 = none yet)
     pub(crate) prev_my: f32,
@@ -57,6 +61,7 @@ impl Pointer {
     pub(crate) const IDLE: Pointer = Pointer {
         dpad_mode: false,
         cur_hidden: false,
+        startup_motion_suppressed: false,
         mot_accum: 0.0,
         prev_mx: -1.0,
         prev_my: -1.0,
@@ -73,18 +78,24 @@ impl Pointer {
 /// or bottom row (tried on an LG C2 and C3).
 pub(crate) const EDGE_BAND: f32 = 80.0;
 /// How far from the left or right edge the pointer glides the row under it ([`EdgeScroll::pan`]).
+#[allow(dead_code)] // Retained for edge-scroll regression coverage; active edge gliding is disabled.
 pub(crate) const EDGE_SIDE_BAND: f32 = 120.0;
 /// How long the pointer rests in an edge band before the page starts to move.
+#[allow(dead_code)]
 pub(crate) const EDGE_DWELL_MS: u32 = 150;
 /// How long the glide takes to come up to its speed once it starts.
+#[allow(dead_code)]
 pub(crate) const EDGE_RAMP_MS: u32 = 350;
 /// The glide's speed with the pointer at the very edge, in the page's own rows a second (the unit
 /// of `InputKind::Wheel`'s `dy`: the Library scales it by its grid pitch).
+#[allow(dead_code)]
 pub(crate) const EDGE_ROWS_PER_S: f32 = 2.6;
 /// The sideways glide's speed with the pointer at the very left or right edge, px a second (about
 /// three and a half posters).
+#[allow(dead_code)]
 pub(crate) const EDGE_PAN_PX_PER_S: f32 = 1000.0;
 /// The share of that speed at the band's inner border: deeper into the band is faster.
+#[allow(dead_code)]
 const EDGE_MIN_SHARE: f32 = 0.35;
 
 /// **The pointer at the top or bottom edge glides the page**, the way the Magic Remote scrolls
@@ -104,6 +115,7 @@ const EDGE_MIN_SHARE: f32 = 0.35;
 /// says so), so the card under it does not take focus as the page slides; leaving the band ends
 /// the glide and hands the pointer back to hover.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[allow(dead_code)] // Retained for edge-scroll regression coverage; active edge gliding is disabled.
 pub(crate) struct EdgeScroll {
     /// The pointer's last position, `None` once it is hidden (LG's auto-hide or a D-pad press).
     at: Option<(f32, f32)>,
@@ -121,6 +133,7 @@ pub(crate) struct EdgeScroll {
     pan_last: Option<u32>,
 }
 
+#[allow(dead_code)] // Edge-glide helpers remain tested but are unused by playback.
 impl EdgeScroll {
     pub(crate) const IDLE: EdgeScroll = EdgeScroll { at: None, glide: None, last: None, pan: None, pan_last: None };
 
@@ -266,6 +279,49 @@ pub(crate) fn click_is_ok(dpad_mode: bool, motion_since_dpad: f32, on_control: b
 /// Pointer travel, in logical px accumulated since the last D-pad press, that hands focus back to
 /// the pointer: below it, motion is the hand holding the remote, not a deliberate move.
 pub(crate) const DPAD_MOTION_GATE: f32 = 120.0;
+
+/// Whether this motion is deliberate enough to return from D-pad mode to pointer mode.
+/// Accumulation is updated by the SDL event owner before this predicate is called.
+pub(crate) fn pointer_motion_allowed(ptr: &mut Pointer) -> bool {
+    if ptr.dpad_mode {
+        if ptr.mot_accum < DPAD_MOTION_GATE {
+            return false;
+        }
+        ptr.dpad_mode = false;
+    }
+    true
+}
+
+/// Hide the system pointer and make remote input own focus until deliberate pointer travel.
+/// Called by the app loop after a player HUD dismissal or a playback resume request.
+pub(crate) unsafe fn enter_dpad_mode(ptr: &mut Pointer) {
+    if !ptr.dpad_mode || !ptr.cur_hidden {
+        hide_cursor();
+    }
+    ptr.dpad_mode = true;
+    ptr.cur_hidden = true;
+    ptr.mot_accum = 0.0;
+    ptr.edge.stop();
+}
+
+#[cfg(test)]
+mod pointer_motion_gate_tests {
+    use super::{pointer_motion_allowed, Pointer, DPAD_MOTION_GATE};
+
+    #[test]
+    fn small_pointer_jitter_does_not_leave_dpad_mode_but_deliberate_travel_does() {
+        let mut ptr = Pointer::IDLE;
+        ptr.dpad_mode = true;
+        ptr.cur_hidden = true;
+        ptr.mot_accum = DPAD_MOTION_GATE - 1.0;
+        assert!(!pointer_motion_allowed(&mut ptr));
+        assert!(ptr.dpad_mode && ptr.cur_hidden);
+
+        ptr.mot_accum = DPAD_MOTION_GATE;
+        assert!(pointer_motion_allowed(&mut ptr));
+        assert!(!ptr.dpad_mode, "the pointer can take over after deliberate travel");
+    }
+}
 
 // `home_activate` (the OK/pointer activation ladder for the legacy Home grid) was retired with
 // the legacy `ui::home` module when phase 8 made Home an owned `Screen` — its job (trail reset,
@@ -1218,13 +1274,7 @@ pub(crate) unsafe fn begin_fresh_press(
         key,
         Key::Up | Key::Down | Key::Left { alt: false } | Key::Right { alt: false }
     ) {
-        if !ptr.dpad_mode || !ptr.cur_hidden {
-            hide_cursor();
-        }
-        ptr.dpad_mode = true;
-        ptr.cur_hidden = true;
-        ptr.mot_accum = 0.0;
-        ptr.edge.stop();
+        enter_dpad_mode(ptr);
     }
 }
 

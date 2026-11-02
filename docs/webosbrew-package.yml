@@ -79,7 +79,7 @@ description: |
   * Direct play wherever the TV can decode it, including HEVC, 4K and 10-bit; the server is asked
     to transcode only when it genuinely cannot
   * Resume, seek and scrub, chapters, audio and subtitle track switching (including image
-    subtitles), Skip Intro / Skip Credits, Up Next with auto-advance, and progress reported back
+    subtitles), Skip Intro / Skip Recap / Skip Credits, Up Next with auto-advance, and progress reported back
     to your server
   * Dolby Vision and Dolby Atmos are declared to the television rather than sent down unlabelled,
     so a Dolby Vision file is no longer played as if it were ordinary HDR, and the panel is

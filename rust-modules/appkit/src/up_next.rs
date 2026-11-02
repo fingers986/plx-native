@@ -45,7 +45,7 @@ use std::os::raw::c_int;
 
 /// How long the tile holds before starting the next episode by itself. Long enough to read the
 /// title and reach for the remote, short enough that "always the next episode" stays automatic.
-pub const COUNTDOWN_MS: u32 = 10_000;
+pub const COUNTDOWN_MS: u32 = 5_000;
 
 /// The row's two items, in the order they are DRAWN — so `hud_nav.btn` and the arrow keys agree
 /// without a translation table (LEFT lands on 0 because 0 is the left one).
@@ -78,8 +78,11 @@ pub struct Countdown {
     deadline: u32,
     /// The user cancelled the auto-advance for THIS segment (they took hold of the row). Latched,
     /// because `tick` runs every frame and would otherwise re-arm the countdown the very next one.
-    /// Cleared when the segment ends, so the next episode's credits get their own chance.
+    /// Kept across seeks that temporarily remove the tile; cleared for a different marker or a new
+    /// playback session.
     cancelled: bool,
+    /// Identity of the credits offer whose cancellation belongs to this latch.
+    marker: Option<plx_data::metadata::Marker>,
 }
 
 /// Whether this owns the control row this frame. The precedence itself lives in ONE place —
@@ -88,21 +91,27 @@ pub fn is_shown(slot: crate::player_hud::ControlSlot) -> bool {
     matches!(slot, crate::player_hud::ControlSlot::UpNext(_))
 }
 
-/// Per-frame tick: arm the countdown the moment the tile appears, and forget everything about it
-/// once the segment is over. Idempotent — an already-running countdown is never pushed forward.
+/// Per-frame tick: arm the countdown when the tile appears, and stop its clock while the tile is
+/// absent. A cancellation stays attached to its credits marker across seeks that briefly remove
+/// the tile; a different marker or a playback reset starts a new opportunity.
 ///
 /// It arms on APPEARANCE, never on focus: the tile's whole promise is that it starts the next
 /// episode on its own. Focus only ever [`cancel`]s it.
 impl Countdown {
 pub fn tick(&mut self, slot: crate::player_hud::ControlSlot, now: u32) {
-    if !is_shown(slot) {
-        // segment over (or the queue emptied): drop the deadline AND the cancel latch, so the
-        // next episode's credits arm normally instead of inheriting this one's refusal
-        self.reset();
-        return;
-    }
-    if self.deadline == 0 && !self.cancelled {
-        self.deadline = now.wrapping_add(COUNTDOWN_MS).max(1);
+    if let crate::player_hud::ControlSlot::UpNext(marker) = slot {
+        if self.marker != Some(marker) {
+            self.deadline = 0;
+            self.cancelled = false;
+            self.marker = Some(marker);
+        }
+        if self.deadline == 0 && !self.cancelled {
+            self.deadline = now.wrapping_add(COUNTDOWN_MS).max(1);
+        }
+    } else {
+        // A seek can move out of the marker and later back into the same one. Stop the clock while
+        // its tile is absent, but retain the cancellation latch for that marker identity.
+        self.deadline = 0;
     }
 }
 }
@@ -138,6 +147,12 @@ impl Countdown {
 pub fn cancel(&mut self) {
     self.deadline = 0;
     self.cancelled = true;
+}
+
+/// Whether auto-advance has already been declined for the current credits marker.
+/// The latch survives seeks that temporarily remove the Up Next tile.
+pub fn cancelled(&self) -> bool {
+    self.cancelled
 }
 
 /// True while the countdown is running (drives holding the HUD up, so the timer is never invisible).
@@ -189,6 +204,7 @@ pub fn take(&mut self, ps: &plx_media::route::PlaybackSession) -> Option<UpNext>
 pub fn reset(&mut self) {
     self.deadline = 0;
     self.cancelled = false;
+    self.marker = None;
 }
 }
 

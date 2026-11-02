@@ -232,7 +232,7 @@ impl Client {
 
     /// GET /library/metadata/{rating_key} → the single item (`.metadata[0]`), or None.
     /// `includeChapters=1` / `includeMarkers=1` — PMS omits BOTH the `Chapter[]` and `Marker[]`
-    /// arrays from the default response. Markers drive the in-player Skip Intro / Skip Credits
+    /// arrays from the default response. Markers drive the in-player Skip Intro / Skip Recap / Skip Credits
     /// prompt, so they ride the detail fetch rather than costing a second round trip.
     ///
     /// `includeOnDeck=1` adds, for a SHOW, the one episode the server considers next to watch —

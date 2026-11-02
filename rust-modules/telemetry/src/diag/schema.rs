@@ -177,6 +177,7 @@ pub enum Feature {
     AudioTrack,
     SubtitleTrack,
     SkipIntro,
+    SkipRecap,
     SkipCredits,
     /// **The viewer moved to another library of the tab they were on** — a pill in the Library's
     /// head row, or a row of the Sources panel behind it.
@@ -230,6 +231,7 @@ impl Feature {
             Self::AudioTrack => "audio_track",
             Self::SubtitleTrack => "subtitle_track",
             Self::SkipIntro => "skip_intro",
+            Self::SkipRecap => "skip_recap",
             Self::SkipCredits => "skip_credits",
             Self::LibrarySwitch => "library_switch",
             Self::AudioEnhancement => "audio_enhancement",

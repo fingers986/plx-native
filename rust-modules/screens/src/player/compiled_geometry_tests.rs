@@ -43,11 +43,14 @@ fn moved() -> Arc<Compiled> {
         assert!(text.matches(from).count() == 1, "the fixture has exactly one `{from}`");
         text.replace(from, to)
     };
-    let text = edit(CLASSIC_PACKAGE.to_owned(), r#""id": "bar", "when": "!sections", "chrome": "steady", "gap_before": 26"#, r#""id": "bar", "when": "!sections", "chrome": "steady", "gap_before": 90"#);
+    let text = edit(CLASSIC_PACKAGE.to_owned(), r#""id": "bar", "when": "!sections", "chrome": "steady", "gap_before": 26"#, r#""id": "bar", "when": "!sections", "chrome": "steady", "gap_before": 90"#,
+    );
     let text = edit(text, r#""x_inset": 0"#, r#""x_inset": 100"#);
     let more = r#"{ "id": "more", "command": "open_more", "widget": "disc", "size": 64, "rest": "film", "focus": "accent" }"#;
-    let text = edit(text, more, &format!(r#"{more}, {}"#, more.replace(r#""id": "more""#, r#""id": "extra""#)));
-    load(text.as_bytes(), "test", plx_platform::i18n::english(), &FixtureMeasure).expect("the edited package loads").compiled
+    let text = edit(text, more, &format!(r#"{more}, {}"#, more.replace(r#""id": "more""#, r#""id": "extra""#)),
+    );
+    load(text.as_bytes(), "test", plx_platform::i18n::english(), &FixtureMeasure,
+    ).expect("the edited package loads").compiled
 }
 
 /// The state the default page (`Discs`, no chapters, not paused) is in, as the compile reports it.
@@ -90,7 +93,7 @@ fn the_pointer_stops_and_the_focus_rects_are_the_compiled_packages() {
     assert_eq!(row_spec(&page).extent, want.row, "the row group's extent is the package's");
 }
 
-/// The row group holds a stop for every control of the package's row, not classic's five.
+/// The row group holds a stop for every control of the package's row, not just the built-in three.
 #[test]
 fn the_row_group_is_as_long_as_the_packages_row() {
     let _g = plx_base::testlock::serial();
@@ -157,7 +160,7 @@ fn a_package_with_no_state_for_the_frame_answers_the_empty_report() {
     for _ in 0..3 {
         let (cx, ) = (cx(), );
         let df = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::root());
-        let drawn = plx_ui::draw_census::capture(|| page.draw_hud(&ps, 0, &df, store.view()));
+        let drawn = plx_ui::draw_census::capture(|| page.draw_hud(&ps, 0, &df, store.view(), false));
         assert!(drawn.is_empty(), "nothing is drawn for a frame the package has no state for: {drawn:?}");
     }
     assert!(page.render.no_state_logged, "…and it was reported");
@@ -165,7 +168,8 @@ fn a_package_with_no_state_for_the_frame_answers_the_empty_report() {
 
 /// `builtin:classic`, the package the app hands the page today.
 fn classic() -> Arc<Compiled> {
-    load(CLASSIC_PACKAGE.as_bytes(), "test", plx_platform::i18n::english(), &FixtureMeasure).expect("classic loads").compiled
+    load(CLASSIC_PACKAGE.as_bytes(), "test", plx_platform::i18n::english(), &FixtureMeasure,
+    ).expect("classic loads").compiled
 }
 
 /// The three openers (the Subtitles, Audio and `…` discs) and the failure read-out's quality entry, which
@@ -179,7 +183,8 @@ fn classic_menus_hang_from_the_row_ending_at_the_segment_edge() {
         overlay::OverlayKind::Tracks { tab: 0 },
         overlay::OverlayKind::Tracks { tab: 1 },
         overlay::OverlayKind::More { page: None },
-        overlay::OverlayKind::More { page: Some(plx_appkit::more_menu::MorePage::Quality) },
+        overlay::OverlayKind::More { page: Some(plx_appkit::more_menu::MorePage::Quality),
+        },
     ] {
         let anchor = page.menu_anchor(kind, false).expect("a menu has an anchor under a package");
         assert_eq!(anchor.x + anchor.w, player_hud::classic::CTRL_RIGHT, "{kind:?}: the segment's outer edge");
@@ -208,14 +213,16 @@ fn the_menu_anchor_is_the_compiled_openers_and_follows_the_held_control() {
     let state = compiled.lookup(0, Slot::Discs, false, false, false).expect("the compact state");
     let index_of = |id: &str| state.controls.iter().position(|c| c.id == id).expect(id);
     let (more, extra) = (index_of("more"), index_of("extra"));
-    let (more_anchor, extra_anchor) = (state.menu_anchor(more).unwrap(), state.menu_anchor(extra).unwrap());
+    let (more_anchor, extra_anchor) = (state.menu_anchor(more).unwrap(), state.menu_anchor(extra).unwrap(),
+    );
     assert_ne!(more_anchor, extra_anchor, "the two openers are at different rest rects");
 
     let mut page = page_with(Arc::clone(&compiled));
     let kind = overlay::OverlayKind::More { page: None };
     assert_eq!(page.menu_anchor(kind, false), Some(more_anchor), "nothing held: the first opener of the command");
     page.hud.nav.focus = GROUP_ROW;
-    page.hud.nav.btn = i32::try_from(state.row_ids.iter().position(|id| id.as_deref() == Some("extra")).expect("in the row")).unwrap();
+    page.hud.nav.btn = i32::try_from(state.row_ids.iter().position(|id| id.as_deref() == Some("extra")).expect("in the row"),
+    ).unwrap();
     assert_eq!(page.menu_anchor(kind, false), Some(extra_anchor), "the held control opens it");
     // the held control opens a DIFFERENT command: the first opener of the asked one is used
     let tracks = overlay::OverlayKind::Tracks { tab: 0 };
@@ -229,7 +236,8 @@ fn the_menu_anchor_is_the_compiled_openers_and_follows_the_held_control() {
 
 fn reference() -> Arc<Compiled> {
     let text = include_str!("../../../appkit/src/hud_format/fixtures/reference.plxhud.json");
-    load(text.as_bytes(), "test", plx_platform::i18n::english(), &FixtureMeasure).expect("the reference loads").compiled
+    load(text.as_bytes(), "test", plx_platform::i18n::english(), &FixtureMeasure,
+    ).expect("the reference loads").compiled
 }
 
 /// The row's stable index of the control `id` in the reference's movie form.
@@ -238,7 +246,7 @@ fn ordinal(compiled: &Compiled, id: &str) -> i32 {
     state.row_ids.iter().position(|r| r.as_deref() == Some(id)).unwrap_or_else(|| panic!("no `{id}` in the row")) as i32
 }
 
-/// **A control past classic's five performs its own command.** The page resolved a press through classic's
+/// **A control past the built-in three performs its own command.** The page resolved a press through classic's
 /// table (`slot.command(i)`), so under the reference the Play disc asked for whatever classic's fourth
 /// control is. The page now asks the package's control at that index, with its parameters.
 #[test]
@@ -262,7 +270,8 @@ fn a_press_asks_for_the_command_of_the_control_the_package_placed() {
     ] {
         let i = ordinal(&compiled, id);
         rig.seat_on(player_hud::control_elem(i));
-        let (_, reqs) = rig.deliver(&mut page, ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
+        let (_, reqs) = rig.deliver(&mut page, ScreenEvent::PressCommit(plx_machine::machine::PressId(1)),
+        );
         assert_eq!(reqs, vec![PlayerReq::Command(want)], "`{id}` at index {i}");
         assert_eq!(page.hud.nav.btn, i, "the cursor is seated on the pressed control");
     }
@@ -292,7 +301,8 @@ fn the_row_parks_on_the_primary_control_of_the_package() {
     let compiled = reference();
     let mut page = page_with(Arc::clone(&compiled));
     assert_eq!(page.row_primary(), ordinal(&compiled, "play"), "a movie: no pair, so Play");
-    page.slot = ControlSlot::Discs(plx_appkit::player_hud::Controls::for_item(true, true, true, false));
+    page.slot = ControlSlot::Discs(plx_appkit::player_hud::Controls::for_item(true, true, true, false,
+    ));
     let episode = compiled.lookup(0, Slot::Discs, false, true, false).expect("the episode form");
     let next = episode.row_ids.iter().position(|r| r.as_deref() == Some("next")).unwrap() as i32;
     assert_eq!(page.row_primary(), next, "an episode with a Next: Next");
@@ -319,6 +329,7 @@ fn a_failed_playback_seeds_no_folded_rows_into_more() {
     assert!(!page.more_folds(meta.view()).is_empty(), "a playing page folds rows");
     page.busy = plx_appkit::player_hud::Busy::Transport;
     assert!(!page.more_folds(meta.view()).is_empty(), "a loading one still does");
-    page.busy = plx_appkit::player_hud::Busy::Readout(plx_ui::widgets::StatusKind::Failed, c"Playback failed");
+    page.busy = plx_appkit::player_hud::Busy::Readout(plx_ui::widgets::StatusKind::Failed, c"Playback failed",
+    );
     assert_eq!(page.more_folds(meta.view()), Vec::new(), "the failure read-out owns the frame: no route to a section or a seek");
 }

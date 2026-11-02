@@ -485,6 +485,24 @@ pub(crate) fn content_requests(app: &mut App, fr: &mut Frame) {
     // loop the same way every other owned screen's decision does — as requests, drained here,
     // after the dispatcher and before the frame's own arms (`playback::player_requests`).
     let mut player_reqs = app.bridge.take_player_reqs();
+    let bare_player = !app.pages.surface_up()
+        && super::bridge::player(&app.pages).is_some_and(|player| !player.hud.sections.any());
+    let resumes_playback = bare_player && player_reqs.iter().any(|req| match req {
+        plx_screens::registry::PlayerReq::Transport(Some(true))
+        | plx_screens::registry::PlayerReq::SeekTo(_) => true,
+        plx_screens::registry::PlayerReq::Transport(None) => super::lifecycle::viewer_paused(),
+        _ => false,
+    });
+    let dismissed_hud = super::bridge::player(&app.pages).is_some_and(|player| player.hud.dismissed);
+    if resumes_playback {
+        if let Some(player) = super::bridge::player_mut(&mut app.pages) {
+            player.hud.hide(false);
+            player.publish();
+        }
+    }
+    if dismissed_hud || resumes_playback {
+        unsafe { super::input::enter_dpad_mode(&mut app.ptr); }
+    }
     if remove_replayed_repairs(&mut player_reqs,
         matches!(app.rec, super::recorder::Recplay::Replaying(_)), app.bridge.is_controlled_replay()) {
         app.rec.refuse("replay cannot authorize sandbox repair");

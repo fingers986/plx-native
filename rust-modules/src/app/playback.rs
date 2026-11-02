@@ -456,7 +456,7 @@ pub(super) fn start_playback_with<R: PlaybackResources>(
         player.scrub = Scrub::IDLE;
         player.up_next.reset();
         player.row.drop_strip();
-        player.hud.extend(clock::now(), hud_ms);
+        player.hud.show_until_playing(clock::now(), hud_ms);
         player.publish();
     }
     if sections_were_open {
@@ -614,8 +614,24 @@ pub(crate) fn player_requests(
             }
             // The fall-through a surface cannot perform (`screens::player::overlay`'s module doc):
             // the same toggle the bare transport reaches, with the panel left untouched.
-            PlayerReq::Transport(play) => apply_transport(pa, play, now, pages),
-            PlayerReq::SeekTo(ns) => apply_seek_to(pa, ns),
+            PlayerReq::Transport(play) => {
+                if player.player_menu_was_playing.is_none() {
+                    apply_transport(pa, play, now, pages);
+                }
+            }
+            PlayerReq::SeekTo(ns) => {
+                if player.player_menu_was_playing.is_some() {
+                    // A chapter pick from a section reached through More can seek while the
+                    // temporary menu pause is still held. Land there, but wait to resume until
+                    // the section closes and only the HUD remains.
+                    request_seek(ns);
+                } else {
+                    apply_seek_to(pa, ns);
+                }
+            }
+            PlayerReq::BeginScrubPreview => begin_scrub_preview(pa, player),
+            PlayerReq::CancelScrubPreview => cancel_scrub_preview(pa, player),
+            PlayerReq::ConfirmScrubSeek(ns) => confirm_scrub_seek(pa, player, ns),
             // …and its twin, which does NOT resume: the scrub bar is how a paused film is moved.
             // The pump keeps the pause across it (see `commit_seek`).
             PlayerReq::CommitSeek(ns) => commit_seek(ns),
@@ -625,6 +641,7 @@ pub(crate) fn player_requests(
             // present a panel immediately rather than through the deferred press `ArmControlRow` uses. The
             // tabs row is not an asker: it asks `ToggleSection` (Info and Chapters are sections).
             PlayerReq::OpenOverlay(kind) => {
+                begin_player_menu_pause(pa, player);
                 seed_menu_anchor(pages, bridge, kind);
                 super::bridge::open_player_overlay(&mut player.session, bridge.metadata_view(), pages, kind);
             }
@@ -726,6 +743,10 @@ pub(crate) fn exit_player(
     refresh_hubs: &mut bool,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
+    // The player menu's pause lease must not survive into a later playback session. Exiting
+    // playback stops the engine below, so there is no temporary pause to restore here.
+    player.player_menu_was_playing = None;
+    player.player_menu_seen_open = false;
     // The foreground machine hears the exit FIRST: a restore parked or refused behind this exit
     // is retired here (`Superseded(Exit)`), not left standing for the next play to release.
     let _ = drive_foreground(
@@ -929,14 +950,59 @@ pub(crate) fn activate_ctrl_row(
             } else {
                 if let Some(player) = super::bridge::player_mut(pages) {
                     player.up_next.cancel();
+                    player.hud.hide(false);
+                    player.hud.until = 0;
+                    player.hud.nav = HudNav::HOME;
+                    player.publish();
                 }
+                super::bridge::reseat_player_focus(pages);
                 false
             }
         }
         ControlSlot::Skip(pr) => {
+            let watching_auto_skip = super::bridge::player(pages).is_some_and(|screen| match pr.kind {
+                plx_data::metadata::MarkerKind::Intro => !screen.intro.cancelled(),
+                plx_data::metadata::MarkerKind::Recap => !screen.recap.cancelled(),
+                plx_data::metadata::MarkerKind::Credits => false,
+            });
+            if watching_auto_skip {
+                // Watch Intro/Recap accepts the offer by retiring this marker, but it never seeks.
+                // Otherwise the same pill remains visible and a second press has no observable
+                // effect even though the automatic timer was cancelled. Once another interaction
+                // has cancelled the timer, the same slot is relabelled Skip Intro/Recap and follows
+                // the ordinary seek path below.
+                bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::MarkSkipped(pr.marker));
+                if let Some(player) = super::bridge::player_mut(pages) {
+                    match pr.kind {
+                        plx_data::metadata::MarkerKind::Intro => {
+                            player.intro.cancel_offer(player.slot, plx_data::metadata::MarkerKind::Intro);
+                        }
+                        plx_data::metadata::MarkerKind::Recap => {
+                            player.recap.cancel_offer(player.slot, plx_data::metadata::MarkerKind::Recap);
+                        }
+                        plx_data::metadata::MarkerKind::Credits => {}
+                    }
+                    player.slot = ControlSlot::Discs(player.model.controls);
+                    // Choosing Watch Intro/Recap accepts the marker and returns to full-screen
+                    // playback. The stand-in's press may have raised the HUD linger, so dismiss
+                    // it explicitly after retiring the offer.
+                    player.hud.hide(false);
+                    player.hud.until = 0;
+                    player.hud.nav = HudNav::HOME;
+                    player.publish();
+                }
+                super::bridge::reseat_player_focus(pages);
+                if pr.kind == plx_data::metadata::MarkerKind::Recap {
+                    plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
+                        feature: plx_telemetry::diag::schema::Feature::SkipRecap,
+                    });
+                }
+                return false;
+            }
             plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
                 feature: match pr.kind {
                     plx_data::metadata::MarkerKind::Intro => plx_telemetry::diag::schema::Feature::SkipIntro,
+                    plx_data::metadata::MarkerKind::Recap => plx_telemetry::diag::schema::Feature::SkipRecap,
                     plx_data::metadata::MarkerKind::Credits => {
                         plx_telemetry::diag::schema::Feature::SkipCredits
                     }
@@ -962,6 +1028,34 @@ pub(crate) fn activate_ctrl_row(
         }
         ControlSlot::Discs(_) => false,
     }
+}
+
+/// The recap timer's expiry follows the same marker retirement and seek path as a manual skip.
+pub(crate) fn auto_skip_recap(
+    marker: plx_data::metadata::Marker,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
+    bridge: &mut super::bridge::Bridge,
+) {
+    plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
+        feature: plx_telemetry::diag::schema::Feature::SkipRecap,
+    });
+    bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::MarkSkipped(marker));
+    request_seek(marker.end_ms * 1_000_000);
+    resume_if_paused(pa);
+}
+
+/// The intro timer expires through the same marker-retirement and seek path as a manual skip.
+pub(crate) fn auto_skip_intro(
+    marker: plx_data::metadata::Marker,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
+    bridge: &mut super::bridge::Bridge,
+) {
+    plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
+        feature: plx_telemetry::diag::schema::Feature::SkipIntro,
+    });
+    bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::MarkSkipped(marker));
+    request_seek(marker.end_ms * 1_000_000);
+    resume_if_paused(pa);
 }
 
 /// Start the queued episode. Returns false when there is nothing queued (a movie, or the
@@ -1212,6 +1306,9 @@ pub(crate) fn perform_hud_command(
     use plx_screens::registry::PlayerReq;
     match command {
         HudCommand::TogglePlay => {
+            if player.player_menu_was_playing.is_some() {
+                return;
+            }
             match super::bridge::player_mut(pages).map(|screen| screen.toggle_play(None, now)) {
                 Some(PlayerReq::SeekTo(ns)) => apply_seek_to(pa, ns),
                 Some(PlayerReq::Transport(play)) => apply_transport(pa, play, now, pages),
@@ -1236,18 +1333,26 @@ pub(crate) fn perform_hud_command(
         }
         HudCommand::OpenTracks(tab) => {
             let kind = OverlayKind::Tracks { tab: tab.index() };
+            begin_player_menu_pause(pa, player);
             seed_menu_anchor(pages, bridge, kind);
             super::bridge::open_player_overlay(&mut player.session, bridge.metadata_view(), pages, kind);
         }
         HudCommand::OpenMore(page) => {
             let kind = OverlayKind::More { page: page.page() };
+            begin_player_menu_pause(pa, player);
             seed_menu_anchor(pages, bridge, kind);
             super::bridge::open_player_overlay(&mut player.session, bridge.metadata_view(), pages, kind);
         }
         // A section is the player page's own state: the performer addresses the page with the toggle, and the
         // page opens or closes it under the package's policy and seats its own focus.
         HudCommand::ToggleSection(section) => super::bridge::toggle_player_section(pages, section),
-        HudCommand::FromBeginning => from_beginning(pa),
+        HudCommand::FromBeginning => {
+            if player.player_menu_was_playing.is_some() {
+                request_seek(0);
+            } else {
+                from_beginning(pa);
+            }
+        }
         HudCommand::GoToDetail => {
             if let Some(rk) = plx_appkit::info_panel::detail_rk(bridge.metadata_view()).map(str::to_owned) {
                 go_to_detail(player, pa, repause_at, refresh_hubs, &rk, pages, bridge);
@@ -1258,6 +1363,60 @@ pub(crate) fn perform_hud_command(
     if let Some(player) = super::bridge::player_mut(pages) {
         player.hud.extend(now, HUD_LINGER_MS);
         player.publish();
+    }
+}
+
+/// Start a pause lease for a player menu. Repeated opens and menu-to-menu hand-offs retain the
+/// original playback state instead of replacing it with the temporary paused state.
+fn begin_player_menu_pause(
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
+    player: &mut plx_media::player::machine::Player,
+) {
+    if player.player_menu_was_playing.is_some() {
+        return;
+    }
+    let was_playing = !paused() && !viewer_paused();
+    player.player_menu_was_playing = Some(was_playing);
+    player.player_menu_seen_open = false;
+    if was_playing {
+        set_transport_paused(pa, true);
+    }
+}
+
+/// Release the menu's temporary pause only after a player overlay has been observed open and the
+/// caller confirms that the player has returned to its bare HUD. The open observation prevents a
+/// D-pad request from resuming in the frame before the dispatcher mounts its panel.
+pub(crate) fn settle_player_menu_pause(
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
+    player: &mut plx_media::player::machine::Player,
+    menu_open: bool,
+    ready: bool,
+) {
+    if player.player_menu_was_playing.is_none() {
+        return;
+    }
+    if menu_open {
+        player.player_menu_seen_open = true;
+        return;
+    }
+    if !ready || !player.player_menu_seen_open {
+        return;
+    }
+    player.player_menu_seen_open = false;
+    if player.player_menu_was_playing.take() == Some(true) {
+        set_transport_paused(pa, false);
+    }
+}
+
+/// Backgrounding dismisses player panels before the lifecycle snapshots playback intent. Clear
+/// the menu lease immediately there, even if a requested panel was not yet observed on screen.
+pub(crate) fn cancel_player_menu_pause(
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
+    player: &mut plx_media::player::machine::Player,
+) {
+    player.player_menu_seen_open = false;
+    if player.player_menu_was_playing.take() == Some(true) {
+        set_transport_paused(pa, false);
     }
 }
 
@@ -1281,6 +1440,48 @@ fn apply_transport(
 fn apply_seek_to(pa: &mut plx_media::player::adapter::PlayerAdapter, ns: i64) {
     request_seek(ns);
     resume_if_paused(pa);
+}
+
+/// Pause only a playing film while a visible-HUD scrub target is being previewed. The remembered
+/// value belongs to the app's player machine so the screen can request cancellation without
+/// reading playback globals or guessing whether it should resume.
+fn begin_scrub_preview(
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
+    player: &mut plx_media::player::machine::Player,
+) {
+    if player.scrub_preview_was_playing.is_some() {
+        return;
+    }
+    let was_playing = !paused() && !viewer_paused();
+    player.scrub_preview_was_playing = Some(was_playing);
+    if was_playing {
+        set_transport_paused(pa, true);
+    }
+}
+
+/// Retire a preview without seeking. A preview-created pause is undone; a film that was already
+/// paused, or held by an internal playback claim, is left alone.
+pub(crate) fn cancel_scrub_preview(
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
+    player: &mut plx_media::player::machine::Player,
+) {
+    if player.scrub_preview_was_playing.take() == Some(true) {
+        set_transport_paused(pa, false);
+    }
+}
+
+/// Confirm a visible-HUD preview at its target, then restore playback only when the preview itself
+/// paused a film that had been playing. A pre-paused film remains paused after confirmation.
+fn confirm_scrub_seek(
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
+    player: &mut plx_media::player::machine::Player,
+    ns: i64,
+) {
+    let resume = player.scrub_preview_was_playing.take() == Some(true);
+    request_seek(ns);
+    if resume {
+        set_transport_paused(pa, false);
+    }
 }
 
 /// Activate the player transport's focused CONTROL ROW item — the deferred half of a pointer

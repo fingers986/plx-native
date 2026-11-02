@@ -10,17 +10,17 @@
 //! because the app's snapshot is a frame old by then.
 use super::caption_rise::CaptionRise;
 use super::classic::fmt_time;
+use super::command::Section;
 use super::geometry::{GROUP_ROW, GROUP_SECTION, GROUP_STRIP, MAX_ROW_ITEMS};
 use super::model::HudModel;
 use super::state::*;
 use crate::knob_spring::KnobSpring;
-use super::command::Section;
 use plx_machine::machine::{EntryId, GroupId, PresentHandle, Tick};
 use plx_ui::cards::Shelf;
 use plx_ui::containers::modal::PopoverMotion;
 use plx_ui::theme;
 use std::ffi::CString;
-use std::os::raw::{c_int};
+use std::os::raw::c_int;
 use std::sync::atomic::Ordering::Relaxed;
 
 /// **The transport's two clocks, rasterised AHEAD of the draw's back-buffer wait.**
@@ -53,7 +53,8 @@ impl ClockWarm {
     /// [`HudModel`]: the same samples [`Playbar::live`](super::classic::Playbar) resolves its
     /// position from, so the prewarm and the draw agree.
     pub fn queue(&mut self, model: &HudModel) {
-        let pos = display_pos_ns(model.loading, model.seek_display_ns, model.scrub_ns, model.playpos_ns);
+        let pos = display_pos_ns(model.loading, model.seek_display_ns, model.scrub_ns, model.playpos_ns,
+        );
         self.queue_at(pos, model.duration_ns);
     }
 
@@ -68,7 +69,8 @@ impl ClockWarm {
     fn queue_at(&mut self, pos_ns: i64, dur_ns: i64) {
         const SEC_NS: i64 = 1_000_000_000;
         // `fmt::clock` floors to whole seconds and clamps at zero; the key is that same second.
-        let key = ((pos_ns / SEC_NS).max(0), ((dur_ns - pos_ns) / SEC_NS).max(0));
+        let key = ((pos_ns / SEC_NS).max(0), ((dur_ns - pos_ns) / SEC_NS).max(0),
+        );
         if self.key != Some(key) {
             self.key = Some(key);
             self.strings.clear();
@@ -87,7 +89,8 @@ impl ClockWarm {
                 (fmt_time((el + 1) * SEC_NS, false), 1, grown),
             ];
             self.strings
-                .extend(clocks.into_iter().filter_map(|(s, bold, sz)| Some((CString::new(s).ok()?, bold, sz))));
+                .extend(clocks.into_iter().filter_map(|(s, bold, sz)| Some((CString::new(s).ok()?, bold, sz))),
+            );
         }
         for (s, bold, sz) in &self.strings {
             plx_gfx::text::queue_prewarm(s.as_ptr(), *sz, *bold);
@@ -101,8 +104,8 @@ impl ClockWarm {
 /// **One array for all three slot occupants**, not one per module. The transport discs, the Skip
 /// pill and the Up Next pair are the same row at the same right edge, only ever one at a time, and
 /// the cursor walking them is `hud_nav.btn` for all three ([`ControlSlot::items`]) — so the pop is a
-/// property of that row and not of whichever module happens to draw it this frame. The episode row has the widest occupant,
-/// with room for its Previous/Next pair plus the three existing discs. `up_next` and `skip_pill` read theirs through [`row_pop`].
+/// property of that row and not of whichever module happens to draw it this frame. A HUD package can
+/// place more controls than the built-in row; `up_next` and `skip_pill` read theirs through [`row_pop`].
 ///
 /// A field of [`HudMotion`], which the player's instance owns: the HUD keeps no view struct
 /// — it is drawn entirely from the caller's arguments — so this and the resume clock beside it are
@@ -263,7 +266,8 @@ impl HudMotion {
     /// resting top `top` of the block the state for them lays out ([`super::geometry::HudGeometry::open_top`])
     /// and the HUD's `band`. The screen's tick calls it with [`follow`](Self::follow) and before
     /// [`step_appear`](Self::step_appear); a call with nothing changed does nothing.
-    pub fn follow_captions(&mut self, open: u8, band: plx_media::player::text_style::HudBand, top: Option<f32>) {
+    pub fn follow_captions(&mut self, open: u8, band: plx_media::player::text_style::HudBand, top: Option<f32>,
+    ) {
         self.caption.follow(open, band, top);
     }
 
@@ -321,14 +325,17 @@ impl HudMotion {
         }
         // the captions' rise takes its first step on the frame the section's appear takes its first: it waits
         // for a spring still held at appear 0 and for the frame a section was dismissed on
-        let waits = self.appear.iter().any(PopoverMotion::held) || self.dismissed.contains(&Some(t.ms));
+        let waits =
+            self.appear.iter().any(PopoverMotion::held) || self.dismissed.contains(&Some(t.ms));
         self.caption.step(t, present, waits);
         for section in SECTIONS {
             if faded(&self.appear[section_index(section)]) && self.wants & section.open_bit() == 0 {
                 self.held[section_index(section)] = None;
             }
         }
-        if faded(&self.appear[section_index(Section::Chapters)]) && self.wants & Section::Chapters.open_bit() == 0 {
+        if faded(&self.appear[section_index(Section::Chapters)])
+            && self.wants & Section::Chapters.open_bit() == 0
+        {
             self.strip = None;
         }
     }
