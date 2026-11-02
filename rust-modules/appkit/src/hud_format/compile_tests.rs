@@ -188,8 +188,8 @@ fn compiled_classic_matches_the_hand_written_layout() {
                         let mut frozen = frozen_classic_geometry(&format!("{language:?}/{measure_name}/episode=false/chapters={chapters}/{kind:?}/{skip:?}"));
                         if kind == Slot::Discs {
                             frozen = reindex_builtin_discs(frozen);
-                        } else if kind == Slot::Skip && skip == SkipKind::Credits {
-                            // Watch Credits is wider than the old Skip Credits label. The pill
+                        } else if kind == Slot::Skip {
+                            // Watch Intro/Watch Credits are wider than the old Skip labels. The pill
                             // stays right-anchored, so only its left edge and width change.
                             let old = frozen.items[0].expect("the old pill geometry");
                             let current = got.items[0].expect("the compiled pill geometry");

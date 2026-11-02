@@ -504,13 +504,14 @@ fn check_case(case: &Case) {
             Occupant::SkipIntro | Occupant::SkipCredits | Occupant::UpNext => 0,
         };
         let expected_btn = if pin.region == 1 {
-            (pin.btn - removed_before).max(0)
-        } else if pin.region == 0 {
-            // With the built-in Previous/Next stops gone, a scrubber focus no longer retains
-            // an index for a row item that is not present.
-            0
+            match case.occupant {
+                Occupant::SkipIntro | Occupant::SkipCredits => 0,
+                Occupant::UpNext => pin.btn.min(1),
+                _ => (pin.btn - removed_before).max(0),
+            }
         } else {
-            pin.btn
+            // The saved button index is meaningful only while the row itself is focused.
+            got.btn
         };
         assert!(
             got.region == pin.region
@@ -959,8 +960,8 @@ const EPISODE: &[Pin] = &[
     p("UUU", 0, 1, 0, "vd", ""),
     p("UUD", 0, 1, 0, "vr", ""),
     p("UUL", 1, 0, 0, "vr", ""),
-    p("UUR", 1, 2, 0, "vr", ""),
-    p("UUK", 1, 1, 0, "vr", "Command(Next)"),
+    p("UUR", 1, 3, 0, "vr", ""),
+    p("UUK", 1, 1, 0, "vr", "Command(OpenTracks(Subtitles))"),
     p("UDU", 0, 0, 0, "vr", ""),
     p("UDD", 2, 0, 0, "vr", ""),
     p("UDL", 2, 0, 0, "vr", ""),
@@ -1052,7 +1053,7 @@ const NEXT_ONLY: &[Pin] = &[
     p("UUD", 0, 1, 0, "vr", ""),
     p("UUL", 1, 1, 0, "vr", ""),
     p("UUR", 1, 2, 0, "vr", ""),
-    p("UUK", 1, 1, 0, "vr", "Command(Next)"),
+    p("UUK", 1, 1, 0, "vr", "Command(OpenTracks(Subtitles))"),
     p("UDU", 0, 0, 0, "vr", ""),
     p("UDD", 2, 0, 0, "vr", ""),
     p("UDL", 2, 0, 0, "vr", ""),
