@@ -1117,7 +1117,7 @@ const NEXT_ONLY: &[Pin] = &[
     p("UURRRU", 0, 4, 0, "vd", ""),
     p("UURRRD", 0, 4, 0, "vr", ""),
     p("UURRRL", 1, 2, 0, "vr", ""),
-    p("UURRRR", 1, 4, 0, "vr", ""),
+    p("UURRRR", 1, 3, 0, "vr", ""),
     p("UURRRK", 1, 4, 0, "vr", "Command(OpenMore(Root))"),
 ];
 
@@ -1189,7 +1189,7 @@ const PREVIOUS_ONLY: &[Pin] = &[
     p("UURRRU", 0, 4, 0, "vd", ""),
     p("UURRRD", 0, 4, 0, "vr", ""),
     p("UURRRL", 1, 2, 0, "vr", ""),
-    p("UURRRR", 1, 4, 0, "vr", ""),
+    p("UURRRR", 1, 3, 0, "vr", ""),
     p("UURRRK", 1, 4, 0, "vr", "Command(OpenMore(Root))"),
 ];
 
