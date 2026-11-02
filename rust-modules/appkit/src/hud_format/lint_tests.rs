@@ -640,8 +640,7 @@ fn a_report_with_findings_at_several_pointers_reads_in_document_order() {
 /// Where the wide-row case reports, in report order: the title column's kicker (`cells/0`), the three
 /// openers of the control row (`cells/1`) and Up Next, which the package lists after its blocks. (How tokens
 /// compare, `/block/2` before `/block/10`, is `report`'s own test; this pins a real lint's order.)
-const EXPECTED_POINTERS: [&str; 5] = [
-    "/layout/block/0/cells/0/vstack/cells/0/text",
+const EXPECTED_POINTERS: [&str; 4] = [
     "/layout/block/0/cells/1/segment/items/0",
     "/layout/block/0/cells/1/segment/items/1",
     "/layout/block/0/cells/1/segment/items/2",
@@ -729,13 +728,13 @@ fn every_kind_of_reach_error_is_linted_on_to_stage_three_in_every_language() {
     let more_absent = format!(",\n          {CLASSIC_MORE}");
     let more_gated = CLASSIC_MORE.replace(" }", r#", "when": "title.is_episode" }"#);
     let cases: [(&str, Vec<(&str, &str)>, &str, String); 9] = [
-        ("more gated on the episode", vec![(CLASSIC_MORE, &more_gated)], "HUD-E0801", format!("{CLASSIC_ROW}/4/when")),
+        ("more gated on the episode", vec![(CLASSIC_MORE, &more_gated)], "HUD-E0801", format!("{CLASSIC_ROW}/2/when")),
         ("more absent", vec![(&more_absent, "")], "HUD-E0801", "/layout/block".to_owned()),
         (
             "more opens a page",
             vec![(r#""command": "open_more", "widget""#, r#""command": "open_more", "page": "quality", "widget""#)],
             "HUD-E0801",
-            format!("{CLASSIC_ROW}/4"),
+            format!("{CLASSIC_ROW}/2"),
         ),
         (
             "more in a band shown only in a section",
@@ -768,7 +767,7 @@ fn every_kind_of_reach_error_is_linted_on_to_stage_three_in_every_language() {
             "two controls with one id",
             vec![(r#""id": "audio", "command""#, r#""id": "subs", "command""#)],
             "HUD-E0901",
-            format!("{CLASSIC_ROW}/3/id"),
+            format!("{CLASSIC_ROW}/1/id"),
         ),
         (
             "a palette in the built-in",

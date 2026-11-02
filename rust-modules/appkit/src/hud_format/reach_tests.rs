@@ -265,7 +265,7 @@ fn rows() -> Vec<Row> {
             "r1_more_when_episode",
             c(MORE, &MORE.replace(" }", r#", "when": "title.is_episode" }"#)),
             &codes::E0801,
-            &format!("{ROW}/4/when"),
+            &format!("{ROW}/2/when"),
         ),
         row(
             "r1_more_absent",
@@ -277,7 +277,7 @@ fn rows() -> Vec<Row> {
             "r1_more_opens_a_page_not_the_root",
             c(r#""command": "open_more", "widget""#, r#""command": "open_more", "page": "quality", "widget""#),
             &codes::E0801,
-            &format!("{ROW}/4"),
+            &format!("{ROW}/2"),
         ),
         row(
             "r1_more_in_a_band_shown_only_in_a_section",
@@ -319,7 +319,7 @@ fn rows() -> Vec<Row> {
             "i3_duplicate_control_id",
             c(r#""id": "audio", "command""#, r#""id": "subs", "command""#),
             &codes::E0901,
-            &format!("{ROW}/3/id"),
+            &format!("{ROW}/1/id"),
         ),
         row(
             "i3_duplicate_band_id",
@@ -417,13 +417,13 @@ fn parse_rows() {
             "i8_solid_rest_with_accent_focus",
             c(MORE, &MORE.replace(r#""rest": "film""#, r#""rest": "solid""#)),
             &codes::E0106,
-            format!("{ROW}/4"),
+            format!("{ROW}/2"),
         ),
         (
             "i8_solid_rest_without_a_stated_focus",
             c(MORE, &MORE.replace(r#""rest": "film", "focus": "accent""#, r#""rest": "solid""#)),
             &codes::E0103,
-            format!("{ROW}/4"),
+            format!("{ROW}/2"),
         ),
         // I13: the anchor is bottom.
         ("i13_anchor_top", c(r#""anchor": "bottom""#, r#""anchor": "top""#), &codes::E0201, "/layout/anchor".into()),
@@ -496,7 +496,10 @@ fn folds_of(text: &str) -> Vec<Fold> {
 #[test]
 fn previous_and_next_not_placed_fold() {
     let text = edit(&edit(REFERENCE, REF_PREVIOUS, ""), REF_NEXT, "");
-    assert_eq!(folds_of(&text), [fold("previous", None), fold("next", None)]);
+    assert_eq!(folds_of(&text), [
+        fold("previous", None), fold("next", None),
+        fold("from_beginning", None), fold("go_to_detail", None),
+    ]);
 }
 
 #[test]
@@ -506,7 +509,10 @@ fn previous_and_next_placed_only_under_chapters_present_fold_too() {
     let previous = REF_PREVIOUS.replace("\"command\": \"previous\"", "\"command\": \"previous\", \"when\": \"chapters.present\"");
     let next = REF_NEXT.replace("\"command\": \"next\"", "\"command\": \"next\", \"when\": \"chapters.present\"");
     let text = edit(&edit(REFERENCE, REF_PREVIOUS, &previous), REF_NEXT, &next);
-    assert_eq!(folds_of(&text), [fold("previous", None), fold("next", None)]);
+    assert_eq!(folds_of(&text), [
+        fold("previous", None), fold("next", None),
+        fold("from_beginning", None), fold("go_to_detail", None),
+    ]);
 }
 
 #[test]
@@ -515,7 +521,7 @@ fn previous_and_next_placed_for_episodes_do_not_fold() {
     let previous = REF_PREVIOUS.replace("\"command\": \"previous\"", "\"command\": \"previous\", \"when\": \"title.is_episode\"");
     let next = REF_NEXT.replace("\"command\": \"next\"", "\"command\": \"next\", \"when\": \"title.is_episode\"");
     let text = edit(&edit(REFERENCE, REF_PREVIOUS, &previous), REF_NEXT, &next);
-    assert_eq!(folds_of(&text), []);
+    assert_eq!(folds_of(&text), [fold("from_beginning", None), fold("go_to_detail", None)]);
 }
 
 #[test]

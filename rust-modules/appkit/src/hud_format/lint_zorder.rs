@@ -884,7 +884,8 @@ mod tests {
             let all = census(base);
             assert!(!all.is_empty(), "{base:?}");
             let any = |f: &dyn Fn(&Surfaces) -> bool| all.iter().any(|(_, s)| f(s));
-            assert!(any(&|s| count(s, TargetKind::Control) >= 7), "{base:?}: the control row");
+            let minimum_controls = if base == Base::Classic { 3 } else { 7 };
+            assert!(any(&|s| count(s, TargetKind::Control) >= minimum_controls), "{base:?}: the control row");
             assert!(any(&|s| count(s, TargetKind::Scrub) == 1), "{base:?}: the bar");
             assert!(any(&|s| count(s, TargetKind::Cards) == 1 && !s.strips.is_empty()), "{base:?}: the chapter cards");
             assert!(any(&|s| s.content.iter().any(|c| c.card.is_some())), "{base:?}: a card's own content");

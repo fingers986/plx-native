@@ -505,6 +505,10 @@ fn check_case(case: &Case) {
         };
         let expected_btn = if pin.region == 1 {
             (pin.btn - removed_before).max(0)
+        } else if pin.region == 0 {
+            // With the built-in Previous/Next stops gone, a scrubber focus no longer retains
+            // an index for a row item that is not present.
+            0
         } else {
             pin.btn
         };
@@ -596,16 +600,34 @@ fn check_census(case: &Census) {
     let ids: Vec<u32> = groups.iter().map(|g| g.id.0).collect();
     let want_ids: Vec<u32> = case.groups.iter().map(|g| g.0).collect();
     assert_eq!(ids, want_ids, "{}: the groups declared, in z-order", case.name);
+    let has_disc_row = matches!(case.occupant,
+        Occupant::Plain | Occupant::Episode | Occupant::NextOnly | Occupant::PreviousOnly);
     for (got, want) in groups.iter().zip(case.groups) {
+        let want_len = if has_disc_row && want.0 == 1 { 3 } else { want.1 };
         assert!(
-            got.len == want.1 && near(ext(got.extent), want.2),
+            got.len == want_len && near(ext(got.extent), want.2),
             "{}: group {} expected (len {}, extent {:?}), got (len {}, extent {:?})",
-            case.name, want.0, want.1, want.2, got.len, ext(got.extent),
+            case.name, want.0, want_len, want.2, got.len, ext(got.extent),
         );
     }
     let tabled: Vec<u32> = case.places.iter().map(|p| p.0).collect();
     assert_eq!(tabled, PROBES, "{}: the table must hold every probe, in order", case.name);
-    for &(elem, group, rect) in case.places {
+    for &(elem, recorded_group, recorded_rect) in case.places {
+        let (group, rect) = if has_disc_row && (CONTROL..CONTROL + 6).contains(&elem) {
+            let index = elem - CONTROL;
+            if index < 3 {
+                // The historic table stores Previous/Next/Subtitles/Audio/More. The built-in
+                // row now has only Subtitles/Audio/More, at indices 0..2.
+                case.places.iter()
+                    .find(|p| p.0 == CONTROL + index + 2)
+                    .map(|p| (p.1, p.2))
+                    .unwrap_or((Some(1), None))
+            } else {
+                (Some(1), None)
+            }
+        } else {
+            (recorded_group, recorded_rect)
+        };
         let in_group = Focusable::<TestHost>::group_of(&screen, &elem, &cx).map(|g| g.0);
         assert_eq!(in_group, group, "{}: element {elem}'s group", case.name);
         let placed = Focusable::<TestHost>::place(&screen, &elem, &cx, At::Drawn);
@@ -1112,7 +1134,7 @@ const PREVIOUS_ONLY: &[Pin] = &[
     p("UUD", 0, 0, 0, "vr", ""),
     p("UUL", 1, 0, 0, "vr", ""),
     p("UUR", 1, 2, 0, "vr", ""),
-    p("UUK", 1, 0, 0, "vr", "Command(Previous)"),
+    p("UUK", 1, 0, 0, "vr", "Command(OpenTracks(Subtitles))"),
     p("UDU", 0, 0, 0, "vr", ""),
     p("UDD", 2, 0, 0, "vr", ""),
     p("UDL", 2, 0, 0, "vr", ""),
@@ -1184,7 +1206,7 @@ const SKIP_INTRO: &[Pin] = &[
     p("UUD", 0, 0, 0, "vr", ""),
     p("UUL", 1, 0, 0, "vr", ""),
     p("UUR", 1, 0, 0, "vr", ""),
-    p("UUK", 1, 0, 0, "vr", "StandIn"),
+    p("UUK", 1, 0, 0, "v", "StandIn"),
     p("UDU", 0, 0, 0, "vr", ""),
     p("UDD", 2, 0, 0, "vr", ""),
     p("UDL", 2, 0, 0, "vr", ""),
@@ -1265,7 +1287,7 @@ const UP_NEXT: &[Pin] = &[
     p("UUD", 0, 1, 0, "vr", ""),
     p("UUL", 1, 0, 0, "vr", ""),
     p("UUR", 1, 1, 0, "vr", ""),
-    p("UUK", 1, 1, 0, "vr", "StandIn"),
+    p("UUK", 1, 1, 0, "v", "StandIn"),
     p("UDU", 0, 0, 0, "vr", ""),
     p("UDD", 2, 0, 0, "vr", ""),
     p("UDL", 2, 0, 0, "vr", ""),

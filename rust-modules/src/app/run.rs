@@ -4529,10 +4529,10 @@ mod lifecycle_regression_tests {
         }
         let _events = Events;
         let mut app = app();
-        super::super::bridge::show_page(&mut app.pages, AppArg::Player);
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
         // This is the established, post-startup pointer path. Startup motion is intentionally
         // suppressed while buffering so it cannot reopen the HUD before the first frame plays.
-        super::super::bridge::player_mut(&mut app.pages).unwrap().hud.startup_until_playing = false;
+        super::super::bridge::player_mut(&mut app.pages).expect("the player page is mounted").hud.startup_until_playing = false;
         app.ptr.startup_motion_suppressed = false;
         frame(&mut app, 0);
         let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());

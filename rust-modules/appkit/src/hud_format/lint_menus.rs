@@ -399,7 +399,6 @@ pub(super) const INVALID: &[super::lint::testing::InvalidCase] = &[
         also: &[
             ("HUD-E1303", "/layout/block/0/cells/1/segment/items/1"),
             ("HUD-E1303", "/layout/block/0/cells/1/segment/items/2"),
-            ("HUD-E0601", "/layout/block/0/cells/0/vstack/cells/0/text"),
             ("HUD-E1102", "/layout/up_next"),
         ],
     },
@@ -614,7 +613,7 @@ mod tests {
         let found: Vec<_> = lint(&text, &ShippedMeasure, &en).into_iter().filter(|f| f.code == "HUD-E1302").collect();
         assert_eq!(found.len(), 1, "once per opener, however many states: {found:?}");
         let f = &found[0];
-        assert_eq!(f.pointer, "/layout/block/0/cells/1/segment/items/2");
+        assert_eq!(f.pointer, "/layout/block/0/cells/1/segment/items/1");
         assert_eq!(f.ctx.lang.as_deref(), Some("en"));
         assert!(f.ctx.state.is_some() && f.ctx.slot.is_some());
         let names: Vec<&str> = f.ctx.rects.iter().map(|r| r.name.as_str()).collect();

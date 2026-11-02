@@ -500,12 +500,12 @@ mod tests {
             plx_appkit::player_hud::loaded::classic_for_test(),
         );
         page.hud.visible_at_press = true;
-        assert!(key(&mut page, consts::SDLK_RIGHT, Edge::Down, 1_000).is_empty());
+        assert_eq!(key(&mut page, consts::SDLK_RIGHT, Edge::Down, 1_000), vec![PlayerReq::BeginScrubPreview]);
         assert_eq!(page.scrub.ns, 50_000_000_000);
         assert!(key(&mut page, consts::SDLK_RIGHT, Edge::Up, 1_020).is_empty());
         assert_eq!(
             key(&mut page, consts::SDLK_RETURN, Edge::Down, 1_040),
-            vec![PlayerReq::SeekTo(50_000_000_000)]
+            vec![PlayerReq::ConfirmScrubSeek(50_000_000_000)]
         );
     }
 

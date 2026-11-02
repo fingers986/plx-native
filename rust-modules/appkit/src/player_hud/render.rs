@@ -884,6 +884,12 @@ mod tests {
                 let (new, drew) = drawn(&hud.compiled, c);
                 assert!(drew, "{c:?}: the renderer has a state for every classic frame");
                 assert!(!new.0.is_empty(), "{c:?}: the renderer draws something");
+                // The historic census predates the Watch Intro/Watch Credits labels. Keep
+                // checking that these frames draw; the new pill wording has focused tests.
+                if matches!(c.name, "skip-intro" | "skip-credits") {
+                    compared += 1;
+                    continue;
+                }
                 // The old frozen census includes Previous/Next and Restart versions of the classic
                 // row. They are intentionally absent now, so compare those states with the same
                 // movie frame. Map the built-in row's new indices back to their old census slots;

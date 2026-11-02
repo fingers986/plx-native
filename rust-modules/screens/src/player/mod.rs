@@ -4887,11 +4887,11 @@ mod scrub_ownership_tests {
                 InputKind::Click { x: 1400.0, y, hit: hit.hit.map(|key| key.elem),
                 }, 1_040,
             );
-            assert!(reqs.is_empty());
+            assert_eq!(reqs, vec![PlayerReq::BeginScrubPreview]);
             assert!(page.scrub.drag);
             let previewed = page.scrub.ns;
             assert_eq!(seeks(key(&mut page, SDLK_RETURN, Edge::Up, 1_080).1),
-                vec![PlayerReq::CommitSeek(previewed)]);
+                vec![PlayerReq::SeekTo(previewed)]);
         }
         plx_media::player::restore_state_for_test(was);
     }
@@ -4911,10 +4911,7 @@ mod scrub_ownership_tests {
             1_000,
         );
         assert_eq!(handled, Handled::Yes);
-        assert!(
-            reqs.is_empty(),
-            "a click on the bar is a SEEK, never the transport toggle",
-        );
+        assert_eq!(reqs, vec![PlayerReq::BeginScrubPreview], "a click on the bar begins a preview, never the transport toggle");
         assert!(
             (page.scrub.ns - DUR / 2).abs() < tol,
             "the preview lands where the pointer did (got {})",
@@ -4939,7 +4936,7 @@ mod scrub_ownership_tests {
         let (_, reqs) = key(&mut page, SDLK_RETURN, Edge::Up, 1_080);
         assert_eq!(
             seeks(reqs),
-            vec![PlayerReq::CommitSeek(previewed)],
+            vec![PlayerReq::SeekTo(previewed)],
             "the button coming up commits exactly what the drag was showing",
         );
     }
@@ -5093,7 +5090,7 @@ mod scrub_ownership_tests {
             }, 10_000,
         );
         let target = page.scrub.ns;
-        assert_eq!(seeks(key(&mut page, SDLK_RETURN, Edge::Up, 10_080).1), vec![PlayerReq::CommitSeek(target)]);
+        assert_eq!(seeks(key(&mut page, SDLK_RETURN, Edge::Up, 10_080).1), vec![PlayerReq::SeekTo(target)]);
         playhead(target);
         let (_, reqs) = back(&mut page, 11_000);
         assert!(seeks(reqs.clone()).is_empty(), "no jump back after a drag's release: {reqs:?}");
@@ -5278,7 +5275,7 @@ mod scrub_ownership_tests {
             key(&mut page, SDLK_RIGHT, Edge::Down, 1_000);
             key(&mut page, SDLK_RIGHT, Edge::Up, 1_020);
             let (_, reqs) = back(&mut page, 5_000);
-            assert!(reqs.is_empty(), "no seek: {reqs:?}");
+            assert_eq!(reqs, vec![PlayerReq::CancelScrubPreview], "BACK cancels the preview without seeking: {reqs:?}");
             assert_eq!(page.scrub.ns, -1);
             assert!(!page.hud.dismissed);
         }
