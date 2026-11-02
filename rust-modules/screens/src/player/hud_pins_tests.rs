@@ -503,6 +503,7 @@ fn check_case(case: &Case) {
             Occupant::NextOnly | Occupant::PreviousOnly => 1,
             Occupant::SkipIntro | Occupant::SkipCredits | Occupant::UpNext => 0,
         };
+        // Keep Pin's captured classic index; translate it only for the reduced built-in row.
         let expected_btn = if pin.region == 1 {
             match case.occupant {
                 Occupant::SkipIntro | Occupant::SkipCredits => 0,
