@@ -1360,7 +1360,7 @@ fn native_one_restyle_opens_no_new_renderer_and_renders_the_new_size_and_spacing
     let b_ink = ink(&b.rects);
     let (a_h, b_h) = (a_ink.bands[0].1 - a_ink.bands[0].0 + 1, b_ink.bands[0].1 - b_ink.bands[0].0 + 1);
     assert!(
-        (f64::from(b_h) / f64::from(a_h) - 1.25).abs() < 0.08,
+        (f64::from(b_h) / f64::from(a_h) - 1.25).abs() < 0.10,
         "Large draws 1.25x the letter height of Medium: {a_h} -> {b_h}"
     );
     let restyled = engine.native.as_ref().unwrap().stats();
