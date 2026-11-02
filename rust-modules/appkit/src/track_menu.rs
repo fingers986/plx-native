@@ -1,7469 +1,2062 @@
-//! In-player modal track menu: audio + subtitle pickers over the video, rendered on the reusable
-//! animated `TableView` (Apple-TV "settings" look â€” a sliding pill selection, section header with
-//! a codec accessory, per-row badges, a leading checkmark on the active track). app.rs routes
-//! D-pad/OK/BACK here while the menu is open; LEFT/RIGHT switch between the Audio and Subtitles
-//! panels on a root (on the Subtitles tab LEFT pops a sub-page and RIGHT on a Nav row enters it;
-//! BACK pops a sub-page before it dismisses). The selection commit (native audio switch / server transcode / burn) is unchanged
-//! from the previous procedural version â€” only the presentation moved onto the table.
-//!
-//! **The Subtitles panel is grouped, not one flat list** (plan `subtitle-menu-capsule` Â§3,
-//! `/tmp/dsplayer/player.html:1104-1162`): Off, Forced only and every single-track "yours"
-//! language sit under one "Subtitles" header; a "yours" language with several tracks gets its own
-//! section (header = language, `accessory("N tracks")`), ranked full < SDH < forced < commentary;
-//! everything else is
-//! ONE "Other languages" row (a drill-in to [`TrackPage::OtherLanguages`], one row per language
-//! A-Z; a multi-track language there drills in again to [`TrackPage::Language`], its tracks
-//! ranked); and a headerless section holds Timing and Style. That
-//! grouping is a pure DATA model, `metadata::sub_layout` (host-tested without a
-//! `PlaybackSession`/`MetadataView` fixture); this module only turns it into `TableView` sections
-//! ([`table_form`]) and answers focus/OK by the focused row's [`TrackRow`] identity. "Yours" is
-//! the pref language (if the play resolved under one), the playing audio's language, and the
-//! current subtitle's own language, in that order (`route::cur_sub_pref_lang`, carried in by
-//! `screens::player::overlay`).
-//!
-//! **Both tabs are keyed declarative forms** (`ui::form`, `docs/player-submenus.md`): each row is
-//! declared once with its semantic [`TrackRow`] identity, a stable [`RowKey`] (a family base plus
-//! the track's index in the playing item's list, which is fixed for the item's lifetime, never the
-//! list position), its kind and its [`Row`]. The focus layer's element is the row's key, so a row
-//! added above another (a subtitle offered mid-play, the enhancement pair returning) moves no key,
-//! and a rebuild restores the viewer's row by id.
-//!
-//! **Timing** is a single value row that reads out the current offset (no chevron: it is a
-//! hand-off, not a page); OK on it does not step anything here â€” it returns
-//! [`TrackOk::OpenTiming`], which `screens::player::overlay`'s `activate` turns into a hand-off: it
-//! dismisses this panel and presents the Timing capsule overlay (`OverlayKind::Timing`,
-//! `appkit::timing_capsule`) in its place. The row is dim and inert while no subtitle is drawn
-//! (Off, or Forced only with no forced track to show; OK there neither opens the capsule nor
-//! closes the panel), and Timing together with Style is omitted
-//! during an ordinary transcode, which burns captions into the picture where no client-side offset
-//! or style can reach. That omission now holds only while no subtitle is on: once the server draws
-//! the selected subtitle ([`plx_media::route::subtitle_presenter`] says `ServerBurn`: a remux that
-//! cannot carry an embedded track, this app's own audio-enhancement burn, a quality-limited
-//! re-encode), both rows stay visible â€” dim, inert, with a one-line reason (`Row::note`) saying
-//! why the server is drawing it â€” rather than being found simply gone. An external sidecar over a
-//! remux is drawn by the app (`ClientOverRemux`), so there both rows are live with no reason.
-//!
-//! **Forced only is a MODE row, not a track** (FO, `docs/playback-settings.md`). It sits right after Off
-//! wherever Off is, whether or not the item carries a forced track, and holds exactly one checkmark
-//! with the tracks and Off: while the mode holds, the forced track it draws is NOT also checked on
-//! its own row, and Off is not checked. Its value is the language of what it draws (else the playing
-//! audio's), bounded (`sub_layout::forced_only_readout`) so a long name never clips the row's own
-//! words. OK commits [`TrackCommit::SubtitleForcedOnly`]: the forced track for the audio that plays
-//! ([`plx_media::route::forced_only_pick`], with the container's track names) or nothing; for audio
-//! that names no language it matches in the language the session fell back to
-//! ([`plx_media::route::forced_only_lang`]), as the resolve does. OK on the row that is already the
-//! mode recommits what is on screen and writes nothing.
-//!
-//! **A pick is the show's memory, and the menu says when the route cannot honour it.** An explicit
-//! pick in either tab commits its descriptor with the track ([`TrackCommit`]'s `memo`), which the
-//! app's `commit_track` hands to `route::commit_audio_pick`, and for the two subtitle arms to
-//! `route::commit_subtitle_and_sidecar` / `commit_forced_only_and_sidecar` (the pick commit plus its
-//! sidecar select or deselect); the `*_pick` commits write it to
-//! the show's track memory when the route accepted the pick, and the next episode's plan reads it
-//! back. When the memory chose a subtitle for this play and the route can show none of it (a copy
-//! remux the app cannot draw), Off is on screen, so the first group closes with one inert
-//! reason ([`table_form`]'s `memory_note`, `route::cur_memory_note`), absent everywhere else.
-//!
-//! **Style is a drill-in, and the Subtitles tab is a page stack** (`docs/player-submenus.md`). The
-//! Style row is a [`RowKind::Nav`] onto [`TrackPage::Style`], whose Size, Position and Color rows
-//! each read out their current value and push a picker page ([`TrackPage::Picker`]) of
-//! [`RowKind::Choice`] rows with the current rung checked. A push remembers the opener's id and the
-//! scroll ([`page_stack::Saved`]); a pop ([`TrackMenuState::pop`], LEFT or BACK, or a click on the title band,
-//! whose pointer-only stop is [`TITLE_KEY`]) restores both, so focus returns to the row that opened
-//! the page by id. OK or RIGHT on a Nav row pushes ([`TrackMenuState::on_right`]); LEFT on the root
-//! is still the tab switch and BACK on the root dismisses. Every page opens on an explicit id
-//! ([`TrackMenuState::page_initial`]). A picker pick commits live and leaves the panel and page
-//! open ([`TrackOk::Commit`]'s `keep_open`), so a run of picks is felt at once.
-//!
-//! **What Style can reach depends on the active renderer** ([`SubRenderer`]): only the client's
-//! plain-text caption follows Size and Position, so under an image (PGS/VobSub) or native ASS/SSA
-//! subtitle those two rows are dim, focusable and inert, with a separate note each. Color stays
-//! live under every renderer: the subtitle ink tints bitmaps and ASS alike. Size and Position are
-//! persisted by `route::select_subtitle_size` / `select_subtitle_position` and Color by
-//! `player::set_subtitle_tone`: all three are one call into the one write door (`route::choose`,
-//! `How::Optimistic`: live value first, the durable write second, never republished).
-//!
-//! **A sub-page never outlives the root it was built on.** The root's [`SubSig`] â€” subs
-//! fingerprint, active index, renderer kind, transcoding, presenter and enhancement route â€” is
-//! stored when the root is built and compared on every live poll; a mismatch refreshes the root in
-//! place, and a sub-page in place too â€” it pops straight to the root only when its availability no
-//! longer holds (the renderer, or whether Style is shown / locked). The replay canon
-//! ([`TrackMenuState::canon`]) carries the tab, the page path with each return key, and the
-//! selected key.
-//!
-//! **The Other languages flow** is data-driven by [`TrackMenuState::other`] (one `OtherLang` per
-//! language, from the same `sub_layout` answer as the root), so a page lists exactly what its
-//! opener promised. A language is identified by the Plex stream id of its first track in the item's
-//! FULL list ([`LangId`], carried by [`TrackRow::OpenLang`] and [`TrackPage::Language`]), never a
-//! list position, so tracks leaving or arriving cannot relabel an open page. A track pick on any
-//! page commits and dismisses like a root pick. A page whose listing is gone (the language left the
-//! offered list) pops to the root ([`TrackMenuState::pages_hold`]); a language page that drops to a
-//! single track stays open, and popping it lands on that track's direct row.
-use plx_data::metadata;
-use plx_data::metadata::sub_layout::{self, LangId, OtherLang, RowBadge, RowTarget, SubHeader, SubModel, SubRow, SubTrack};
-use plx_data::metadata::track_label;
-use plx_plex::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
-use plx_ui::frame::Budget;
-use plx_ui::geom::IndexElem;
-use plx_machine::machine::{Canon, Cx, EntryId, FocusKey, GroupId, Host, Measure};
-use plx_ui::popover::Popover;
-use plx_ui::screen::{At, Dir, DrawFrame, Focusable, GroupSpec, Part, Placed, Step};
-use plx_ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
-use plx_ui::page_stack::{
-    self, popover_group_of, popover_groups, popover_neighbour, popover_place,
-    popover_register_stops, popover_seat, PageStack, PopoverPanel,
-};
-use plx_ui::panel_motion::PanelMotion;
-use plx_ui::table::{Badge, Row, Section, TableView};
-use plx_ui::table_screen::BAND_BASE;
-use plx_ui::theme;
-use plx_ui::{Painter, Rect};
-use std::os::raw::c_int;
-
-
-/// **What a focusable row of either tab IS** â€” the identity the [`FormTable`] resolves a press, a
-/// focus move and a rebuild's landing by, never a position. The Audio tab's track rows, the two Plex
-/// Pass DSP toggles and the Subtitles tab's rows (root, Style page and pickers) share one alphabet
-/// so one [`FormTable`] serves every page. The non-selectable footnotes under the DSP pair and under
-/// Style are inert slots ([`FormSection::note`]) and have no identity at all.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TrackRow {
-    /// An Audio-tab track row â€” the index into the playing item's audio list
-    /// ([`plx_data::metadata::PlayingItem::audio`]).
-    Audio(usize),
-    /// The Boost dialog toggle row (issue #266) â€” present whenever [`TrackMenuState::enhance_shown`]
-    /// is `Some` (offered) OR [`TrackMenuState::enhance_disabled`] is (dim, with a reason),
-    /// immediately after the last [`Self::Audio`].
-    Boost,
-    /// The Normalize loudness toggle row (issue #266), immediately after [`Self::Boost`].
-    Loudness,
-    /// The Subtitles tab's Off row.
-    SubOff,
-    /// The Subtitles tab's Forced only row, directly after Off: the third remembered state
-    /// (Off, a track, or the forced track in the playing audio's language). It is offered wherever
-    /// Off is, with or without a forced track on this item.
-    SubForcedOnly,
-    /// A Subtitles-tab track row â€” the index into the playing item's subs list.
-    Sub(usize),
-    /// The Timing row (hands off to the Timing capsule).
-    Timing,
-    /// The Style drill-in on the Subtitles root ([`TrackPage::Style`]).
-    Style,
-    /// The Other languages drill-in on the Subtitles root ([`TrackPage::OtherLanguages`]).
-    OpenOther,
-    /// Other languages page: a multi-track language's drill-in ([`TrackPage::Language`]). Carries
-    /// the language's identity â€” the stream id of its first track in the item's FULL list
-    /// ([`LangId`]) â€” so it stays that language when tracks leave, arrive or the offered subset
-    /// changes; the id's slot only picks the row's focus key.
-    OpenLang(LangId),
-    /// Style page: the drill-in to one field's picker ([`TrackPage::Picker`]); reads out the
-    /// field's current value.
-    OpenField(StyleField),
-    /// A picker page's choice: the field and the rung's index on that field's ladder.
-    Choice(StyleField, usize),
-    /// The Search for subtitles drill-in on the Subtitles root ([`TrackPage::Search`]). Present only
-    /// when the host offers a search ([`TrackMenuState::set_search`]).
-    OpenSearch,
-    /// The Search page's language row: reads out the language searched, opens
-    /// [`TrackPage::SearchLanguage`].
-    SearchLang,
-    /// The Search page's retry row, present only after a TRANSPORT failure (a refusal is not
-    /// retried â€” a 403 retried is a 403).
-    SearchRetry,
-    /// A result row: the index into the hits of the generation on screen. **The one place this
-    /// alphabet carries a position**: a hit has no identity of its own beyond its index â€” its key is
-    /// ephemeral server state, re-minted per search â€” and the whole list is replaced at once when the
-    /// generation moves, never reordered under the cursor.
-    SearchHit(usize),
-    /// A language on the search's language page: the index into [`search_languages`].
-    LangChoice(usize),
-}
-
-impl From<RowTarget> for TrackRow {
-    fn from(t: RowTarget) -> Self {
-        match t {
-            RowTarget::Off => TrackRow::SubOff,
-            RowTarget::ForcedOnly => TrackRow::SubForcedOnly,
-            RowTarget::Sub(i) => TrackRow::Sub(i),
-            RowTarget::Timing => TrackRow::Timing,
-            RowTarget::Style => TrackRow::Style,
-            RowTarget::Other => TrackRow::OpenOther,
-        }
-    }
-}
-
-/// One caption style field: the Style page lists one drill-in per field, and each opens a picker
-/// page of that field's ladder with the current rung checked.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StyleField {
-    Size,
-    Position,
-    Color,
-}
-
-impl StyleField {
-    pub const ALL: [StyleField; 3] = [StyleField::Size, StyleField::Position, StyleField::Color];
-
-    fn ordinal(self) -> u32 {
-        self as u32
-    }
-
-    fn label(self) -> &'static str {
-        use plx_platform::i18n::msg;
-        match self {
-            Self::Size => msg::widgets_tracks_style_size(),
-            Self::Position => msg::widgets_tracks_style_position(),
-            Self::Color => msg::widgets_tracks_color(),
-        }
-    }
-
-    /// How many rungs this field's ladder has.
-    fn rungs(self) -> usize {
-        match self {
-            Self::Size => SubtitleSize::LADDER.len(),
-            Self::Position => SubtitlePosition::LADDER.len(),
-            Self::Color => SubtitleTone::LADDER.len(),
-        }
-    }
-
-    /// The localized name of rung `i` of this field's ladder.
-    fn rung_label(self, i: usize) -> &'static str {
-        match self {
-            Self::Size => subtitle_size_label(SubtitleSize::from_index(i as u8)),
-            Self::Position => subtitle_position_label(SubtitlePosition::from_index(i as u8)),
-            Self::Color => tone_label(SubtitleTone::from_index(i as u8)),
-        }
-    }
-}
-
-/// **A drill-in page of the Subtitles tab** â€” the form's `Dest`. The Subtitles root is the empty
-/// page stack, not a value of this type (`docs/player-submenus.md`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TrackPage {
-    /// Size, Position and Color, each a drill-in showing its current value.
-    Style,
-    /// One field's picker: a checked [`TrackRow::Choice`] per rung.
-    Picker(StyleField),
-    /// One row per language the viewer has not marked as theirs, A-Z: a single-track language is a
-    /// direct pick row, a multi-track one a drill-in to its [`Self::Language`] page.
-    OtherLanguages,
-    /// One multi-track language's tracks (ranked), a pick row each; the payload is the language's
-    /// [`LangId::stream`].
-    Language(i64),
-    /// Search for subtitles: the language searched, then what the server's agent found.
-    Search,
-    /// The language list the search can use ([`search_languages`]), the current one checked.
-    SearchLanguage,
-}
-
-impl TrackPage {
-    /// The title band's text; a language page is titled by its language (`other` is the page
-    /// model, [`TrackMenuState::other`]).
-    fn title(self, other: &[OtherLang]) -> String {
-        match self {
-            Self::Style => plx_platform::i18n::msg::widgets_tracks_style().to_string(),
-            Self::Picker(field) => field.label().to_string(),
-            Self::OtherLanguages => plx_platform::i18n::msg::widgets_tracks_other_languages().to_string(),
-            Self::Language(stream) => {
-                other.iter().find(|o| o.id.stream == stream).map(|o| o.name.clone()).unwrap_or_default()
-            }
-            Self::Search => plx_platform::i18n::msg::widgets_tracks_search_open().to_string(),
-            Self::SearchLanguage => plx_platform::i18n::msg::widgets_tracks_search_language().to_string(),
-        }
-    }
-
-    /// A stable small number for the replay canon. Never reordered: recordings hash it.
-    fn code(self) -> u32 {
-        match self {
-            Self::Style => 1,
-            Self::Picker(field) => 0x10 + field.ordinal(),
-            Self::OtherLanguages => 0x20,
-            Self::Language(stream) => 0x2000_0000 | (stream as u32 & 0x00FF_FFFF),
-            Self::Search => 0x30,
-            Self::SearchLanguage => 0x31,
-        }
-    }
-}
-
-/// The hand-assigned focus key of each row: a family base per kind of row plus the track's own
-/// index, all far below the band. None of these is a position, so a menu whose rows reorder (a
-/// track list that sorts differently, the DSP pair appearing) moves no key. Free families for the
-/// language pages: `0x0008_0000` the Other languages drill-in, `0x0009_0000 +` the slot a language
-/// holds on that page. Search: `0x000A_0000` its drill-in, `0x000B_000x` the language and retry rows,
-/// `0x000C_0000 +` a result, `0x000D_0000 +` a language choice.
-impl FormId for TrackRow {
-    fn key(&self) -> RowKey {
-        // a picker's rungs: one 256-wide block per field (a ladder is a handful of rungs)
-        let rung = |f: StyleField, i: usize| 0x0007_0000 + f.ordinal() * 0x100 + (i as u32).min(0xFF);
-        RowKey(match *self {
-            TrackRow::Audio(i) => 0x0001_0000 + i as u32,
-            TrackRow::Boost => 0x0002_0000,
-            TrackRow::Loudness => 0x0002_0001,
-            TrackRow::SubOff => 0x0003_0000,
-            TrackRow::SubForcedOnly => 0x0003_0001,
-            TrackRow::Sub(i) => 0x0004_0000 + i as u32,
-            TrackRow::Timing => 0x0005_0000,
-            TrackRow::Style => 0x0005_0001,
-            TrackRow::OpenField(f) => 0x0006_0000 + f.ordinal(),
-            TrackRow::Choice(f, i) => rung(f, i),
-            TrackRow::OpenOther => 0x0008_0000,
-            TrackRow::OpenLang(lang) => 0x0009_0000 + (lang.slot as u32).min(0xFFFF),
-            TrackRow::OpenSearch => 0x000A_0000,
-            TrackRow::SearchLang => 0x000B_0000,
-            TrackRow::SearchRetry => 0x000B_0001,
-            TrackRow::SearchHit(i) => 0x000C_0000 + (i as u32).min(0xFFFF),
-            TrackRow::LangChoice(i) => 0x000D_0000 + (i as u32).min(0xFFFF),
-        })
-    }
-}
-
-/// Both tabs' form: the action type is `()` (the id says what a row does); `Dest` is the page a
-/// Nav row opens.
-type TrackForm = Form<TrackRow, (), TrackPage>;
-type TrackTable = FormTable<TrackRow, (), TrackPage>;
-
-/// [`TrackMenuState::enh_state`]'s answer: the Audio tab's Boost/Loudness offer as displayed, the
-/// route it rides, the reason it is disabled, and the live subtitle effect its note names.
-type EnhState = (
-    Option<plx_plex::plex::AudioEnhancements>,
-    Option<plx_media::route::EnhancementRoute>,
-    Option<plx_media::route::DisabledReason>,
-    plx_media::route::SubtitleEffect,
-);
-
-/// **The tallest page this menu shows with app-owned rows** â€” what decides which SIDE of its opener
-/// the panel opens on (`plx_ui::popover::anchor_panel`'s `need_h`), so the side is the same on
-/// every page and never flips under a viewer who pushes one. A server-length list (audio dubs,
-/// subtitle tracks) may be taller and scrolls inside the panel. Classic's room above its row is
-/// 710, which this stays under, so classic always opens upward. `pub(crate)` because the HUD lint
-/// places this menu with it (`hud_format::lint_menus`, M2), through [`place_panel`].
-pub(crate) const NEED_H: f32 = 600.0;
-
-/// **The one call of the shared placer for this menu**: a panel of `size` beside `anchor`, on the side
-/// [`NEED_H`] decides, `PLAYER_MENU_GAP` away, inside `SAFE`. The live panel ([`table_natural`]), the
-/// overscan audit ([`overscan_rects`]) and the HUD lint (`hud_format::lint_menus`) all place through
-/// it, so none can drift from another.
-pub(crate) fn place_panel(anchor: Rect, size: (f32, f32)) -> plx_ui::popover::Anchored {
-    plx_ui::popover::anchor_panel(
-        anchor,
-        size,
-        NEED_H,
-        theme::layout::PLAYER_MENU_GAP,
-        plx_ui::popover::Placement::PLAYER_MENU,
-    )
-}
-
-/// **A tab root's natural panel**, placed beside `anchor` â€” the layout of `table` as the panel would
-/// hug it. Each tab hugs its own rows (shared menu rule); the edge the opener's segment ends at is
-/// fixed, so switching tabs moves only the far edge.
-///
-/// The panel grows away from the opener and its height is capped at the room on that side, so a
-/// long list (an item with many audio dubs) SCROLLS inside the panel instead of the panel itself
-/// spilling over the opener or past the safe frame.
-fn table_natural(
-    table: &TableView,
-    anchor: Rect,
-    measure: &dyn plx_machine::machine::Measure,
-) -> plx_ui::popover::Anchored {
-    let pw = table.menu_panel_width(measure);
-    // A note row wraps, so its line count depends on the width: it is resolved HERE, against the
-    // same `measure` and `pw` the panel is sized with, so no caller (`update`, hit-testing,
-    // `draw`) can read the count a rebuild left stale. Idempotent and a few short strings.
-    table.fit_notes(pw, measure);
-    let ph = table.measured_height().max(160.0);
-    place_panel(anchor, (pw, ph))
-}
-
-/// The renderer the ACTIVE subtitle is drawn by â€” what decides whether the caption's Size and
-/// Position can reach it. Only the client's plain-text caption draw follows them
-/// (`appkit::player_hud::draw_subtitle_message`); an image subtitle keeps its own bitmap geometry and
-/// native ASS/SSA its authored layout. The subtitle INK tints all three, so Color is always live.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SubRenderer {
-    Text,
-    Image,
-    Styled,
-}
-
-impl SubRenderer {
-    fn of_codec(codec: &str) -> Self {
-        if sub_layout::is_image_sub_codec(codec) {
-            Self::Image
-        } else if codec.eq_ignore_ascii_case("ass") || codec.eq_ignore_ascii_case("ssa") {
-            Self::Styled
-        } else {
-            Self::Text
-        }
-    }
-
-    /// The note under the Style rows, when Size and Position cannot reach this renderer.
-    fn note(self) -> Option<&'static str> {
-        match self {
-            Self::Text => None,
-            Self::Image => Some(plx_platform::i18n::msg::widgets_tracks_style_image_note()),
-            Self::Styled => Some(plx_platform::i18n::msg::widgets_tracks_style_styled_note()),
-        }
-    }
-}
-
-/// **What the Subtitles root's rows and locks were built from** â€” the rebuild signature. A live
-/// poll compares it to the current answers and rebuilds when any input changed: the subs list
-/// (stream ids and whether each is offered on this route), the active index, the renderer kind,
-/// whether the route is transcoding, the enhancement route and subtitle effect (what the Style
-/// lock and Timing's omission read), and whether the landing left a remembered subtitle unshown
-/// (the note under the first group).
-#[derive(Clone, Debug, PartialEq)]
-struct SubSig {
-    subs: Vec<(i64, bool)>,
-    active: c_int,
-    renderer: SubRenderer,
-    transcoding: bool,
-    /// who draws the subtitle: what Timing and Style are gated and explained by
-    presenter: plx_media::route::SubtitlePresenter,
-    enhancement: Option<plx_media::route::EnhancementRoute>,
-    effect: plx_media::route::SubtitleEffect,
-    /// the show's remembered subtitle was chosen for this play and the route shows none of it
-    /// ([`plx_media::route::cur_memory_note`]): the root says why
-    memory_note: bool,
-    /// Forced only is the mode, with the language its row reads out
-    /// ([`sub_layout::forced_only_readout`]); `None` off the mode. The row's check, the single
-    /// checkmark and the read-out all follow it, and the language moves with the playing audio.
-    forced_only: Option<String>,
-}
-
-impl SubSig {
-    /// What a pushed Style page's availability was built from: the renderer (Size / Position reach
-    /// only text), whether the server draws the subtitle (Style is shown but locked), and whether
-    /// a transcode with no subtitle on omits it (the gate [`TrackMenuState::layout`] shows Style
-    /// by). A page is popped when this changes and refreshed in place otherwise.
-    fn page_availability(&self) -> (SubRenderer, bool, bool) {
-        (self.renderer, self.server_burn().is_some(), self.transcoding && self.server_burn().is_none())
-    }
-
-    /// Why the server draws the subtitle, when it does.
-    fn server_burn(&self) -> Option<plx_media::route::BurnReason> {
-        match self.presenter {
-            plx_media::route::SubtitlePresenter::ServerBurn(why) => Some(why),
-            _ => None,
-        }
-    }
-}
-
-/// The menu's whole state, owned by the container that mounts this panel â€” the modal PHASE and the
-/// appear spring belong to `ui::containers::modal::ModalStack` now, not to this struct; `draw` takes
-/// the appear fraction as a parameter instead of stepping its own [`Popover`].
-pub struct TrackMenuState {
-    tab: c_int, // 0=Audio, 1=Subtitles
-    active_audio: c_int, // index into the playing item's audio list
-    active_sub: c_int, // -1 = Off, else index into the playing item's subs list
-    /// Forced only is the mode ([`plx_media::route::cur_sub_mode`]). `active_sub` is then the
-    /// forced track it drew (or -1 when none matched) and is NOT what the root checks: the
-    /// checkmark sits on the Forced only row alone ([`Self::checked_sub`]).
-    forced_only: bool,
-    /// The language Forced only falls back to when the audio names none
-    /// ([`plx_media::route::forced_only_lang`]) as of the last open or poll. `on_ok` has no
-    /// session, so a pick matches and remembers by this copy; its own Forced only pick moves it.
-    forced_lang: String,
-    /// Both tabs' rows, declared once each as a [`TrackForm`] and resolved by [`TrackRow`]
-    /// identity â€” [`Self::on_ok`] reads back what the focused row IS from its id rather than from a
-    /// position (and so cannot disagree with what was drawn, the way a fresh call to
-    /// [`visible_subs`] could once a transcode starts). Whichever tab is built owns the table; a
-    /// tab switch replaces it whole ([`Self::rebuild`]).
-    form: TrackTable,
-    /// The timing offset (ms) the Timing row reads out â€” seeded from the player on open. Kept
-    /// locally (rather than re-reading the player's atomic on every draw) so the Timing capsule's
-    /// eventual hand-off starts from what THIS panel showed, not from a commit the loop has not
-    /// yet performed.
-    offset_ms: i64,
-    /// The caption tone the Color rows read out and check â€” seeded from the player on open, same
-    /// reasoning as [`Self::offset_ms`]: what this panel last drew must not depend on the global
-    /// the loop has not yet written (`TrackCommit::SubtitleTone` is dispatched to the loop, not
-    /// applied inline by `on_ok`). The size and position below follow the same rule.
-    tone: SubtitleTone,
-    /// The caption size the Size rows read out and check.
-    size: SubtitleSize,
-    /// The caption position the Position rows read out and check.
-    position: SubtitlePosition,
-    /// The pages pushed above the Subtitles root, outermost first (empty = the root). Each entry
-    /// carries the opener and scroll of the page beneath it.
-    pages: PageStack<TrackPage, TrackRow>,
-    /// The renderer of the ACTIVE subtitle, captured when the root is (re)built â€” what the Style
-    /// page's Size and Position lock reads.
-    renderer: SubRenderer,
-    /// What the Subtitles root was last built from; a live poll rebuilds when it moves.
-    sub_sig: Option<SubSig>,
-    /// The Other languages page's model â€” one entry per language, as of the last root build or
-    /// live poll. The Other languages and language pages draw from it, so what a page lists and
-    /// what its opener promised cannot disagree, and a language whose entry is gone pops its page.
-    other: Vec<OtherLang>,
-    /// The subtitle indices the Subtitles ROOT lists as track rows, in display order â€” what the
-    /// harness's `track:N` counts first ([`Self::sub_track_for_target`]).
-    root_tracks: Vec<usize>,
-    /// "Your languages" this play resolved under, in PREFERENCE order â€” the pref's BCP-47 code (if
-    /// the play resolved under one), the playing audio's language, and the current subtitle's own,
-    /// exactly as `metadata::sub_layout::sub_sections`' `yours` parameter reads them (compared by
-    /// `metadata::lang_key`, never by literal string equality). Owned rather than borrowed, so
-    /// a rebuild (tab switch) needs nothing from the caller beyond `ps`/`meta`.
-    yours: Vec<String>,
-    /// The Audio tab's Plex Pass DSP toggle rows (issue #266) â€” `None` when they are not offered
-    /// at all (Hidden or Disabled), else what they currently read out: "desired while pending,
-    /// applied otherwise" (`route::displayed_audio_enhancements`), same reasoning as
-    /// [`Self::offset_ms`]/[`Self::tone`] â€” a run of toggle presses inside one open counts from
-    /// what THIS panel last drew, and [`Self::rebuild`] is the only writer, on every (re)build of
-    /// the Audio tab (`new`/`focus_tab`).
-    enhance_shown: Option<plx_plex::plex::AudioEnhancements>,
-    /// The route [`Self::enhance_shown`] would take, kept alongside it (`Some` iff `enhance_shown`
-    /// is `Some`) â€” the Audio tab's consequence note (M7: a burned subtitle, a dropped Dolby Vision
-    /// declaration) reads the flavour, not just whether the toggle is on.
-    enhance_route: Option<plx_media::route::EnhancementRoute>,
-    /// Why the toggle is drawn dim with a reason instead of offered â€” `Some` only when the owner's
-    /// "hidden stays ONLY for no Plex Pass" direction (2026-09-29) applies a plain-language reason
-    /// instead of the older silent absence (I1/I2 now covers the Plex-Pass gate alone).
-    /// `None` together with [`Self::enhance_shown`]'s `None` means the rows are HIDDEN entirely.
-    enhance_disabled: Option<plx_media::route::DisabledReason>,
-    /// What is on screen right now (M7) â€” read alongside [`Self::enhance_route`] purely for the
-    /// Audio tab's consequence NOTE, which needs to tell "no subtitle" apart from "an unaffected
-    /// sidecar" even though [`enhancement_availability`](plx_media::route::EnhancementAvailability)
-    /// folds both into the same [`plx_media::route::EnhancementRoute::Remux`].
-    enhance_subtitle_effect: plx_media::route::SubtitleEffect,
-    /// The Audio tab's focused row identity, banked across a live rows-VANISH: the enhancement
-    /// offer can drop for a poll or two on a route change this menu never asked for (a subtitle
-    /// switched on mid-play, a momentary refusal) and return before the viewer presses anything.
-    /// [`Self::rebuild_audio`] stashes the focused [`TrackRow::Boost`]/[`TrackRow::Loudness`]
-    /// here the moment those rows are about to disappear, and restores it â€” in preference to
-    /// reading `table.sel` back â€” the moment they reappear. Reading `table.sel` at that point
-    /// instead would be wrong: while the rows are gone `table.sel` sits on whatever the fallback
-    /// (or the ENGINE's own raw index clamp while the row count was smaller â€” see
-    /// [`TrackMenuPart::reconcile`]) landed on, which names an unrelated track once the enhancement
-    /// rows are back. `None` once consumed, or when nothing needs remembering.
-    sticky_audio_target: Option<TrackRow>,
-    /// The card's resize and the page slide ([`plx_ui::panel_motion`]): the layout target is
-    /// cached there, the top/left edges spring to it, and a push or pop slides the two pages.
-    motion: PanelMotion,
-    /// The owner token of the background queue this menu parked ([`plx_gfx::text::park_prewarm_as_background`]).
-    /// [`Drop`] clears the queue only while it is still this menu's: a dismissed menu lives on
-    /// through its fade-out (`ModalStack`'s `Closing`), and a Tracks menu reopened inside that
-    /// fade has parked its own queue by the time the old one drops.
-    background_owner: Option<u64>,
-    /// The subtitle search for the playing item, as the host last published it
-    /// ([`Self::set_search`]); `None` when the host offers no search, which also hides the root's
-    /// Search row. The panel never performs the search: it reads this and answers
-    /// [`TrackOk::Search`] for the screen to send.
-    search: Option<plx_data::subsearch::SubSearchSnapshot>,
-    /// THIS panel watched a download in flight (Sending/Waiting), so an Installed landing is its
-    /// own to auto-select. Cleared when handed over ([`Self::take_search_commit`]), so a landing
-    /// republished every frame commits once. The store keeps Installed after the panel closes;
-    /// a panel opened onto it never saw the flight and must not commit it again â€” doing so
-    /// dismissed every later Subtitles/Audio menu on its first tick (device, 2026-10-04).
-    search_watching: bool,
-    /// The playing item's external subtitles as of the last open or [`SubSig`] change â€” what the
-    /// Search page checks a hit against ([`Self::hit_on_item`]), because that page is built
-    /// without the item in hand. A copy, refreshed wherever the subs list is re-read, so a
-    /// subtitle that lands (or is replaced) while the page is up marks its hit at once.
-    item_sidecars: Vec<metadata::Stream>,
-    /// The opener's rect, handed in when the menu opened ([`Self::with_anchor`]) and never read
-    /// from anywhere again: a stand-in taking the HUD row, or a language change, cannot move an
-    /// open panel.
-    anchor: Rect,
-    /// The side of [`Self::anchor`] the panel took, as of the last placement: where its rise
-    /// comes from.
-    side: std::cell::Cell<plx_ui::popover::Side>,
-}
-
-/// **What the track menu DECIDED**, for the loop to perform (spec Â§2.2).
-///
-/// The panel owns its rows and its cursor; it does not own the playback, so it may not call
-/// `route::commit_audio_pick` / `commit_subtitle_pick` itself â€” those take the session's
-/// `&mut`, and a screen is only ever shown the frame's publication. `None` means the pick changed
-/// nothing (audio only: a subtitle OK always commits, so the route republishes, though the panel
-/// knows from `active_sub` whether the pick CHANGED the shown subtitle, and only a changed pick
-/// carries a `memo`).
-///
-/// **A track pick also says what to REMEMBER.** `memo` is the descriptor of the row the viewer
-/// picked, built here from the exact `metadata::Stream` the row was drawn from
-/// (`route::memo_of_audio` / `memo_of_subtitle`, the matchers' own predicates), so the loop can
-/// write the show's track memory without ever seeing the item's streams. `None` is a commit that
-/// is not the viewer's choice (a harness setup, or a subtitle OK on the row already checked) and
-/// remembers nothing; the pick commits write only when the route accepted it.
-#[derive(Clone, Debug, PartialEq)]
-pub enum TrackCommit {
-    /// The frozen `CarriedAudio` snapshot for the picked row (issue #266), built via
-    /// `CarriedAudio::from_stream` from the exact `metadata::Stream` the row was drawn from.
-    Audio { carried: plx_media::route::CarriedAudio, memo: Option<plx_plex::plex::session::prefs::AudioMemo> },
-    /// The Audio tab's Boost dialog / Normalize loudness toggle rows (issue #266): the full
-    /// preference after the flip, so the loop's `player::request_audio_enhancement` has both
-    /// bits regardless of which row was pressed. Built from [`TrackMenuState::enhance_shown`],
-    /// never re-derived from `ps` here â€” the panel owns its own rows, not the playback (see this
-    /// enum's own doc).
-    AudioEnhancement(plx_plex::plex::AudioEnhancements),
-    /// `sidecar_key` is `Some` when the pick is an EXTERNAL text subtitle the client can draw
-    /// on direct play (`metadata::Stream::sidecar_renderable`): it has no demuxer ordinal
-    /// (`render_ordinal` is -1), so `route::commit_subtitle_and_sidecar` hands it to `player::sidecar`
-    /// beside the unchanged route commit. `sidecar_codec` preserves ASS/SSA on download; a key need not have an
-    /// extension. `None` â€” Off, or an embedded track â€” deselects any sidecar. `memo` is
-    /// `SubtitleMemo::Off` for Off and `Track(..)` for every track, an embedded one, a sidecar or
-    /// a fresh download alike; `None` for an OK on the row that is already checked (a row that is
-    /// checked because the mode is Forced only is NOT: leaving Forced only is a change, so the
-    /// track it drew is a memo of its own when picked on its row).
-    Subtitle {
-        render_ordinal: c_int,
-        stream_id: i64,
-        sidecar_key: Option<String>,
-        sidecar_codec: String,
-        memo: Option<plx_plex::plex::session::prefs::SubtitleMemo>,
-    },
-    /// **Forced only** (FO): the panel matched the forced track in the
-    /// playing audio's language (`render_ordinal`/`stream_id`, `-1`/`0` when the item has none),
-    /// and the loop commits it, holds the mode and remembers `SubtitleMemo::ForcedOnly { lang }`
-    /// (the drawn track's language, else the audio's, else the language the session fell back to).
-    /// `changed` is false for OK on the row that is already the mode: the menu closes, the commit
-    /// carries what is on screen unchanged (that stream, or `-1`/`0` for nothing) and nothing is
-    /// written. Always an embedded track, never a sidecar: a forced track the client cannot demux is
-    /// not matched.
-    SubtitleForcedOnly { render_ordinal: c_int, stream_id: i64, lang: String, changed: bool },
-    /// The caption's tone. Not a track at all, but it is picked in this panel and it is the
-    /// loop that performs it (`player::set_subtitle_tone` saves through the one write door, `route::choose`),
-    /// like the two above.
-    SubtitleTone(SubtitleTone),
-    /// The caption's size, picked on the Style > Size page: the loop publishes it live and
-    /// persists it (`route::select_subtitle_size`).
-    SubtitleSize(SubtitleSize),
-    /// The caption's vertical position, picked on the Style > Position page
-    /// (`route::select_subtitle_position`).
-    SubtitlePosition(SubtitlePosition),
-    /// The caption's timing offset in ms (`player::set_subtitle_offset`) â€” produced by the Timing
-    /// capsule overlay (plan Â§4), not by this panel: the Timing ROW here only opens that capsule
-    /// ([`TrackOk::OpenTiming`]). The variant stays here because `TrackCommit` is the one
-    /// player-state-commit type every subtitle control produces, capsule included.
-    SubtitleOffset(i64),
-}
-
-/// **The whole outcome of OK on the focused row**, one level up from [`TrackCommit`] â€” what to
-/// perform AND whether the panel stays, so the caller reads one value rather than asking twice
-/// (once before `on_ok` rebuilt the rows under the cursor). The Timing row hands off to a
-/// different overlay (`screens::player::overlay`'s Tracksâ†’Timing transition, plan Â§4) â€” a
-/// decision this panel can state but not perform, since it does not own the overlay stack.
-#[derive(Clone, Debug, PartialEq)]
-pub enum TrackOk {
-    /// Perform `commit`. `keep_open` is true for a Style pick (the viewer is watching the caption
-    /// change, so a run of picks needs no reopen-and-rewalk between them) and for the Audio
-    /// toggles; every track pick closes the panel.
-    Commit { commit: TrackCommit, keep_open: bool },
-    /// A Nav row opened a page ([`TrackMenuState::push`]): the panel stays, its rows replaced.
-    Navigated,
-    /// Nothing changed (the already-playing audio track): close the panel.
-    Dismiss,
-    /// Open the Timing capsule overlay: `screens::player::overlay`'s `activate` dismisses the
-    /// Tracks panel and asks for `OverlayKind::Timing` in its place.
-    OpenTiming,
-    /// OK does nothing and must not close the panel either: the dim Timing row while subtitles are
-    /// Off, a locked Timing / Style row, a disabled Size / Position row, and a re-pick of the
-    /// rung that is already checked.
-    Inert,
-    /// A subtitle-search command for the screen to send to the store. The panel stays open: a
-    /// search or a download is watched, not fired and forgotten.
-    Search(plx_data::subsearch::SubSearchCmd),
-}
-
-impl Drop for TrackMenuState {
-    /// A closed menu cannot switch tabs, so its other tab's warm ([`Self::warm_other_tab`]) is
-    /// work for nobody.
-    fn drop(&mut self) {
-        if let Some(owner) = self.background_owner {
-            plx_gfx::text::clear_background_prewarm_owned(owner);
-        }
-    }
-}
-
-impl TrackMenuState {
-    /// Build the menu focused on `tab` (0=Audio, 1=Subtitles) â€” the on-screen audio/subs icons
-    /// pick a specific tab this way; the plain open path passes 0. `yours` is "your languages" in
-    /// preference order (pref, playing audio, current subtitle) â€” see [`Self::yours`].
-    pub fn new(
-        ps: &plx_media::route::PlaybackSession,
-        meta: metadata::MetadataView<'_>,
-        tab: c_int,
-        yours: Vec<String>,
-    ) -> Self {
-        Self::new_with(ps, meta, tab, yours, false)
-    }
-
-    /// [`Self::new`], with the Subtitles root offering *Search subtitles* from its FIRST build when
-    /// `offer_search` â€” the host can run the search. Offering it later, from a tick, would rebuild
-    /// the root under a live panel; a closing panel's refresh is what kept a fading Tracks surface
-    /// alive past its hand-off (`tracks_to_timing_hands_off_without_stacking_a_second_surface`).
-    pub fn new_with(
-        ps: &plx_media::route::PlaybackSession,
-        meta: metadata::MetadataView<'_>,
-        tab: c_int,
-        yours: Vec<String>,
-        offer_search: bool,
-    ) -> Self {
-        let mut s = TrackMenuState {
-            tab,
-            active_audio: 0,
-            active_sub: -1,
-            forced_only: false,
-            forced_lang: String::new(),
-            form: TrackTable::new(BAND_BASE),
-            offset_ms: plx_media::player::subtitle_offset_ms(),
-            tone: plx_media::player::subtitle_tone(),
-            size: plx_media::route::subtitle_size(),
-            position: plx_media::route::subtitle_position(),
-            pages: PageStack::new(),
-            renderer: SubRenderer::Text,
-            sub_sig: None,
-            other: Vec::new(),
-            root_tracks: Vec::new(),
-            yours,
-            enhance_shown: None,
-            enhance_route: None,
-            enhance_disabled: None,
-            enhance_subtitle_effect: plx_media::route::SubtitleEffect::None,
-            sticky_audio_target: None,
-            motion: PanelMotion::new(),
-            background_owner: None,
-            search: offer_search.then(|| plx_data::subsearch::SubSearchSnapshot::idle(0)),
-            search_watching: false,
-            item_sidecars: Vec::new(),
-            anchor: crate::player_hud::classic::ctrl_row_hit_rect(),
-            side: std::cell::Cell::new(plx_ui::popover::Side::Above),
-        };
-        s.form.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
-        s.sync_item(ps, meta);
-        s.rebuild(ps, meta, tab, false);
-        s
-    }
-
-    /// Open beside `anchor`, the rect of the control (widened to the end of its segment) that
-    /// opened the menu, as the player screen hands it over. Without it the menu opens where classic
-    /// does: the control row's rect, whose right edge is `CTRL_RIGHT`. Called once, on the
-    /// freshly built menu and before its first frame: the placement is cached against the table's
-    /// layout, and the anchor is latched for the menu's whole life.
-    pub fn with_anchor(mut self, anchor: Rect) -> Self {
-        self.anchor = anchor;
-        self
-    }
-
-    /// The anchor the menu was opened with ([`Self::with_anchor`]).
-    pub fn anchor(&self) -> Rect {
-        self.anchor
-    }
-
-    /// The highlighted row, for the focus probe (`crate::focusprobe`) â€” a READ of the cursor the
-    /// key ladder moves, and the reason it exists: `app.rs`'s UP/DOWN arm for this panel changes
-    /// nothing else, so without this the fingerprint records the panel opening and closing and
-    /// nothing between.
-    pub fn sel(&self) -> i32 {
-        self.form.table.sel
-    }
-
-    /// **The replay canon** of this panel: the tab, the page path (each pushed page and the row
-    /// that opened it) and the selected row's [`RowKey`] â€” not its index, which moves when a row
-    /// is added above it. `screens::player::overlay` writes this in place of the bare row index, so
-    /// a replay tells Subtitles from Audio, the root from a Style page, and two return stacks
-    /// apart.
-    pub fn canon(&self, c: &mut Canon) {
-        c.u32(self.tab as u32);
-        self.pages.canon(c, TrackPage::code, |r| r.key().0);
-        c.u32(self.form.key_at(self.form.table.sel.max(0) as usize).map_or(u32::MAX, |k| k.0));
-    }
-
-    /// What the `submenuosc` trigger needs to choose its next key: the tab (0 Audio, 1 Subtitles),
-    /// how many pages are pushed above the root, and whether the root offers Other languages.
-    pub fn osc_probe(&self) -> (c_int, usize, bool) {
-        (self.tab, self.pages.len(), self.form.index_of(&TrackRow::OpenOther).is_some())
-    }
-
-    /// The pages pushed above the Subtitles root, outermost first, for tests and probes.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn page_path(&self) -> Vec<TrackPage> {
-        self.pages.iter().map(|s| s.page).collect()
-    }
-
-    /// Was the Subtitles root last built with the server drawing the subtitle (what locks Timing and Style)?
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn server_burn_built(&self) -> bool {
-        self.sub_sig.as_ref().is_some_and(|sig| sig.server_burn().is_some())
-    }
-
-    /// The highlighted row's id (`None` on a note or an empty list).
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn selected_id(&self) -> Option<TrackRow> {
-        self.form.selected_id().copied()
-    }
-
-    /// The focusable rows at the current tab, in drawn order, by identity â€” for a test that needs
-    /// to name a row without duplicating this layout by hand (`screens::player::overlay_tests`'s
-    /// Timing hand-off test).
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn ids(&self) -> Vec<TrackRow> {
-        (0..self.form.table.n_rows() as usize).filter_map(|i| self.form.id_at(i).copied()).collect()
-    }
-
-    /// Every focusable row's focus element, in drawn order.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn keys(&self) -> Vec<u32> {
-        self.ids().iter().map(|id| id.key().0).collect()
-    }
-
-    /// The focus element (a row's [`RowKey`] number) of the row `id` names, if this tab has it.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn key_of(&self, id: TrackRow) -> Option<u32> {
-        self.form.index_of(&id).map(|_| id.key().0)
-    }
-
-    /// Move focus onto the row `id` names (a test's, or the `submenuosc` trigger's, way of
-    /// pressing DOWN to it); `false` when this tab has no such row.
-    pub fn focus_id(&mut self, id: TrackRow) -> bool {
-        self.focus_key(id.key().0);
-        self.form.selected_id() == Some(&id)
-    }
-
-    /// **Write back the engine's own focus cursor** (restructure phase 12): the Column group
-    /// [`TrackMenuPart`] answers is the source of geometry, but the ENGINE owns the current
-    /// element (Â§7.3 step 5) â€” the owner's `step` is the only place that mutates in response to a
-    /// `FocusMoved`, and this is `screens::player::overlay::PlayerOverlayScreen::step`'s write.
-    /// The element is a row's [`RowKey`] number; a key this tab does not know moves nothing.
-    pub fn focus_key(&mut self, elem: u32) {
-        if let Some(i) = self.form.index_of_key(RowKey(elem)) {
-            self.form.table.sel = i as i32;
-        }
-    }
-
-    /// index into the playing item's audio list of the chosen audio track
-    pub fn active_audio(&self) -> c_int {
-        self.active_audio
-    }
-    /// -1 = subtitles off, else index into the playing item's subs list. Under Forced only, the
-    /// forced track it drew (-1 when none matched); [`Self::forced_only`] says which mode it is.
-    pub fn active_sub(&self) -> c_int {
-        self.active_sub
-    }
-    /// Is Forced only the subtitle mode (the checkmark is on its row)?
-    pub fn forced_only(&self) -> bool {
-        self.forced_only
-    }
-    /// The track the track rows check: the active one, or none while Forced only holds the
-    /// checkmark. Every row that checks a track reads this, never `active_sub` directly.
-    fn checked_sub(&self) -> c_int {
-        if self.forced_only { -1 } else { self.active_sub }
-    }
-    /// Plex stream id of the chosen audio track (for &audioStreamID), or 0
-    pub fn audio_stream_id(&self, meta: metadata::MetadataView<'_>) -> i64 {
-        let i = self.active_audio();
-        tracks(meta)
-            .and_then(|t| t.audio.get(i.max(0) as usize))
-            .map(|s| s.id)
-            .unwrap_or(0)
-    }
-    /// Plex stream id of the chosen subtitle track (for &subtitleStreamID), or 0 if Off
-    pub fn sub_stream_id(&self, meta: metadata::MetadataView<'_>) -> i64 {
-        let i = self.active_sub();
-        if i < 0 {
-            return 0;
-        }
-        tracks(meta)
-            .and_then(|t| t.subs.get(i as usize))
-            .map(|s| s.id)
-            .unwrap_or(0)
-    }
-
-    /// Derive the checked tracks from the PLAYBACK state â€” the route owns the truth
-    /// (CUR_AUDIO_SID/CUR_SUB_SID, set by the start-of-play pick and every commit): the auto-picked
-    /// default/smart-DP track is checked on first open, a replayed item resets with the playback,
-    /// and a prior pick round-trips by id. When no id is recorded (codec-default play), the file's
-    /// flagged default is checked. Free function (no `&self`) so both [`Self::sync_item`] (on
-    /// every open) and the live poll below (PR #309 field report) derive the SAME pair the same
-    /// way â€” the desync that report caught was exactly two readers of this answer drifting apart.
-    fn derive_active(ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> (c_int, c_int) {
-        (Self::derive_active_audio(ps, meta), Self::derive_active_sub(ps, meta))
-    }
-
-    /// The Audio tab's half of [`Self::derive_active`].
-    fn derive_active_audio(ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> c_int {
-        let Some(t) = tracks(meta) else { return 0 };
-        let asid = plx_media::route::cur_audio_sid(ps);
-        (asid > 0)
-            .then(|| t.audio.iter().position(|s| s.id == asid))
-            .flatten()
-            .or_else(|| t.audio.iter().position(|s| s.default))
-            .unwrap_or(0) as c_int
-    }
-
-    /// The Subtitles tab's half of [`Self::derive_active`] â€” what the live poll scans alone, the
-    /// audio half being discarded there.
-    fn derive_active_sub(ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> c_int {
-        let Some(t) = tracks(meta) else { return -1 };
-        let ssid = plx_media::route::cur_sub_sid(ps);
-        (ssid > 0)
-            .then(|| t.subs.iter().position(|s| s.id == ssid))
-            .flatten()
-            .map(|i| i as c_int)
-            .unwrap_or(-1)
-    }
-
-    /// [`Self::derive_active`] on every open â€” the menu can never show a stale or desynced
-    /// checkmark at the moment it appears. Deliberately does NOT touch `tab`:
-    /// [`TrackMenuState::new`] sets it directly.
-    fn sync_item(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
-        let (audio, sub) = Self::derive_active(ps, meta);
-        self.active_audio = audio;
-        self.active_sub = sub;
-        self.forced_only = Self::derive_forced_only(ps);
-        self.forced_lang = plx_media::route::forced_only_lang(ps).to_string();
-        self.read_item_sidecars(meta);
-    }
-
-    /// Is the playback in Forced only? The route owns that fact (`cur_sub_mode`): the drawn forced
-    /// track's stream id alone cannot tell it from a pick of that same track.
-    fn derive_forced_only(ps: &plx_media::route::PlaybackSession) -> bool {
-        plx_media::route::cur_sub_mode(ps) == plx_media::route::SubMode::ForcedOnly
-    }
-
-    /// The language the Forced only row reads out while it is the mode: the drawn track's, else the
-    /// playing audio's ([`sub_layout::forced_only_readout`]); for audio that names no language, the
-    /// one the mode fell back to, named by a track of the item that carries it. `None` off the mode.
-    fn forced_readout(
-        ps: &plx_media::route::PlaybackSession,
-        meta: metadata::MetadataView<'_>,
-        active: c_int,
-        forced: bool,
-    ) -> Option<String> {
-        forced.then(|| {
-            let item = tracks(meta);
-            let drawn = item.and_then(|t| t.subs.get(usize::try_from(active).ok()?));
-            let audio = item.and_then(|t| t.audio.get(usize::try_from(Self::derive_active_audio(ps, meta)).ok()?));
-            let audio_lang = audio.map_or("", |a| a.lang_code.as_str());
-            let language = plx_media::route::forced_only_language(audio_lang, plx_media::route::forced_only_lang(ps));
-            // the fallback stood in for audio that names none: no stream of that language need be
-            // drawn, so it is named by any track of the item that carries it
-            let stand_in = (drawn.is_none() && language != audio_lang)
-                .then(|| item.and_then(|t| t.subs.iter().chain(&t.audio).find(|s| metadata::lang_matches(language, &s.lang_code))))
-                .flatten();
-            sub_layout::forced_only_readout(drawn, stand_in.or(audio))
-        })
-    }
-
-    /// Re-read the playing item's external subtitles for the Search page ([`Self::item_sidecars`]).
-    fn read_item_sidecars(&mut self, meta: metadata::MetadataView<'_>) {
-        self.item_sidecars =
-            tracks(meta).map(|t| t.subs.iter().filter(|s| s.external).cloned().collect()).unwrap_or_default();
-    }
-
-    /// The Subtitles tab's half of the live poll `Self::update` runs every tick, mirroring the
-    /// Audio tab's own `enh_state` poll just above it. Issue #309's field report: a subtitle pick
-    /// that reroutes the play to (or away from) the enhancement's own Burn lands `active_sub`
-    /// at once (`Self::on_ok`'s own optimistic write), but the server-burn lock (`server_burn_built`) can only become true
-    /// once the Burn's `/decision` round trip actually answers (`route::decision::request_retranscode`
-    /// on a `route::flight` worker, a real network call) â€” seconds later. A panel that stays open across that window (the
-    /// diagnostic `screens::player::overlay::pick_track_row` trigger deliberately does, "so a
-    /// capture can show the picked track") was built and never touched again, so its drawn
-    /// checkmark and its Style/Timing dim state both kept whatever `Self::layout` baked at open,
-    /// disagreeing with the route by the time a capture actually looked at it. `rebuild`'s own
-    /// subtitle arm always re-homes the cursor onto the checked row â€” correct for an open or a tab
-    /// switch, wrong for a background poll that must not steal focus from wherever the viewer's
-    /// cursor actually is (the exact focus-desync class `refresh_audio`'s doc names)
-    /// â€” so this refreshes the form, which restores the current row by [`TrackRow`] in the
-    /// freshly built list instead of snapping to the active track, the same fix `refresh_audio` applies for the Audio
-    /// tab's own poll.
-    ///
-    /// **It rebuilds on a [`SubSig`] change**, not on the two values it once compared: the subs
-    /// list, the active index, the renderer kind, transcoding, and the enhancement route and
-    /// subtitle effect. On the root that is a refresh in place. ON A SUB-PAGE the page is refreshed in
-    /// place too (focus kept by id) and popped to the root only when its availability no longer
-    /// holds ([`SubSig::page_availability`]: the renderer, or whether Style is shown / locked), so a
-    /// Style page never outlives the renderer or the lock its Size and Position rows were built for
-    /// while a track list or enhancement change it does not read leaves it alone.
-    fn poll_subtitle_state(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
-        let live_sub = Self::derive_active_sub(ps, meta);
-        let live_forced = Self::derive_forced_only(ps);
-        let live_lang = plx_media::route::forced_only_lang(ps);
-        if self.forced_lang != live_lang {
-            self.forced_lang = live_lang.to_string();
-        }
-        let sig = self.sub_sig_for(ps, meta, live_sub, Self::forced_readout(ps, meta, live_sub, live_forced));
-        if self.sub_sig.as_ref() == Some(&sig) {
-            return;
-        }
-        self.active_sub = live_sub;
-        self.forced_only = live_forced;
-        self.read_item_sidecars(meta);
-        let Some(first) = self.pages.first().copied() else {
-            let form = self.layout(ps, meta);
-            // not the viewer's row any more (its track left the offered list): the checked row
-            self.form.refresh_with(form, None, Some(&self.active_sub_id()));
-            return;
-        };
-        // the pages' own data is read BEFORE judging them: a language whose entry is gone is as
-        // unavailable as a changed renderer
-        self.other = self.sub_model(ps, meta, true).other;
-        let availability_moved =
-            self.sub_sig.as_ref().is_some_and(|built| built.page_availability() != sig.page_availability());
-        if availability_moved || !self.pages_hold() {
-            // The page was opened on a root that no longer holds (the renderer changed under
-            // Size/Position, a burn landed or left, the language it lists left the offered list):
-            // pop to the root, restoring the opener and scroll the stack saved at its first push.
-            self.pages.clear();
-            let form = self.layout(ps, meta);
-            self.form.restore(form, Some(&first.return_id), first.scroll);
-            self.form.table.set_title(None);
-            self.motion.cancel_slide();
-        } else {
-            // The page still holds: remember what the root is now built from (the pop back
-            // rebuilds it) and refresh this page in place, focus kept by id.
-            self.sub_sig = Some(sig);
-            if let Some(page) = self.pages.top() {
-                let form = self.page_form(page);
-                // a language can change shape under the viewer (one track <-> several): the row
-                // they were on follows it to its new one
-                let prefer = (page == TrackPage::OtherLanguages)
-                    .then(|| self.form.selected_id().map(|id| self.other_row_for(*id)))
-                    .flatten();
-                self.form.refresh_with(form, prefer.as_ref(), None);
-            }
-        }
-    }
-
-    /// Does every pushed page still have what it lists? An Other languages page needs a language
-    /// to list; a language page needs ITS language (the same [`LangId`], whatever its tracks'
-    /// positions are now) still offered, with however many tracks it has left.
-    fn pages_hold(&self) -> bool {
-        self.pages.iter().all(|saved| match saved.page {
-            TrackPage::OtherLanguages => !self.other.is_empty(),
-            TrackPage::Language(stream) => self.other_lang(stream).is_some(),
-            TrackPage::Style | TrackPage::Picker(_) => true,
-            // its listing is the search's, not the item's: the download's own stream landing must
-            // not pop the page the viewer is watching it on
-            TrackPage::Search | TrackPage::SearchLanguage => self.search.is_some(),
-        })
-    }
-
-    /// The Subtitles root's rebuild signature for `active`, read fresh off the route and the
-    /// item. [`Self::layout`] stores the same value it builds from.
-    fn sub_sig_for(
-        &self,
-        ps: &plx_media::route::PlaybackSession,
-        meta: metadata::MetadataView<'_>,
-        active: c_int,
-        forced_only: Option<String>,
-    ) -> SubSig {
-        let item = tracks(meta);
-        let offered = visible_subs(ps, meta);
-        let subs = item
-            .map(|t| t.subs.iter().enumerate().map(|(i, s)| (s.id, offered.contains(&i))).collect())
-            .unwrap_or_default();
-        let renderer = item
-            .and_then(|t| t.subs.get(usize::try_from(active).ok()?))
-            .map_or(SubRenderer::Text, |s| SubRenderer::of_codec(&s.codec));
-        let (_, enhancement, _, effect) = Self::enh_state(ps);
-        SubSig {
-            subs,
-            active,
-            renderer,
-            transcoding: plx_media::route::is_transcoding(ps),
-            presenter: plx_media::route::subtitle_presenter(ps),
-            enhancement,
-            effect,
-            memory_note: plx_media::route::cur_memory_note(ps),
-            forced_only,
-        }
-    }
-
-    /// The language entry of the Other languages model that [`LangId::stream`] names.
-    fn other_lang(&self, stream: i64) -> Option<&OtherLang> {
-        self.other.iter().find(|o| o.id.stream == stream)
-    }
-
-    /// The row that stands for a language on the Other languages page NOW: its direct pick row
-    /// while it offers one track, its drill-in while it offers several. A language changes shape
-    /// under a viewer (a sidecar becomes offered or leaves), and the row they were on must follow
-    /// it, not be looked up in a shape that no longer exists. Any other id is returned unchanged.
-    fn other_row_for(&self, id: TrackRow) -> TrackRow {
-        let lang = match id {
-            TrackRow::OpenLang(l) => self.other_lang(l.stream),
-            TrackRow::Sub(i) => self.other.iter().find(|o| o.tracks.iter().any(|t| t.i == i)),
-            _ => None,
-        };
-        lang.map_or(id, Self::other_lang_row)
-    }
-
-    /// A language's row on the Other languages page: the pick row of its only track, or its
-    /// drill-in.
-    fn other_lang_row(o: &OtherLang) -> TrackRow {
-        match o.tracks.as_slice() {
-            [t] => TrackRow::Sub(t.i),
-            _ => TrackRow::OpenLang(o.id),
-        }
-    }
-
-    /// The Subtitles ROOT's row carrying the checkmark: Forced only while it is the mode, else the
-    /// active track, or Off â€” or, when the active track is not listed on the root at all (its
-    /// language is not "yours": a codeless or unrecognised-language track, or one a live change
-    /// moved), the Other languages row that stands for it.
-    fn active_sub_id(&self) -> TrackRow {
-        if self.forced_only {
-            return TrackRow::SubForcedOnly;
-        }
-        match self.active_sub {
-            i if i >= 0 && self.other.iter().any(|o| o.tracks.iter().any(|t| t.i == i as usize)) => TrackRow::OpenOther,
-            i if i >= 0 => TrackRow::Sub(i as usize),
-            _ => TrackRow::SubOff,
-        }
-    }
-
-    /// Focus an ABSOLUTE table row â€” the /tmp/plxnative-menupick trigger's contract ("row N"), the
-    /// one dev-only entry that speaks positions (the named targets below do not). The interactive
-    /// path always moves relatively; this exists because the initial focus is the ACTIVE row
-    /// (derived from playback state), so a relative walk from it would land elsewhere.
-    pub fn focus_row(&mut self, row: c_int) {
-        for _ in 0..64 {
-            if self.form.table.sel == row {
-                break;
-            }
-            let before = self.form.table.sel;
-            self.form.table.move_sel(if self.form.table.sel < row { 1 } else { -1 });
-            if self.form.table.sel == before {
-                break; // clamped at an end â€” row out of range
-            }
-        }
-    }
-
-    /// Resolve a NAMED Audio-tab target (`"boost"`/`"loudness"`) to its absolute table row, for
-    /// the `/tmp/plxnative-menupick` trigger's named form â€” an alternative to a row number hand-
-    /// derived from the item's track count, which is exactly the issue #266 PR4 bug: this harness
-    /// once hardcoded the Normalize Loudness row from a WRONG assumed track count. Reading it back
-    /// through the form, the same identities [`Self::on_ok`] dispatches on, means the name
-    /// is correct however many tracks the item actually has. `None` when `name` is unrecognized,
-    /// or recognized but not currently built (the DSP toggle rows are not offered right now).
-    pub fn row_for_audio_target(&self, name: &str) -> Option<c_int> {
-        let target = match name {
-            "boost" => TrackRow::Boost,
-            "loudness" => TrackRow::Loudness,
-            _ => return None,
-        };
-        self.form.index_of(&target).map(|i| i as c_int)
-    }
-
-    /// Resolve a NAMED Subtitles-tab target to a TRACK, for the `/tmp/plxnative-menupick` trigger:
-    /// `"track:N"` is the N-th (0-based) track in PAGE ORDER â€” the root's track rows first, then the
-    /// Other languages page A-Z with a multi-track language expanded into its own ranked page â€”
-    /// never Off, Timing or Style. It answers the track's index in the item's list, not a table
-    /// row: a track behind Other languages has no row on the page that is showing, and
-    /// [`Self::commit_sub_track`] commits by that index. A hand-written row number drifts every
-    /// time the panel gains or loses a row (the `subtitle_text_srt` case picked row 3, which became
-    /// the Style row); a position in this order cannot. `None` for an unrecognized name or an N past
-    /// the last track.
-    pub fn sub_track_for_target(&self, name: &str) -> Option<usize> {
-        let n: usize = name.strip_prefix("track:")?.trim().parse().ok()?;
-        self.root_tracks.iter().copied().chain(self.other.iter().flat_map(|o| o.tracks.iter().map(|t| t.i))).nth(n)
-    }
-
-    /// Show `tab` (0=Audio, 1=Subtitles) on a menu that is ALREADY open â€” the second disc pressed
-    /// while the first one's tab is showing. Same body as the LEFT/RIGHT arm below, which is why
-    /// that arm calls this rather than repeating it.
-    pub fn focus_tab(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int) {
-        if tab != self.tab {
-            self.tab = tab;
-            self.rebuild(ps, meta, tab, false); // swap the whole list â†’ snap the pill, no long glide
-        }
-    }
-
-    /// commit the focused row as the active track for its tab â€” dismissing the panel afterward is
-    /// the container's job now, not this method's; the answer says whether it should. The row is
-    /// read back by its [`TrackRow`] (never by position), and a row the form declared DISABLED (the
-    /// dim Timing/Style under a live burn, a Size/Position row the renderer cannot reach) is inert
-    /// at the form layer.
-    pub fn on_ok(&mut self, meta: metadata::MetadataView<'_>) -> TrackOk {
-        let tab = self.tab;
-        let sel = self.form.table.sel;
-        let focused = self.form.selected_id().copied();
-        if tab == 0 {
-            // The two Plex Pass DSP rows (issue #266), after the audio tracks â€” see
-            // `Self::audio_form`, which declares them beside the tracks, so a track pick below is
-            // never mistaken for one of these by position arithmetic.
-            return match focused {
-                // A `Disabled` pair is drawn dim, reading Off, and OK on it is a no-op â€” same
-                // "focusable but inert" shape `TrackRow::Timing` already uses while subtitles are
-                // Off. (The footnote under the pair is an inert slot: no key, never focused.)
-                Some(TrackRow::Boost | TrackRow::Loudness) if self.enhance_disabled.is_some() => {
-                    TrackOk::Inert
-                }
-                target @ (Some(TrackRow::Boost) | Some(TrackRow::Loudness)) => {
-                    let mut a = self.enhance_shown.unwrap_or(plx_plex::plex::AudioEnhancements::NONE);
-                    if target == Some(TrackRow::Boost) {
-                        a.boost_dialog = !a.boost_dialog;
-                    } else {
-                        a.normalize_loudness = !a.normalize_loudness;
-                    }
-                    self.enhance_shown = Some(a);
-                    if let Some(row) = self.form.table.row_mut(sel) {
-                        row.toggle = Some(if target == Some(TrackRow::Boost) {
-                            a.boost_dialog
-                        } else {
-                            a.normalize_loudness
-                        });
-                    }
-                    plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
-                        feature: plx_telemetry::diag::schema::Feature::AudioEnhancement,
-                    });
-                    TrackOk::Commit { commit: TrackCommit::AudioEnhancement(a), keep_open: true }
-                }
-                Some(TrackRow::Audio(i)) => {
-                    let pick = i as c_int;
-                    let changed = self.active_audio != pick;
-                    self.active_audio = pick;
-                    if changed {
-                        // the menu only reports the pick â€” native-switch vs re-transcode is
-                        // route's policy. The demuxer-facing index is the CONTAINER ordinal
-                        // (audio_ordinal), not the row.
-                        if let Some(s) = tracks(meta).and_then(|t| t.audio.get(i)) {
-                            let ord = tracks(meta)
-                                .map(|t| metadata::audio_ordinal(&t.audio, i))
-                                .unwrap_or(pick);
-                            plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
-                                feature: plx_telemetry::diag::schema::Feature::AudioTrack,
-                            });
-                            return TrackOk::Commit {
-                                commit: TrackCommit::Audio {
-                                    carried: plx_media::route::CarriedAudio::from_stream(s, ord),
-                                    memo: tracks(meta).and_then(|t| plx_media::route::memo_of_audio(&t.audio, i)),
-                                },
-                                keep_open: false,
-                            };
-                        }
-                    }
-                    TrackOk::Dismiss
-                }
-                _ => TrackOk::Dismiss,
-            };
-        }
-
-        let Some(id) = focused else { return TrackOk::Inert };
-        match self.form.activate(sel.max(0) as usize) {
-            // M7 follow-up: while the live route is actually burning a subtitle into the picture,
-            // Timing and Style are declared disabled (`Self::layout`) â€” the text is already in
-            // the pixels â€” and so are Size/Position under an image or styled subtitle: OK on any
-            // of them is a no-op.
-            None => return TrackOk::Inert,
-            Some(Activation::Push(dest)) => {
-                self.push(dest);
-                return TrackOk::Navigated;
-            }
-            Some(Activation::Action(())) => {}
-        }
-        match id {
-            TrackRow::Choice(field, rung) => self.pick_style(field, rung),
-            // Read LIVE, not from the form: a pick in this same open (`active_sub` written below,
-            // no rebuild) must make the next OK on Timing open the capsule.
-            TrackRow::Timing if self.active_sub >= 0 => TrackOk::OpenTiming,
-            TrackRow::Timing => TrackOk::Inert, // dim and inert while subtitles are Off
-            TrackRow::SubOff => self.commit_sub(-1, meta),
-            TrackRow::SubForcedOnly => self.commit_forced_only(meta),
-            TrackRow::Sub(i) => self.commit_sub(i as c_int, meta),
-            TrackRow::SearchHit(i) => self.search_download(i),
-            TrackRow::SearchRetry => TrackOk::Search(plx_data::subsearch::SubSearchCmd::Retry),
-            TrackRow::LangChoice(i) => self.pick_search_language(i),
-            _ => TrackOk::Inert,
-        }
-    }
-
-    /// Commit the subtitle track at `i` in the item's list as the active one, exactly as OK on its
-    /// row does ([`Self::on_ok`]): by the track's own index, wherever its row sits (the root, the
-    /// Other languages page or a language page), so a caller that names a track never needs the row
-    /// to be on the current page.
-    pub fn commit_sub_track(&mut self, i: usize, meta: metadata::MetadataView<'_>) -> TrackOk {
-        self.commit_sub(i as c_int, meta)
-    }
-
-    /// The subtitle commit behind OK on Off (`-1`) or on a track row: records the pick, and answers
-    /// the commit. The commit is made whether or not the pick changed anything (the route
-    /// republishes), but it carries a memo only when it DID: the panel opens on the checked row, so
-    /// an OK there is closing the menu, not choosing, and an automatic pick (the ladder's Off, or
-    /// its track) must not become the show's memory.
-    fn commit_sub(&mut self, new_sub: c_int, meta: metadata::MetadataView<'_>) -> TrackOk {
-        // Leaving Forced only is a change even onto the stream it drew (the forced track's own row)
-        // or onto nothing (Off while no forced track matched): the index is the same, the state is
-        // not.
-        let changed = plx_media::route::subtitle_pick_changed(self.active_sub, new_sub, self.forced_only);
-        self.active_sub = new_sub;
-        self.forced_only = false;
-        // the client renderer takes the EMBEDDED-subtitle ordinal (what the demuxer
-        // enumerates); an external pick has no demux ordinal â€” it is drawn by the sidecar
-        // renderer on direct play, or burned
-        let ridx = tracks(meta)
-            .filter(|_| new_sub >= 0)
-            .map(|t| metadata::sub_render_ordinal(&t.subs, new_sub as usize))
-            .unwrap_or(-1);
-        if changed {
-            plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
-                feature: plx_telemetry::diag::schema::Feature::SubtitleTrack,
-            });
-        }
-        let sidecar = tracks(meta)
-            .filter(|_| new_sub >= 0)
-            .and_then(|t| t.subs.get(new_sub as usize))
-            .filter(|s| s.sidecar_renderable());
-        TrackOk::Commit {
-            commit: TrackCommit::Subtitle {
-                render_ordinal: ridx,
-                stream_id: self.sub_stream_id(meta),
-                sidecar_key: sidecar.map(|s| s.key.clone()),
-                sidecar_codec: sidecar.map(|s| s.codec.clone()).unwrap_or_default(),
-                // Off is a choice of its own, remembered as Off; a track is remembered by what it
-                // IS. A row with no stream behind it remembers nothing, and neither does a pick
-                // that changed nothing.
-                memo: if !changed {
-                    None
-                } else if new_sub < 0 {
-                    Some(plx_plex::plex::session::prefs::SubtitleMemo::Off)
-                } else {
-                    tracks(meta)
-                        .and_then(|t| t.subs.get(new_sub as usize))
-                        .map(plx_media::route::memo_of_subtitle)
-                },
-            },
-            keep_open: false,
-        }
-    }
-
-    /// **OK on Forced only**: match the forced track for the audio that plays, commit it (or
-    /// nothing, when the item has none) and hold the mode. The match is the route's own
-    /// ([`plx_media::route::forced_only_pick`]) over the container's names, in the language the
-    /// resolve would use: the audio's, else the one the session fell back to ([`Self::forced_lang`]).
-    /// So the row and the next episode choose by one rule. The language remembered is the drawn
-    /// track's, else that same language.
-    ///
-    /// **A pick of the row that is already the mode is not a choice**: the menu opens on the checked
-    /// row, so OK there is how it is dismissed. It recommits what the route shows (that stream, or
-    /// nothing), unchanged and with `changed: false`, and matches nothing again: a re-match could
-    /// find no track where the resolve drew one (untagged audio drawn through the fallback), and
-    /// turn the subtitle off.
-    fn commit_forced_only(&mut self, meta: metadata::MetadataView<'_>) -> TrackOk {
-        let changed = !self.forced_only;
-        let item = tracks(meta);
-        let audio = item.and_then(|t| t.audio.get(usize::try_from(self.active_audio).ok()?));
-        let audio_lang = audio.map_or("", |a| a.lang_code.as_str());
-        let picked = if changed {
-            item.and_then(|t| {
-                let names = plx_media::player::SHARED.track_names_lenient();
-                plx_media::route::forced_only_pick(&t.subs, &names, audio_lang, &self.forced_lang)
-            })
-        } else {
-            usize::try_from(self.active_sub).ok()
-        };
-        let drawn = item.and_then(|t| {
-            let i = picked?;
-            Some((i, metadata::sub_render_ordinal(&t.subs, i), t.subs.get(i)?))
-        });
-        let lang = drawn
-            .map_or_else(|| plx_media::route::forced_only_language(audio_lang, &self.forced_lang), |(.., s)| s.lang_code.as_str())
-            .to_string();
-        self.active_sub = drawn.map_or(-1, |(i, ..)| i as c_int);
-        self.forced_only = true;
-        if changed {
-            self.forced_lang = lang.clone();
-            plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
-                feature: plx_telemetry::diag::schema::Feature::SubtitleTrack,
-            });
-        }
-        TrackOk::Commit {
-            commit: TrackCommit::SubtitleForcedOnly {
-                render_ordinal: drawn.map_or(-1, |(_, ordinal, _)| ordinal),
-                stream_id: drawn.map_or(0, |(.., s)| s.id),
-                lang,
-                changed,
-            },
-            keep_open: false,
-        }
-    }
-
-    /// A Style picker's pick: the field's new rung, committed live, the panel and page staying so a
-    /// run of picks is felt at once. The page's checkmark moves by refreshing it in place (scroll
-    /// and focus kept). The already-checked rung is inert: nothing changes, nothing is written.
-    fn pick_style(&mut self, field: StyleField, rung: usize) -> TrackOk {
-        let commit = match field {
-            StyleField::Size => {
-                let size = SubtitleSize::from_index(rung as u8);
-                if size == self.size {
-                    return TrackOk::Inert;
-                }
-                self.size = size;
-                TrackCommit::SubtitleSize(size)
-            }
-            StyleField::Position => {
-                let position = SubtitlePosition::from_index(rung as u8);
-                if position == self.position {
-                    return TrackOk::Inert;
-                }
-                self.position = position;
-                TrackCommit::SubtitlePosition(position)
-            }
-            StyleField::Color => {
-                let tone = SubtitleTone::from_index(rung as u8);
-                if tone == self.tone {
-                    return TrackOk::Inert;
-                }
-                self.tone = tone;
-                TrackCommit::SubtitleTone(tone)
-            }
-        };
-        if let Some(page) = self.pages.top() {
-            let form = self.page_form(page);
-            self.form.refresh(form);
-        }
-        TrackOk::Commit { commit, keep_open: true }
-    }
-
-    /// The rung of `field` the panel currently reads out and checks.
-    fn current_rung(&self, field: StyleField) -> usize {
-        let rung = match field {
-            StyleField::Size => self.size.index(),
-            StyleField::Position => self.position.index(),
-            StyleField::Color => self.tone.index(),
-        };
-        rung as usize
-    }
-
-    /// The form of a pushed page, from the panel's own read-outs.
-    fn page_form(&self, page: TrackPage) -> TrackForm {
-        match page {
-            TrackPage::Style => self.style_form(),
-            TrackPage::Picker(field) => self.picker_form(field),
-            TrackPage::OtherLanguages => self.other_form(),
-            TrackPage::Language(stream) => self.language_form(stream),
-            TrackPage::Search => self.search_form(),
-            TrackPage::SearchLanguage => self.search_language_form(),
-        }
-    }
-
-    /// The Other languages page: one row per language, A-Z. A single-track language is a direct
-    /// pick row (checked when it is the active track); a multi-track one is a drill-in reading out
-    /// its track count, or â€” when the active track is inside it â€” a check and that variant.
-    fn other_form(&self) -> TrackForm {
-        let active = self.checked_sub();
-        let sec = self.other.iter().fold(FormSection::new(""), |sec, lang| match lang.tracks.as_slice() {
-            [t] => sec.item(TrackRow::Sub(t.i), RowKind::Choice, (), flat_row(t, active)),
-            tracks => {
-                let current = tracks.iter().find(|t| active >= 0 && t.i == active as usize);
-                let value = match current {
-                    Some(t) => in_lang_label(t),
-                    None => plx_platform::i18n::msg::widgets_tracks_count(tracks.len() as i64),
-                };
-                let row = Row::new(lang.name.clone()).value(value).checked(current.is_some());
-                sec.item(TrackRow::OpenLang(lang.id), RowKind::Nav(TrackPage::Language(lang.id.stream)), (), row)
-            }
-        });
-        Form::new().section(sec)
-    }
-
-    /// A language page: its tracks ranked full < SDH < forced < commentary, a pick row each.
-    fn language_form(&self, stream: i64) -> TrackForm {
-        let active = self.checked_sub();
-        let tracks = self.other_lang(stream).map(|o| o.tracks.as_slice()).unwrap_or_default();
-        let sec = tracks.iter().fold(FormSection::new(""), |sec, t| {
-            sec.item(TrackRow::Sub(t.i), RowKind::Choice, (), in_lang_row(t, active))
-        });
-        Form::new().section(sec)
-    }
-
-    /// The hits of the search on screen, or none.
-    fn search_hits(&self) -> &[plx_data::subsearch::SubHit] {
-        self.search.as_ref().map_or(&[], |s| s.hits.as_slice())
-    }
-
-    /// The Search page: the language row (and a retry row after a transport failure), then the
-    /// results. With nothing to list the results section carries ONE line saying why â€” searching,
-    /// none found, or the failure â€” so the empty answer and the fault never read alike, and no
-    /// failure is ever drawn as an alarm (`ui/src/CLAUDE.md`: failure read-outs are never red).
-    fn search_form(&self) -> TrackForm {
-        use plx_data::subsearch::{DownloadPhase, SearchFailure, SearchStatus};
-        use plx_platform::i18n::msg;
-        let Some(s) = self.search.as_ref() else { return Form::new() };
-        let busy = s.download.busy();
-        let lang = if s.lang.is_empty() { String::new() } else { plx_plex::plex::languages::label(&s.lang).to_string() };
-        // a language change mid-download is refused by the store, so the row is inert meanwhile
-        let mut top = FormSection::new("")
-            .item(
-                TrackRow::SearchLang,
-                RowKind::Nav(TrackPage::SearchLanguage),
-                (),
-                Row::new(msg::widgets_tracks_search_language()).value(lang),
-            )
-            .disabled(busy);
-        if s.failure == Some(SearchFailure::Transport) {
-            top = top.item(TrackRow::SearchRetry, RowKind::Button, (), Row::new(msg::widgets_tracks_search_retry()));
-        }
-        let mut results = FormSection::new(msg::widgets_tracks_search_results());
-        for (i, h) in s.hits.iter().enumerate() {
-            let state = match &s.download {
-                DownloadPhase::Sending { hit } | DownloadPhase::Waiting { hit, .. } if *hit == i => {
-                    Some(msg::widgets_tracks_search_adding())
-                }
-                DownloadPhase::Installed { hit, .. } if *hit == i => Some(msg::widgets_tracks_search_added()),
-                DownloadPhase::Unconfirmed { hit } if *hit == i => Some(msg::widgets_tracks_search_requested()),
-                DownloadPhase::Failed { hit, .. } if *hit == i => Some(msg::widgets_tracks_search_add_failed()),
-                // not this session's install, but the item already lists it: read it the same way
-                _ if self.hit_on_item(h) => Some(msg::widgets_tracks_search_added()),
-                _ => None,
-            };
-            let title = if h.title.is_empty() { h.language.clone() } else { h.title.clone() };
-            let detail: Vec<&str> =
-                [h.provider.as_str(), h.language.as_str()].into_iter().filter(|p| !p.is_empty()).collect();
-            let mut row = Row::new(title).server_label();
-            if !detail.is_empty() {
-                row = row.detail(detail.join(" \u{b7} ")).server_detail();
-            }
-            if h.hearing_impaired {
-                row = row.badge(Badge::Sdh);
-            }
-            if h.forced {
-                row = row.badge(Badge::Forced);
-            }
-            if let Some(state) = state {
-                row = row.value(state);
-            }
-            results = results.item(TrackRow::SearchHit(i), RowKind::Button, (), row).disabled(busy);
-        }
-        let status = match (s.status, s.failure) {
-            (SearchStatus::Idle | SearchStatus::Searching, _) => Some(msg::widgets_tracks_search_searching()),
-            (SearchStatus::Ready, _) if s.hits.is_empty() => Some(msg::widgets_tracks_search_none()),
-            (SearchStatus::Failed, Some(SearchFailure::Denied)) => Some(msg::widgets_tracks_search_denied()),
-            (SearchStatus::Failed, Some(SearchFailure::Missing)) => Some(msg::widgets_tracks_search_missing()),
-            (SearchStatus::Failed, Some(SearchFailure::BadLanguage)) => {
-                Some(msg::widgets_tracks_search_bad_language())
-            }
-            (SearchStatus::Failed, _) => Some(msg::widgets_tracks_search_failed()),
-            _ => None,
-        };
-        if let Some(status) = status {
-            results = results.note(status);
-        }
-        if matches!(s.download, DownloadPhase::Failed { .. }) {
-            results = results.note(msg::widgets_tracks_search_add_failed_note());
-        }
-        Form::new().section(top).section(results)
-    }
-
-    /// The language page: every language the search can use, the one being searched checked.
-    fn search_language_form(&self) -> TrackForm {
-        let langs = search_languages();
-        let lang = self.search.as_ref().map_or("", |s| s.lang.as_str());
-        let current = langs.iter().position(|l| l.code == lang).map(TrackRow::LangChoice);
-        let sec = langs.iter().enumerate().fold(FormSection::new(""), |sec, (i, l)| {
-            sec.choice(TrackRow::LangChoice(i), (), Row::new(l.name), |id| Some(*id) == current)
-        });
-        Form::new().section(sec)
-    }
-
-    /// OK on a result: ask the store to install it, quoting the generation on screen so a press
-    /// against a replaced result set (whose keys are dead) is refused there rather than sent.
-    /// Inert while a download is busy, and on the row already installed or requested â€” or already
-    /// on the item ([`Self::hit_on_item`]), which would list the subtitle twice.
-    fn search_download(&self, i: usize) -> TrackOk {
-        use plx_data::subsearch::DownloadPhase;
-        let Some(s) = self.search.as_ref() else { return TrackOk::Inert };
-        if s.download.busy() || i >= s.hits.len() || self.hit_on_item(&s.hits[i]) {
-            return TrackOk::Inert;
-        }
-        if let DownloadPhase::Installed { hit, .. } | DownloadPhase::Unconfirmed { hit } = &s.download {
-            if *hit == i {
-                return TrackOk::Inert;
-            }
-        }
-        TrackOk::Search(plx_data::subsearch::SubSearchCmd::Download { gen: s.gen, hit: i })
-    }
-
-    /// Does the playing item already carry this hit as a sidecar â€” the same release name and
-    /// language, as [`metadata::Stream::is_sidecar_release`] reads them? Adding it again would list
-    /// one subtitle twice, so such a row reads Added and is inert.
-    fn hit_on_item(&self, h: &plx_data::subsearch::SubHit) -> bool {
-        self.item_sidecars.iter().any(|s| s.is_sidecar_release(&h.title, &h.language_code))
-    }
-
-    /// OK on a language: back to the Search page, searching in it. The panel's copy of the search
-    /// reads "searching" at once, so the old language's results never sit under the new one's name
-    /// while the store is still asking.
-    fn pick_search_language(&mut self, i: usize) -> TrackOk {
-        let Some(lang) = search_languages().get(i).map(|l| l.code) else { return TrackOk::Inert };
-        let Some(s) = self.search.as_mut() else { return TrackOk::Inert };
-        if s.lang == lang {
-            return TrackOk::Inert;
-        }
-        s.lang = lang.to_string();
-        s.hits.clear();
-        s.failure = None;
-        s.status = plx_data::subsearch::SearchStatus::Searching;
-        self.pop_to_page();
-        TrackOk::Search(plx_data::subsearch::SubSearchCmd::SetLanguage(lang.to_string()))
-    }
-
-    /// Pop the top page onto the PAGE beneath it (never onto the root, which needs the session to
-    /// rebuild). `false`, leaving the stack as it was, when the root is beneath.
-    fn pop_to_page(&mut self) -> bool {
-        let Some(saved) = self.pages.pop() else { return false };
-        let Some(page) = self.pages.top() else {
-            self.pages.push(saved.page, saved.return_id, saved.scroll);
-            return false;
-        };
-        let leaving = page_stack::leave_page(&mut self.form);
-        self.motion.begin_slide(leaving, -1.0);
-        let form = self.page_form(page);
-        self.form.restore(form, Some(&saved.return_id), saved.scroll);
-        self.form.table.set_title(Some(self.page_title(page)));
-        true
-    }
-
-    /// **Publish the subtitle search to the panel**, from the screen, once a frame. Whether the
-    /// search is OFFERED is fixed when the panel is built ([`Self::new_with`]); a panel built
-    /// without the offer ignores this, so the root is never rebuilt under a live â€” or closing â€”
-    /// panel. A change refreshes the Search or language page in place, focus kept by id, so a
-    /// landing never moves the row the viewer is on.
-    pub fn set_search(&mut self, search: plx_data::subsearch::SubSearchSnapshot) {
-        if self.search.is_none() || self.search.as_ref() == Some(&search) {
-            return;
-        }
-        if search.download.busy() {
-            self.search_watching = true;
-        }
-        self.search = Some(search);
-        if let Some(page @ (TrackPage::Search | TrackPage::SearchLanguage)) = self.pages.top() {
-            let form = self.page_form(page);
-            let fallback = self.page_initial(page);
-            self.form.refresh_with(form, None, fallback.as_ref());
-        }
-    }
-
-    /// Is the viewer on the Search pages? The screen opens the search only then, so merely opening
-    /// the menu never puts a query to the server's subtitle agent.
-    pub fn wants_search(&self) -> bool {
-        self.pages.iter().any(|saved| matches!(saved.page, TrackPage::Search | TrackPage::SearchLanguage))
-    }
-
-    /// **The auto-select**, once, by the panel that watched the download in flight: the subtitle as the playing item should list
-    /// it, and the commit that makes it the active one â€” the SAME `TrackCommit::Subtitle` a pick on
-    /// its row would produce, so it runs the existing chain (client-drawn sidecar on direct play, a
-    /// server burn while transcoding) rather than a parallel one. The server has already selected
-    /// it on its side (`docs/pms-api.md` Â§8); this is what makes OUR renderer draw it.
-    pub fn take_search_commit(&mut self) -> Option<(metadata::Stream, TrackCommit)> {
-        let s = self.search.as_ref()?;
-        let plx_data::subsearch::DownloadPhase::Installed { hit, stream } = &s.download else { return None };
-        if !std::mem::take(&mut self.search_watching) {
-            return None;
-        }
-        let picked = s.hits.get(*hit);
-        let sub = metadata::Stream {
-            id: stream.id,
-            key: stream.key.clone(),
-            codec: stream.codec.clone(),
-            lang: picked.map(|h| h.language.clone()).unwrap_or_default(),
-            lang_code: stream.language_code.clone(),
-            title: picked.map(|h| h.title.clone()).unwrap_or_default(),
-            // the hit's own badges, so the row reads the same here as on the Search page
-            sdh: picked.is_some_and(|h| h.hearing_impaired),
-            forced: picked.is_some_and(|h| h.forced),
-            external: true,
-            ..Default::default()
-        };
-        let sidecar = sub.sidecar_renderable();
-        let commit = TrackCommit::Subtitle {
-            render_ordinal: -1,
-            stream_id: stream.id,
-            sidecar_key: sidecar.then(|| stream.key.clone()),
-            sidecar_codec: if sidecar { stream.codec.clone() } else { String::new() },
-            // A subtitle the viewer fetched is the viewer's pick too: remembered by what it is.
-            memo: Some(plx_media::route::memo_of_subtitle(&sub)),
-        };
-        Some((sub, commit))
-    }
-
-    /// The search snapshot the panel holds â€” for the screen's auto-select step.
-    pub fn search(&self) -> Option<&plx_data::subsearch::SubSearchSnapshot> {
-        self.search.as_ref()
-    }
-
-    /// The Style page: one drill-in per field, each reading out its current value. Under an image
-    /// or styled subtitle Size and Position are disabled (dim, focusable, inert) and one note names
-    /// why; Color is live under every renderer â€” the subtitle ink tints bitmaps and ASS alike.
-    fn style_form(&self) -> TrackForm {
-        let field_row = |field: StyleField| {
-            Row::new(field.label()).value(field.rung_label(self.current_rung(field)))
-        };
-        let reaches = self.renderer == SubRenderer::Text;
-        let mut sec = FormSection::new("")
-            .item(
-                TrackRow::OpenField(StyleField::Size),
-                RowKind::Nav(TrackPage::Picker(StyleField::Size)),
-                (),
-                field_row(StyleField::Size),
-            )
-            .disabled(!reaches)
-            .item(
-                TrackRow::OpenField(StyleField::Position),
-                RowKind::Nav(TrackPage::Picker(StyleField::Position)),
-                (),
-                field_row(StyleField::Position),
-            )
-            .disabled(!reaches)
-            .item(
-                TrackRow::OpenField(StyleField::Color),
-                RowKind::Nav(TrackPage::Picker(StyleField::Color)),
-                (),
-                field_row(StyleField::Color),
-            );
-        if let Some(note) = self.renderer.note() {
-            sec = sec.note(note);
-        }
-        Form::new().section(sec)
-    }
-
-    /// A picker page: one choice per rung of `field`'s ladder, the current one checked.
-    fn picker_form(&self, field: StyleField) -> TrackForm {
-        let current = TrackRow::Choice(field, self.current_rung(field));
-        let sec = (0..field.rungs()).fold(FormSection::new(""), |sec, rung| {
-            sec.choice(TrackRow::Choice(field, rung), (), Row::new(field.rung_label(rung)), |id| *id == current)
-        });
-        Form::new().section(sec)
-    }
-
-    /// The explicit initial focus of a pushed page: the Style page opens on Size, a picker on its
-    /// checked rung, Other languages on the checked row (the active track's, or its language's
-    /// drill-in) else the first, a language page on the active variant if it is inside, else its
-    /// first track. `None` (a language already gone) leaves it to the table's opening row.
-    fn page_initial(&self, page: TrackPage) -> Option<TrackRow> {
-        let active = usize::try_from(self.checked_sub()).ok();
-        let holds_active = |o: &OtherLang| active.is_some_and(|a| o.tracks.iter().any(|t| t.i == a));
-        match page {
-            TrackPage::Style => Some(TrackRow::OpenField(StyleField::Size)),
-            TrackPage::Picker(field) => Some(TrackRow::Choice(field, self.current_rung(field))),
-            TrackPage::OtherLanguages => {
-                self.other.iter().find(|o| holds_active(o)).or(self.other.first()).map(Self::other_lang_row)
-            }
-            TrackPage::Language(stream) => {
-                let tracks = &self.other_lang(stream)?.tracks;
-                let t = tracks.iter().find(|t| active == Some(t.i)).or(tracks.first())?;
-                Some(TrackRow::Sub(t.i))
-            }
-            TrackPage::Search => Some(if self.search_hits().is_empty() {
-                TrackRow::SearchLang
-            } else {
-                TrackRow::SearchHit(0)
-            }),
-            TrackPage::SearchLanguage => {
-                let lang = self.search.as_ref().map_or("", |s| s.lang.as_str());
-                Some(TrackRow::LangChoice(search_languages().iter().position(|l| l.code == lang).unwrap_or(0)))
-            }
-        }
-    }
-
-    /// The title band's text of `page`.
-    fn page_title(&self, page: TrackPage) -> String {
-        page.title(&self.other)
-    }
-
-    /// Open `page` above the current one: remember the opener and its scroll, install the page's
-    /// rows (the pill snaps, the scroll returns to the top, focus lands on
-    /// [`Self::page_initial`]) and its title band.
-    fn push(&mut self, page: TrackPage) {
-        let Some(return_id) = self.form.selected_id().copied() else { return };
-        self.pages.push(page, return_id, self.form.table.scroll_pos());
-        let leaving = page_stack::leave_page(&mut self.form);
-        let form = self.page_form(page);
-        self.form.open(form, self.page_initial(page).as_ref());
-        // after the sections: the band moves every row, so the pill is re-jumped onto the focused one
-        self.form.table.set_title(Some(self.page_title(page)));
-        self.motion.begin_slide(leaving, 1.0);
-    }
-
-    /// Pop the top page: the page beneath comes back exactly as it was left â€” the opener focused
-    /// by id, the scroll reinstated ([`FormTable::restore`]). `false` at the root (nothing popped).
-    pub fn pop(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> bool {
-        let Some(saved) = self.pages.pop() else { return false };
-        let leaving = page_stack::leave_page(&mut self.form);
-        self.motion.begin_slide(leaving, -1.0);
-        match self.pages.top() {
-            None => {
-                let form = self.layout(ps, meta);
-                self.form.restore(form, Some(&saved.return_id), saved.scroll);
-                self.form.table.set_title(None);
-            }
-            Some(page) => {
-                let form = self.page_form(page);
-                // the opener may have changed shape while its page was open: a language that
-                // dropped to one track is a direct row now (and the reverse)
-                let return_id =
-                    if page == TrackPage::OtherLanguages { self.other_row_for(saved.return_id) } else { saved.return_id };
-                self.form.restore(form, Some(&return_id), saved.scroll);
-                self.form.table.set_title(Some(self.page_title(page)));
-            }
-        }
-        true
-    }
-
-    /// **LEFT**: pop a sub-page, else (on a root) the tab switch as before.
-    pub fn on_left(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
-        if !self.pop(ps, meta) {
-            self.focus_tab(ps, meta, 0);
-        }
-    }
-
-    /// **RIGHT**: on a Nav row it enters â€” the same as OK, and inert on a disabled one at the form
-    /// layer â€” else the tab switch as before.
-    pub fn on_right(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
-        let sel = self.form.table.sel.max(0) as usize;
-        if matches!(self.form.binding_at(sel).map(|b| &b.kind), Some(RowKind::Nav(_))) {
-            if let Some(Activation::Push(dest)) = self.form.activate(sel) {
-                self.push(dest);
-            }
-        } else {
-            self.focus_tab(ps, meta, 1);
-        }
-    }
-
-    /// The plain-language reason a `Disabled` pair is drawn dim (owner direction, 2026-09-29): every
-    /// gate but "no Plex Pass" now says why instead of vanishing.
-    fn enh_reason_text(reason: plx_media::route::DisabledReason) -> String {
-        use plx_media::route::DisabledReason;
-        match reason {
-            DisabledReason::NotAnalyzed => plx_platform::i18n::msg::widgets_tracks_enh_reason_not_analyzed(),
-            DisabledReason::DolbyVisionUnusable => plx_platform::i18n::msg::widgets_tracks_enh_reason_dv_unusable(),
-            DisabledReason::DolbyVisionSubtitle => plx_platform::i18n::msg::widgets_tracks_enh_reason_dv_subtitle(),
-            DisabledReason::NotOriginalQuality => plx_platform::i18n::msg::widgets_tracks_enh_reason_quality(),
-            DisabledReason::ForcedDirectPlay => plx_platform::i18n::msg::widgets_tracks_enh_reason_forced(),
-            DisabledReason::ServerConverting => plx_platform::i18n::msg::widgets_tracks_enh_reason_converting(),
-            DisabledReason::NotCopyable => plx_platform::i18n::msg::widgets_tracks_enh_reason_not_copyable(),
-            DisabledReason::ServerRefused => plx_platform::i18n::msg::widgets_tracks_enh_reason_refused(),
-        }
-        .to_string()
-    }
-
-    /// The plain-language consequence note an `Offered` pair carries (M7) â€” `None` for the
-    /// ordinary case (no subtitle on screen), since there is nothing to say.
-    fn enh_note_text(
-        route: plx_media::route::EnhancementRoute,
-        subtitle_effect: plx_media::route::SubtitleEffect,
-    ) -> Option<String> {
-        use plx_media::route::{EnhancementRoute, SubtitleEffect};
-        match route {
-            EnhancementRoute::Burn => Some(plx_platform::i18n::msg::widgets_tracks_enh_note_burn().to_string()),
-            EnhancementRoute::Remux if subtitle_effect == SubtitleEffect::Sidecar => {
-                Some(plx_platform::i18n::msg::widgets_tracks_enh_note_sidecar().to_string())
-            }
-            EnhancementRoute::Remux => None,
-        }
-    }
-
-    /// The Audio tab as a form: the track list, plus â€” whenever [`Self::enhance_shown`] is `Some`
-    /// OR [`Self::enhance_disabled`] is `Some` (every gate but no Plex Pass is now a visible
-    /// reason, owner direction 2026-09-29) â€” a second, headerless section carrying the two Plex
-    /// Pass DSP toggles (enabled, or dim with their reason), the same "own section, no header"
-    /// idiom the Subtitles tab's Timing/Style pair uses, plus an optional non-selectable note (an
-    /// inert slot: it takes a layout row and has no identity). Mirrors [`Self::layout`] for the
-    /// Subtitles tab.
-    fn audio_form(&self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> TrackForm {
-        self.audio_form_for(
-            ps,
-            meta,
-            (self.enhance_shown, self.enhance_route, self.enhance_disabled, self.enhance_subtitle_effect),
-        )
-    }
-
-    /// [`Self::audio_form`] against an explicit enhancement answer ([`Self::enh_state`]'s shape),
-    /// so the Audio root can be built while the menu shows Subtitles and has not stored one.
-    fn audio_form_for(&self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>, enh: EnhState) -> TrackForm {
-        let (enhance_shown, enhance_route, enhance_disabled, enhance_subtitle_effect) = enh;
-        let mut sec = FormSection::new(plx_platform::i18n::msg::widgets_tracks_audio());
-        let d = match tracks(meta) {
-            Some(t) => t,
-            None => return Form::new().section(sec),
-        };
-        let names = plx_media::player::SHARED.track_names.lock().unwrap();
-        for (i, s) in d.audio.iter().enumerate() {
-            let lang = if s.lang.is_empty() {
-                plx_platform::i18n::msg::widgets_tracks_unknown()
-            } else {
-                s.lang.as_str()
-            };
-            let label = if s.default {
-                plx_platform::i18n::msg::widgets_tracks_original(lang)
-            } else {
-                lang.to_string()
-            };
-            let mut row = Row::new(label).checked(i as c_int == self.active_audio());
-            // a per-track descriptor so sibling tracks in the same language are distinguishable
-            // (e.g. two Russian tracks: "Ð”ÑƒÐ±Ð»ÑÐ¶" vs "AC-3 5.1"). Prefer the stream title, else the
-            // codec + channel layout.
-            let name = track_label::track_name(
-                &s.title,
-                names.audio(plx_data::metadata::audio_ordinal(&d.audio, i)),
-                lang,
-            );
-            let sub = if name.is_empty() {
-                audio_descriptor(s)
-            } else {
-                name
-            };
-            let sub = audio_sub_line(ps, sub, s);
-            if !sub.is_empty() {
-                row = row.detail(sub);
-            }
-            if s.ad {
-                row = row.badge(Badge::Ad);
-            }
-            sec = sec.item(TrackRow::Audio(i), RowKind::Choice, (), row);
-        }
-        let mut form = Form::new().section(sec);
-        if let Some(shown) = enhance_shown {
-            let mut enh = FormSection::new("")
-                .item(
-                    TrackRow::Boost,
-                    RowKind::Toggle,
-                    (),
-                    Row::new(plx_platform::i18n::msg::widgets_tracks_boost_dialog()).toggle(shown.boost_dialog),
-                )
-                .item(
-                    TrackRow::Loudness,
-                    RowKind::Toggle,
-                    (),
-                    Row::new(plx_platform::i18n::msg::widgets_tracks_normalize_loudness()).toggle(shown.normalize_loudness),
-                );
-            if let Some(route) = enhance_route {
-                if let Some(note) = Self::enh_note_text(route, enhance_subtitle_effect) {
-                    enh = enh.note(note);
-                }
-            }
-            form = form.section(enh);
-        } else if let Some(reason) = enhance_disabled {
-            // Every gate but "no Plex Pass" is now a visible reason (owner direction, 2026-09-29):
-            // the rows stay in the list, dim and reading Off, with a one-line non-selectable
-            // footnote naming why. "No Plex Pass" is the ONE absence that stays a silent gap (I1/I2).
-            let enh = FormSection::new("")
-                .item(
-                    TrackRow::Boost,
-                    RowKind::Toggle,
-                    (),
-                    Row::new(plx_platform::i18n::msg::widgets_tracks_boost_dialog()).toggle(false).dim(true),
-                )
-                .item(
-                    TrackRow::Loudness,
-                    RowKind::Toggle,
-                    (),
-                    Row::new(plx_platform::i18n::msg::widgets_tracks_normalize_loudness()).toggle(false).dim(true),
-                )
-                .note(Self::enh_reason_text(reason));
-            form = form.section(enh);
-        }
-        form
-    }
-
-    /// Build the Subtitles root's form from the CURRENT state â€” the one place the model
-    /// (`metadata::sub_layout::sub_sections`) is asked, so what a row IS can never disagree with
-    /// what was drawn. Also stores the [`SubSig`] and renderer the root is built from, for the
-    /// poll and the Style page's locks.
-    fn layout(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> TrackForm {
-        // M7 follow-up: while the live route is actually burning a subtitle in, Timing and Style
-        // stay drawn (dim, with a reason) instead of being omitted the way an ordinary
-        // non-enhancement transcode omits both â€” a viewer who turned the enhancement on must still
-        // see why the control they had is gone, not just find it missing.
-        // The Forced only read-out is made once: the signature keeps it and the form shows it.
-        let forced_readout = Self::forced_readout(ps, meta, self.active_sub, self.forced_only);
-        let sig = self.sub_sig_for(ps, meta, self.active_sub, forced_readout);
-        self.renderer = sig.renderer;
-        self.sub_sig = Some(sig);
-        let (form, model) = self.sub_root_form(
-            ps, meta, self.sub_sig.as_ref().and_then(|sig| sig.forced_only.as_deref()),
-        );
-        self.root_tracks = model
-            .sections
-            .iter()
-            .flat_map(|sec| &sec.rows)
-            .filter_map(|row| match row {
-                SubRow::Flat(t) | SubRow::InLanguage(t) => Some(t.i),
-                _ => None,
-            })
-            .collect();
-        self.other = model.other;
-        form
-    }
-
-    /// The Subtitles root's form and the model it was built from, storing nothing: [`Self::layout`]
-    /// keeps what it needs from the model, [`Self::warm_other_tab`] only draws the form.
-    fn sub_root_form(
-        &self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>, forced: Option<&str>,
-    ) -> (TrackForm, SubModel) {
-        let presenter = plx_media::route::subtitle_presenter(ps);
-        let burn = match presenter {
-            plx_media::route::SubtitlePresenter::ServerBurn(why) => Some(why),
-            _ => None,
-        };
-        // Timing/Style apply to a subtitle the app draws (direct play, or over a remux) and are
-        // shown dimmed with the reason when the server burns it; a transcode with none selected
-        // omits them.
-        let show_timing = !plx_media::route::is_transcoding(ps)
-            || presenter != plx_media::route::SubtitlePresenter::None;
-        let model = self.sub_model(ps, meta, show_timing);
-        let mut form = table_form(
-            &model,
-            self.active_sub,
-            self.offset_ms,
-            burn,
-            plx_media::route::cur_memory_note(ps),
-            forced,
-        );
-        if self.search.is_some() {
-            // offered on direct play AND during a transcode: a downloaded sidecar is drawn by the
-            // client on one and burned by the server on the other, so it reaches the picture either way
-            form = form.section(FormSection::new("").item(
-                TrackRow::OpenSearch,
-                RowKind::Nav(TrackPage::Search),
-                (),
-                Row::new(plx_platform::i18n::msg::widgets_tracks_search_open()),
-            ));
-        }
-        (form, model)
-    }
-
-    /// The Subtitles model for the current item and route â€” the one place the root and the pages
-    /// behind it are asked for, so what the root's Other languages row promises and what its page
-    /// lists come from the same answer.
-    fn sub_model(&self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>, show_timing: bool) -> SubModel {
-        let subs: &[metadata::Stream] = tracks(meta).map(|t| t.subs.as_slice()).unwrap_or(&[]);
-        let offered = visible_subs(ps, meta);
-        let names = plx_media::player::SHARED.track_names.lock().unwrap();
-        sub_layout::sub_sections(subs, &offered, &names, &self.yours, show_timing)
-    }
-
-    /// The [`TrackRow::Boost`]/[`TrackRow::Loudness`] pair's three inputs, read fresh
-    /// off the live route in one place â€” [`Self::rebuild`] and [`Self::update`] both need exactly
-    /// this triple, and computing it once here keeps them from independently re-deriving it (and
-    /// risking disagreement).
-    fn enh_state(ps: &plx_media::route::PlaybackSession) -> EnhState {
-        use plx_media::route::EnhancementAvailability;
-        let subtitle_effect = plx_media::route::live_subtitle_effect(ps);
-        match plx_media::route::menu_enhancement_availability(ps) {
-            EnhancementAvailability::Hidden => (None, None, None, subtitle_effect),
-            EnhancementAvailability::Offered(route) => (
-                Some(plx_media::route::displayed_audio_enhancements(ps)),
-                Some(route),
-                None,
-                subtitle_effect,
-            ),
-            EnhancementAvailability::Disabled(reason) => (None, None, Some(reason), subtitle_effect),
-        }
-    }
-
-    fn rebuild(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int, slide: bool) {
-        if tab == 0 {
-            let (shown, route, disabled, subtitle_effect) = Self::enh_state(ps);
-            self.rebuild_audio(ps, shown, route, disabled, subtitle_effect, meta, slide);
-        } else {
-            let form = self.layout(ps, meta);
-            let keep = self.active_sub_id();
-            if slide {
-                self.form.set_sliding(form, Some(&keep));
-            } else {
-                self.form.set(form, Some(&keep));
-            }
-        }
-        // an open or a tab switch always lands on a tab's root; the card resizes to it, the
-        // content just stops sliding
-        self.pages.clear();
-        self.form.table.set_title(None);
-        self.motion.cancel_slide();
-    }
-
-    /// The Audio tab's half of [`Self::rebuild`], taking the offer/displayed answer rather than
-    /// recomputing it â€” `update`'s per-frame poll already has it fresh, and handing it here keeps
-    /// [`Self::enh_state`] to exactly one call per rebuild instead of two.
-    ///
-    /// **Preserves the focused row by its [`TrackRow`] identity** rather than always
-    /// snapping to the checked track â€” the fix for a reported focus desync: `update`'s live poll
-    /// calls this every time the route's enhancement answer changes (the server settling an
-    /// optimistic Boost/Loudness flip, or a mid-play route change), and that used to re-home
-    /// the table's cursor (and the drawn pill) onto the active-audio row unconditionally. The
-    /// ENGINE's own cursor only ever moves in response to a `FocusMoved`
-    /// (`screens::player::overlay::PlayerOverlayScreen::step`'s write via [`Self::focus_key`]), and
-    /// a poll-driven rebuild fires no such event â€” so the highlight jumped to the checked language
-    /// row while the engine's focus stayed on the toggle row the viewer was actually on, and the
-    /// next UP/DOWN/OK acted on a row nothing showed as selected. Looking the previous row up by
-    /// its [`TrackRow`] and reusing its NEW position keeps the table's cursor exactly where the
-    /// engine still thinks it is whenever that row still exists (the common case: toggling a
-    /// bit does not remove or reorder rows). A tab switch/open always reaches here too, but the
-    /// form then holds the OTHER tab's rows (or none), so the lookup misses and the fallback
-    /// below â€” landing on the checked track â€” is exactly the existing open/switch behaviour.
-    fn rebuild_audio(
-        &mut self,
-        ps: &plx_media::route::PlaybackSession,
-        enhance_shown: Option<plx_plex::plex::AudioEnhancements>,
-        enhance_route: Option<plx_media::route::EnhancementRoute>,
-        enhance_disabled: Option<plx_media::route::DisabledReason>,
-        enhance_subtitle_effect: plx_media::route::SubtitleEffect,
-        meta: metadata::MetadataView<'_>,
-        slide: bool,
-    ) {
-        let prev_target = self.form.selected_id().copied();
-        // The offer is about to VANISH (Some -> None): bank the toggle row identity before the
-        // rebuild drops it, so a later return restores it instead of reading the table's cursor
-        // back â€” see `Self::sticky_audio_target`'s own doc for why that would be wrong.
-        if self.enhance_shown.is_some() && enhance_shown.is_none() {
-            if let Some(t @ (TrackRow::Boost | TrackRow::Loudness)) = prev_target {
-                self.sticky_audio_target = Some(t);
-            }
-        }
-        self.enhance_shown = enhance_shown;
-        self.enhance_route = enhance_route;
-        self.enhance_disabled = enhance_disabled;
-        self.enhance_subtitle_effect = enhance_subtitle_effect;
-        let form = self.audio_form(ps, meta);
-        // The offer is back: prefer the banked identity over `prev_target` (which names whatever
-        // row the cursor happened to sit on while the rows were gone) whenever it still exists.
-        let restored = if enhance_shown.is_some() { self.sticky_audio_target.take() } else { None };
-        let keep = restored
-            .or(prev_target)
-            .filter(|t| form.contains(t))
-            .unwrap_or(TrackRow::Audio(self.active_audio().max(0) as usize));
-        if slide {
-            self.form.set_sliding(form, Some(&keep));
-        } else {
-            self.form.set(form, Some(&keep));
-        }
-    }
-
-    /// The panel's NATURAL geometry â€” the layout of the page that is showing, shared by `update`,
-    /// `draw` and the focus queries so scrolling math matches. Cached against the table's
-    /// [`TableView::layout_rev`]: text is measured when the table changed, not once per caller per
-    /// frame. What is on screen is [`Self::shown_rect`], which springs toward this.
-    fn panel_rect(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
-        self.motion.natural(self.form.table.layout_rev(), || {
-            let placed = table_natural(&self.form.table, self.anchor, measure);
-            self.side.set(placed.side);
-            placed.rect
-        })
-    }
-
-    /// The card as it is drawn this frame: its top and left edges on their springs toward
-    /// [`Self::panel_rect`], the bottom and right on the anchor.
-    fn shown_rect(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
-        self.motion.shown(self.panel_rect(measure))
-    }
-
-    /// **Is the panel mid-transition** â€” resizing to a new layout or sliding a page? The player
-    /// overlay holds the pointer while this is true (`Screen::pointer_held`): hover and clicks are
-    /// swallowed rather than resolved against pages in motion.
-    pub fn transitioning(&self) -> bool {
-        self.motion.transitioning()
-    }
-
-    /// `ps`/`meta` are read only for the Audio tab, and only to notice a LIVE change: a request
-    /// this menu itself fired settles asynchronously (the server's `EnhancementOutcome`, or a
-    /// mid-play route change moving the family in or out of `Remux`), and the two rows must
-    /// track that the moment it lands rather than freeze at whatever `on_ok`/`rebuild` last drew
-    /// â€” otherwise a refusal leaves a row reading "On" for a preference the route already gave up
-    /// on. `rebuild`'s own recomputation of `enhance_shown` is the single source of truth here
-    /// too, so this only ever asks "did that answer change since last frame", never rebuilds it a
-    /// second, divergent way.
-    pub fn update(
-        &mut self,
-        dt: f32,
-        measure: &dyn plx_machine::machine::Measure,
-        ps: &plx_media::route::PlaybackSession,
-        meta: metadata::MetadataView<'_>,
-    ) {
-        if self.tab == 0 {
-            let (shown, route, disabled, subtitle_effect) = Self::enh_state(ps);
-            if shown != self.enhance_shown
-                || route != self.enhance_route
-                || disabled != self.enhance_disabled
-                || subtitle_effect != self.enhance_subtitle_effect
-            {
-                self.rebuild_audio(ps, shown, route, disabled, subtitle_effect, meta, false);
-            }
-        } else {
-            self.poll_subtitle_state(ps, meta);
-        }
-        // `update` subtracts its own top/bottom padding now â€” pass the panel's raw height.
-        let natural = self.panel_rect(measure);
-        self.form.table.update(dt, natural.h);
-        self.motion.step(dt, natural);
-        self.motion.prewarm_text(natural, &self.form.table, measure);
-        self.warm_other_tab(ps, meta, measure);
-    }
-
-    /// **Queue the ROOT page's strings on the frame the panel mounts**, from the screen's `prepare`.
-    /// A surface mounts at the nav commit, after that frame's Tick fan-out was built, so its first
-    /// `update` (which does this walk) runs a frame LATE and the open frame drew every string cold:
-    /// `textx4:2.1 â€¦ textx4:10.8` inside the 26â€“34 ms open frame on the television (2026-10-01).
-    /// `prepare` runs after the mount on the same frame and before the presenting side's drain
-    /// (`app::run::prepare_window`), so the strings are resident before the draw. Idempotent per
-    /// table layout, like `update`'s own walk; queues only, uploads nothing.
-    pub fn warm_open(&self, measure: &dyn plx_machine::machine::Measure) {
-        self.motion.warm_open(&self.form.table, || self.panel_rect(measure), measure);
-    }
-
-    /// **Queue the OTHER tab's root strings once the panel is idle**, so a tab switch does not
-    /// meet them cold. The live page's prewarm cannot cover a switch: the key rebuilds the table
-    /// after this frame's `update`, so its draw rasterised the new tab's strings itself, on the
-    /// TV `textx8:9.5` inside a 24.8â€“29.0 ms frame on the first switch to Audio (2026-10-01).
-    /// Done once per menu, on a frame with no page slide, no resize and an empty queue, so it
-    /// neither competes with the live page's own strings nor adds to the open frame. The work is
-    /// only building the form and recording it; the presenting side's drain uploads it, in
-    /// the remainder of each frame's time budget after the live queue, at least one string
-    /// ([`PanelMotion::prewarm_background_text`]).
-    /// Nothing waits on that queue, so a sub-page walked meanwhile only delays it; a closed menu
-    /// drops it ([`Drop`]).
-    fn warm_other_tab(
-        &mut self,
-        ps: &plx_media::route::PlaybackSession,
-        meta: metadata::MetadataView<'_>,
-        measure: &dyn plx_machine::machine::Measure,
-    ) {
-        if self.background_owner.is_some()
-            || !self.pages.is_empty()
-            || self.motion.transitioning()
-            || plx_gfx::text::prewarm_pending()
-        {
-            return;
-        }
-        // The whole recording part is speculative to the recorder (spec Â§5): the form's layout
-        // asks the measure about a page no frame draws, and a replay must answer 0.0 for a key
-        // its recording lacks instead of refusing on it.
-        let owner = plx_ui::rec::speculative(|| {
-            let form = if self.tab == 0 {
-                let forced = Self::forced_readout(ps, meta, self.active_sub, self.forced_only);
-                self.sub_root_form(ps, meta, forced.as_deref()).0
-            } else {
-                self.audio_form_for(ps, meta, Self::enh_state(ps))
-            };
-            let mut other = TrackTable::new(BAND_BASE);
-            other.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
-            other.set(form, None);
-            let natural = table_natural(&other.table, self.anchor, measure).rect;
-            PanelMotion::prewarm_background_text(natural, &other.table, measure)
-        });
-        self.background_owner = Some(owner);
-    }
-
-    pub fn draw(&mut self, appear: f32, measure: &dyn plx_machine::machine::Measure) {
-        // The appear fade/rise â€” the container drives the phase and the appear spring. The dim
-        // over the video plane is the container's too (`PlayerOverlayScreen::scrim`,
-        // `theme::underlay::DIM_PLAYER`), painted at the end of the player's page pass.
-        // The panel rises from the side its opener is on (placed first: that is where the side is read).
-        let natural = self.panel_rect(measure);
-        let (dx, dy) = Popover::rise_offset(self.side.get(), Popover::RISE, appear);
-        let p = Painter::root().alpha(appear).translate(dx, dy);
-        // frosted panel card â€” near-opaque dark (no true backdrop blur on the GLES plane, so a solid
-        // dark card approximates it); only a hint of video shows through. ONE background at the
-        // animated rect, the page(s) under its clip (`PanelMotion::draw`).
-        self.motion.draw(p, natural, 28.0, &self.form.table, measure);
-    }
-}
-
-/// **The Engine-shaped view of this popover** (restructure phase 12): one `Column` focus group
-/// over the ACTIVE tab's rows, built fresh by `screens::player::overlay::PlayerOverlayScreen`
-/// each frame from a `&TrackMenuState` â€” the same borrowed-view shape `appkit::more_menu::MoreMenuPart`
-/// and `ui::table_screen::TablePart` use for the other bare-`TableView` panels, so this popover
-/// answers the same [`Focusable`]/[`Part`] query protocol they do. LEFT/RIGHT are NOT a move
-/// within the group â€” LEFT pops a sub-page, else switches the whole row set to the other tab, and
-/// RIGHT enters a Nav row, else switches tab; both replace the rows, which only the owning screen
-/// can do (mirroring [`TrackMenuState::on_left`] / [`TrackMenuState::on_right`]), so both edges answer
-/// [`EdgeRule::Screen`], the same idiom `TablePart` uses for a RIGHT edge the screen itself must
-/// interpret.
-///
-/// **`state` is a SHARED reference, not `&mut`** â€” every [`Focusable`] method here is a pure read
-/// (`&self`), and the screen's own `Focusable` impl only ever has `&self` too (the engine holds
-/// screens behind `&dyn Screen`, Â§7.1's "the engine never mutates a screen"), so a mutable field
-/// would make this type unconstructable from there. The actual PAINT (`TrackMenuState::draw`,
-/// which needs `&mut` for its own lazy layout work) stays a direct call on the owned `Panel` from
-/// `PlayerOverlayScreen::draw`'s `&mut self`; [`Part::draw`] below only registers stops, which is
-/// read-only geometry like everything else in this impl.
-pub struct TrackMenuPart<'a> {
-    pub state: &'a TrackMenuState,
-    pub entry: EntryId,
-    pub group: GroupId,
-}
-
-impl PopoverPanel for TrackMenuState {
-    type Id = TrackRow;
-    type Act = ();
-    type Dest = TrackPage;
-    fn form(&self) -> &FormTable<Self::Id, Self::Act, Self::Dest> {
-        &self.form
-    }
-    fn motion(&self) -> &PanelMotion {
-        &self.motion
-    }
-    fn panel_rect(&self, measure: &dyn Measure) -> Rect {
-        TrackMenuState::panel_rect(self, measure)
-    }
-    fn shown_rect(&self, measure: &dyn Measure) -> Rect {
-        TrackMenuState::shown_rect(self, measure)
-    }
-}
-
-impl<H: Host> Focusable<H> for TrackMenuPart<'_>
-where
-    H::Elem: IndexElem,
-{
-    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
-        popover_groups(self.state, self.group, cx.measure, out);
-    }
-    fn group_of(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<GroupId> {
-        popover_group_of(self.state, key, self.group)
-    }
-    fn neighbour(&self, key: FocusKey<H::Elem>, dir: Dir, _cx: &Cx<'_, H>) -> Step<H::Elem> {
-        popover_neighbour(self.state, self.entry, key, dir)
-    }
-    fn place(&self, key: &H::Elem, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
-        popover_place(self.state, key, cx.measure)
-    }
-    fn reconcile(&self, want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
-        // Trust the panel's OWN cursor (`table.sel`), not `want`. The cursor is where
-        // `rebuild`/`rebuild_audio` already decided focus belongs â€” including a live poll rebuild
-        // that drops and later restores the enhancement rows (issue #266's follow-up,
-        // `Self::sticky_audio_target`) â€” so it is the identity-aware answer; `want` may name a row
-        // of the OTHER tab (a tab switch replaces the whole form) or one that has left, and there is
-        // no neighbour of a key to slide to. The cursor's row is reported by its KEY.
-        let _ = want;
-        let table = &self.state.form.table;
-        let key = self
-            .state
-            .form
-            .key_at(table.settle(table.sel).max(0) as usize)
-            .or_else(|| self.state.form.opening_key());
-        FocusKey { entry: self.entry, elem: H::Elem::of_index(key.map_or(0, |k| k.0)) }
-    }
-    fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
-        popover_seat(self.state, self.entry)
-    }
-}
-
-impl<H: Host> Part<H> for TrackMenuPart<'_>
-where
-    H::Elem: IndexElem,
-{
-    fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
-    /// Registers every selectable row's stop and the title band's ([`popover_register_stops`]); the
-    /// popover's own paint happens directly on the owned state from `PlayerOverlayScreen::draw`
-    /// (struct doc above).
-    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
-        popover_register_stops(self.state, self.entry, f);
-    }
-}
-
-/// The PLAYING item's track lists â€” the menu's ONLY data source. `metadata::current()` is the
-/// detail page's item, which is the SHOW during an episode play (its lists are episode 1's) and
-/// can be a different item entirely when playing straight from Home.
-fn tracks<'a>(meta: metadata::MetadataView<'a>) -> Option<&'a metadata::PlayingItem> {
-    meta.playing()
-}
-
-fn n_audio(meta: metadata::MetadataView<'_>) -> c_int {
-    tracks(meta).map(|t| t.audio.len()).unwrap_or(0) as c_int
-}
-/// Subtitle rows offered on this route: text sidecars can be drawn on direct play;
-/// all sidecars are offered during transcoding, when the server burns them.
-fn visible_subs(ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> Vec<usize> {
-    tracks(meta)
-        .map(|t| {
-            t.subs
-                .iter()
-                .enumerate()
-                .filter(|(_, s)| {
-                    !s.external || s.sidecar_renderable() || plx_media::route::is_transcoding(ps)
-                })
-                .map(|(i, _)| i)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// Resolve the typed tone at the UI boundary; persisted values and technical logs stay stable.
-fn tone_label(tone: SubtitleTone) -> &'static str {
-    match tone {
-        SubtitleTone::White => plx_platform::i18n::msg::widgets_tracks_tone_white(),
-        SubtitleTone::Silver => plx_platform::i18n::msg::widgets_tracks_tone_silver(),
-        SubtitleTone::LightGrey => plx_platform::i18n::msg::widgets_tracks_tone_light_grey(),
-        SubtitleTone::Grey => plx_platform::i18n::msg::widgets_tracks_tone_grey(),
-        SubtitleTone::DarkGrey => plx_platform::i18n::msg::widgets_tracks_tone_dark_grey(),
-        SubtitleTone::Charcoal => plx_platform::i18n::msg::widgets_tracks_tone_charcoal(),
-    }
-}
-
-/// The localized name of a caption size rung â€” the one place both the player's Style pages and
-/// Settings' Playback read it.
-pub fn subtitle_size_label(size: SubtitleSize) -> &'static str {
-    use plx_platform::i18n::msg;
-    match size {
-        SubtitleSize::Small => msg::settings_playback_subtitle_size_small(),
-        SubtitleSize::Medium => msg::settings_playback_subtitle_size_medium(),
-        SubtitleSize::Large => msg::settings_playback_subtitle_size_large(),
-        SubtitleSize::ExtraLarge => msg::settings_playback_subtitle_size_extra_large(),
-        SubtitleSize::Huge => msg::settings_playback_subtitle_size_huge(),
-    }
-}
-
-/// The localized name of a caption position rung, shared like [`subtitle_size_label`].
-pub fn subtitle_position_label(position: SubtitlePosition) -> &'static str {
-    use plx_platform::i18n::msg;
-    match position {
-        SubtitlePosition::Low => msg::settings_playback_subtitle_position_low(),
-        SubtitlePosition::Middle => msg::settings_playback_subtitle_position_middle(),
-        SubtitlePosition::High => msg::settings_playback_subtitle_position_high(),
-    }
-}
-
-/// An offset as localized signed seconds to the tenth (`appkit::timing_capsule::offset_seconds_in`,
-/// the one offset formatter).
-fn format_offset(ms: i64) -> String {
-    crate::timing_capsule::offset_seconds_in(ms, true, plx_platform::i18n::current())
-}
-
-// ---- section building ----
-use plx_data::metadata::friendly_codec; // the ONE codecâ†’display-name map (shared with the Info card)
-use plx_data::metadata::track_label::Kind;
-
-/// The sub-line under an audio track, saying so when the server would convert it: a track the TV
-/// cannot decode ("AAC 7.1" here) plays through the server's remux with only its audio converted,
-/// and the menu names that on the track it concerns rather than leaving the viewer to learn it
-/// from a log. Whether a track is converted is the planner's capability answer for THIS playback's
-/// attempt (`route::audio_converted_by_server`, which reads `ps`). A surround track the APP decodes
-/// (`route::audio_decoded_in_app`: a codec the recovery put in force as its very last rung, or the
-/// `appdecodelossy` debug trigger; never Force Direct Play, which refuses a surround track the set
-/// cannot decode instead of mixing it down) says it plays in stereo, since the descriptor ("DTS 5.1")
-/// would otherwise promise a layout the downmix does not keep; the server mark outranks it. Always ONE line: the
-/// longest label is graded against the panel by `converted_audio_sub_lines_fit_the_panel_in_every_language`.
-fn audio_sub_line(ps: &plx_media::route::PlaybackSession, sub: String, s: &metadata::Stream) -> String {
-    let converted = plx_media::route::audio_converted_by_server(ps, &s.codec, s.channels, s.sampling_rate);
-    let in_app = plx_platform::devcaps::app_decode_mixes_down(s.channels)
-        && plx_media::route::audio_decoded_in_app(ps, &s.codec, s.channels, s.sampling_rate);
-    audio_sub_line_for(sub, converted, in_app)
-}
-
-/// [`audio_sub_line`] with the facts given â€” the pure choice, host-testable.
-fn audio_sub_line_for(sub: String, converted: bool, decoded_in_app: bool) -> String {
-    if sub.is_empty() {
-        sub
-    } else if converted {
-        plx_platform::i18n::msg::widgets_tracks_converted_by_server(&sub)
-    } else if decoded_in_app {
-        plx_platform::i18n::msg::widgets_tracks_decoded_in_app_stereo(&sub)
-    } else {
-        sub
-    }
-}
-
-/// "AC-3 5.1", "Dolby TrueHD 7.1", "DTS 5.1" â€” a compact codec + channel-layout descriptor.
-fn audio_descriptor(s: &metadata::Stream) -> String {
-    let codec = friendly_codec(&s.codec);
-    let ch = if !s.layout.is_empty() {
-        channel_short(&s.layout)
-    } else if s.channels > 0 {
-        match s.channels {
-            1 => plx_platform::i18n::msg::widgets_tracks_mono().to_string(),
-            2 => plx_platform::i18n::msg::widgets_tracks_stereo().to_string(),
-            n => format!("{}.{}", n - 1, if n >= 6 { 1 } else { 0 }),
-        }
-    } else {
-        String::new()
-    };
-    match (codec.is_empty(), ch.is_empty()) {
-        (false, false) => format!("{codec} {ch}"),
-        (false, true) => codec,
-        (true, false) => ch,
-        _ => String::new(),
-    }
-}
-
-/// map a Plex audioChannelLayout ("5.1(side)", "7.1") to a short "5.1"/"7.1"/"Stereo"
-fn channel_short(layout: &str) -> String {
-    let base = layout.split('(').next().unwrap_or(layout).trim();
-    match base {
-        "mono" => plx_platform::i18n::msg::widgets_tracks_mono().to_string(),
-        "stereo" => plx_platform::i18n::msg::widgets_tracks_stereo().to_string(),
-        other => other.to_string(),
-    }
-}
-
-// ---- Subtitles-tab sections (the model is `metadata::sub_layout`, plan Â§3) ------------------
-
-/// The drawn form of a row's one badge.
-/// The languages a subtitle search can be asked in: the account picker's list (`plex::languages`)
-/// narrowed to plain TWO-letter codes, the only form PMS accepts (`docs/pms-api.md` Â§8) â€” a region
-/// variant (`en-GB`) folds onto the same search and would only repeat a row.
-pub fn search_languages() -> Vec<&'static plx_plex::plex::languages::Language> {
-    plx_plex::plex::languages::picker().filter(|l| l.code.len() == 2).collect()
-}
-
-fn row_badge(b: &RowBadge) -> Badge {
-    match b {
-        RowBadge::Forced => Badge::Forced,
-        RowBadge::Sdh => Badge::Sdh,
-        RowBadge::External => Badge::Text(plx_platform::i18n::msg::widgets_tracks_external_badge().to_string()),
-        RowBadge::Codec(c) => Badge::Text((*c).to_string()),
-    }
-}
-
-/// A flat row: label = language, detail = source/region (+ "Track N" when this track needed one),
-/// one badge. Used for a single-track "yours" language, and for every "Other languages" row.
-fn flat_row(t: &SubTrack, active_sub: c_int) -> Row {
-    let mut row = Row::new(t.lang.clone()).checked(active_sub >= 0 && t.i == active_sub as usize);
-    let mut parts: Vec<String> = Vec::new();
-    if !t.detail.is_empty() {
-        parts.push(t.detail.clone());
-    }
-    if let Some(n) = t.ordinal {
-        parts.push(plx_platform::i18n::msg::widgets_tracks_track_ordinal(n as i64));
-    }
-    if !parts.is_empty() {
-        row = row.detail(parts.join(" \u{b7} "));
-    }
-    for b in &t.badges {
-        row = row.badge(row_badge(b));
-    }
-    row
-}
-
-/// A row inside a multi-track "yours" language section (`player.html:1110-1115`): label = the
-/// source (+ "Track N" if needed), or â€” for a NAMELESS track â€” the kind word itself ("Forced",
-/// "SDH", "Full", "Commentary"), in which case a Forced/SDH badge that would only repeat the
-/// label is dropped.
-fn in_lang_row(t: &SubTrack, active_sub: c_int) -> Row {
-    let mut row = Row::new(in_lang_label(t)).checked(active_sub >= 0 && t.i == active_sub as usize);
-    // a Forced/SDH chip that would only repeat the kind word the label already is, is dropped; the
-    // image codec never is
-    let label_is_kind = t.detail.is_empty() && t.ordinal.is_none();
-    for b in &t.badges {
-        if !(label_is_kind && matches!(b, RowBadge::Forced | RowBadge::Sdh)) {
-            row = row.badge(row_badge(b));
-        }
-    }
-    row
-}
-
-/// A track's label inside its language: the source (+ "Track N" if needed), or the kind word for a
-/// nameless one. Also the value a language's drill-in reads out for its active variant.
-fn in_lang_label(t: &SubTrack) -> String {
-    let nth = t.ordinal.map(|n| plx_platform::i18n::msg::widgets_tracks_track_ordinal(n as i64));
-    if !t.detail.is_empty() {
-        match &nth {
-            Some(n) => format!("{} \u{b7} {}", t.detail, n),
-            None => t.detail.clone(),
-        }
-    } else if let Some(n) = &nth {
-        if t.kind == Kind::Full {
-            n.clone()
-        } else {
-            format!("{} \u{b7} {}", t.kind.fallback_label(), n)
-        }
-    } else {
-        t.kind.fallback_label().to_string()
-    }
-}
-
-/// **Declare the Subtitles root** from its model (`metadata::sub_layout::sub_sections`) as a keyed
-/// form â€” the catalog words for each header, the checkmark on `active_sub` (-1 for Off, unless
-/// Forced only holds it), and the Timing read-out (`offset_ms`). Each row is declared once: a track carries its subs-list index
-/// as its id and key; Timing is dim while no subtitle is drawn and hands off to the capsule (so it has
-/// no chevron); Style and Other languages are Nav rows, the drill-ins to [`TrackPage::Style`] and
-/// [`TrackPage::OtherLanguages`] (the latter reads out the language count, or â€” when the active
-/// track lives behind it â€” a check and that track's language).
-///
-/// `burn` (M7 follow-up, widened): while the server draws the subtitle into the picture
-/// ([`plx_media::route::subtitle_presenter`] is `ServerBurn`, with that reason), Timing and Style do nothing â€” the text is already in the pixels â€” so they are DISABLED (dim,
-/// focusable so the viewer can read why, inert under OK and RIGHT at the form layer) and one
-/// non-selectable [`FormSection::note`] naming why (by the burn's reason) follows Style, the same "visible, dim, plain
-/// reason" idiom the Audio tab's own Boost dialog / Normalize loudness rows use when THEY are
-/// disabled.
-///
-/// `memory_note` (track memory): the show's remembered subtitle was chosen for this play and the
-/// route shows none of it, so Off is on screen although a track is remembered. One non-selectable
-/// [`FormSection::note`] closes the FIRST group (Off and the tracks), where the viewer's eye is when
-/// the checkmark sits on Off; it is declared only when the flag is set.
-///
-/// `forced_only` (FO) is `Some(read-out)` while Forced only is the
-/// mode, else `None`. The read-out is the language the row shows or looked for
-/// ([`sub_layout::forced_only_readout`]). **One checkmark**: the check sits on the Forced only row
-/// and on nothing else: not on Off and not on the forced track it drew, whose own row (and its
-/// Other languages row) stays unchecked. `active_sub` still says whether a track is drawn, which is
-/// what keeps Timing live, so Timing is dim only while nothing is drawn.
-fn table_form(
-    model: &SubModel,
-    active_sub: c_int,
-    offset_ms: i64,
-    burn: Option<plx_media::route::BurnReason>,
-    memory_note: bool,
-    forced_only: Option<&str>,
-) -> TrackForm {
-    use plx_platform::i18n::msg;
-    // the track the rows check: the drawn one, unless Forced only holds the checkmark
-    let checked_sub = if forced_only.is_some() { -1 } else { active_sub };
-    let active_other =
-        model.other.iter().find(|o| o.tracks.iter().any(|t| checked_sub >= 0 && t.i == checked_sub as usize));
-    model.sections.iter().enumerate().fold(Form::new(), |form, (at, sec)| {
-        let head = match &sec.header {
-            SubHeader::Subtitles => Section::new(msg::widgets_tracks_subtitles()),
-            SubHeader::Language { name, tracks } => {
-                Section::new(name.clone()).accessory(msg::widgets_tracks_count(*tracks as i64))
-            }
-            SubHeader::Bare => Section::new(""),
-        };
-        let out = sec.rows.iter().fold(FormSection::from_head(head), |out, row| {
-            // the identity comes from the model's own row target, never from the position
-            let id = TrackRow::from(row.target());
-            match row {
-                SubRow::Off => out.item(
-                    id,
-                    RowKind::Choice,
-                    (),
-                    Row::new(msg::widgets_tracks_off()).checked(checked_sub < 0 && forced_only.is_none()),
-                ),
-                SubRow::ForcedOnly => {
-                    let row = Row::new(msg::widgets_tracks_forced_only()).checked(forced_only.is_some());
-                    // the read-out is a language name: the stream's own text, so it may elide
-                    // before the row's catalog words do
-                    out.item(id, RowKind::Choice, (), match forced_only {
-                        Some(language) => row.value(language).server_value(),
-                        None => row,
-                    })
-                }
-                SubRow::Flat(t) => out.item(id, RowKind::Choice, (), flat_row(t, checked_sub)),
-                SubRow::InLanguage(t) => out.item(id, RowKind::Choice, (), in_lang_row(t, checked_sub)),
-                SubRow::OtherLanguages { languages } => {
-                    let (value, checked) = match active_other {
-                        Some(o) => (o.name.clone(), true),
-                        None => (languages.to_string(), false),
-                    };
-                    out.item(
-                        id,
-                        RowKind::Nav(TrackPage::OtherLanguages),
-                        (),
-                        Row::new(msg::widgets_tracks_other_languages()).value(value).checked(checked),
-                    )
-                }
-                SubRow::Timing => out
-                    .item(
-                        id,
-                        RowKind::Button,
-                        (),
-                        Row::new(msg::widgets_tracks_timing()).value(format_offset(offset_ms)).dim(active_sub < 0),
-                    )
-                    .disabled(burn.is_some()),
-                SubRow::Style => {
-                    let out = out
-                        .item(id, RowKind::Nav(TrackPage::Style), (), Row::new(msg::widgets_tracks_style()))
-                        .disabled(burn.is_some());
-                    match burn {
-                        Some(plx_media::route::BurnReason::AudioConversion) => {
-                            out.note(msg::widgets_tracks_sub_burn_audio())
-                        }
-                        Some(plx_media::route::BurnReason::Quality) => out.note(msg::widgets_tracks_sub_burn_quality()),
-                        None => out,
-                    }
-                }
-            }
-        });
-        form.section(if at == 0 && memory_note { out.note(msg::widgets_tracks_sub_remembered_note()) } else { out })
-    })
-}
-
-/// The panel at its WIDEST ([`plx_ui::table::MENU_MAX_W`], the shared cap â€” either tab may hug
-/// up to it) and TALLEST, for the overscan audit ([`plx_ui::consts::SAFE`]) â€” placed by the
-/// same placer as the live panel, beside the anchor of the compiled classic (`player_hud::audit_geometry`), with the height of the whole room (the
-/// measured height comes from a `TableView` no host test can measure).
-#[cfg(any(test, feature = "test-support"))]
-pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
-    let pw = plx_ui::table::MENU_MAX_W;
-    let placed = place_panel(crate::player_hud::audit_geometry().row, (pw, plx_ui::consts::SCR_H));
-    out.push(("track menu panel (widest)", placed.rect));
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use plx_media::player::TrackNames;
-    use plx_ui::table::TableView;
-
-    /// The focus element of the `i`-th Audio row â€” a test names a row by its identity, never by
-    /// where it happens to sit.
-    fn audio_key(i: usize) -> u32 {
-        TrackRow::Audio(i).key().0
-    }
-
-    /// The model and its drawing in one call â€” what the panel shows for these inputs.
-    #[allow(clippy::too_many_arguments)]
-    fn sub_layout(
-        subs: &[metadata::Stream],
-        offered: &[usize],
-        names: &TrackNames,
-        yours: &[&str],
-        active_sub: c_int,
-        show_timing: bool,
-        offset_ms: i64,
-    ) -> (Vec<Section>, Vec<Option<TrackRow>>) {
-        let yours: Vec<String> = yours.iter().map(|y| y.to_string()).collect();
-        let model = sub_layout::sub_sections(subs, offered, names, &yours, show_timing);
-        let mut built = FormTable::new(plx_ui::table_screen::BAND_BASE);
-        built.set(table_form(&model, active_sub, offset_ms, None, false, None), None);
-        let ids = (0..built.table.n_rows() as usize).map(|i| built.id_at(i).copied()).collect();
-        (std::mem::take(&mut built.table.sections), ids)
-    }
-
-    /// A store with `subs` installed as the playing item's subtitle list. `pub(super)`:
-    /// `enhancement_menu_tests` below reuses it for the Subtitles tab under a live Burn (M7).
-    pub(super) fn store_with(subs: Vec<metadata::Stream>) -> plx_data::stores::metadata::MetadataStore {
-        let mut store = plx_data::stores::metadata::MetadataStore::default();
-        assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(
-            metadata::PlayingItem::with_subs(subs)
-        ))));
-        store
-    }
-
-    /// A store with `audio` installed as the playing item's audio list â€” the audio-tab
-    /// counterpart to [`store_with`]. `pub(super)`: `enhancement_menu_tests` below builds the
-    /// same fixture shape for the Audio tab's DSP toggle rows (issue #266 PR 4).
-    pub(super) fn store_with_audio(audio: Vec<metadata::Stream>) -> plx_data::stores::metadata::MetadataStore {
-        let mut store = plx_data::stores::metadata::MetadataStore::default();
-        let mut item = metadata::PlayingItem::with_subs(Vec::new());
-        item.audio = audio;
-        assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
-        store
-    }
-
-    pub(super) fn stream(id: i64, index: i64, lang: &str, lang_code: &str, title: &str) -> metadata::Stream {
-        metadata::Stream {
-            id,
-            index,
-            lang: lang.into(),
-            lang_code: lang_code.into(),
-            codec: "srt".into(),
-            title: title.into(),
-            ..Default::default()
-        }
-    }
-
-    // ---- sub_layout: a single "yours" language is flat under "Subtitles" ----------------------
-
-    #[test]
-    fn a_single_track_yours_language_is_a_flat_row_under_subtitles() {
-        let subs = vec![stream(1, 0, "Spanish", "spa", "")];
-        let names = TrackNames::new();
-        let (sections, targets) = sub_layout(&subs, &[0], &names, &["spa"], -1, true, 0);
-        assert_eq!(sections[0].header, "Subtitles");
-        assert_eq!(sections[0].rows.len(), 3, "Off + Forced only + the one track");
-        assert_eq!(sections[0].rows[2].label, "Spanish");
-        assert_eq!(targets[2], Some(TrackRow::Sub(0)));
-    }
-
-    // ---- sub_layout: a nameless track reads as its kind, with no badge ------------------------
-
-    #[test]
-    fn a_nameless_track_in_a_multitrack_group_is_labelled_by_its_kind_with_no_badge() {
-        let subs = vec![
-            stream(1, 0, "Russian", "rus", ""), // full â€” keeps the bucket multi-track
-            stream(2, 1, "Russian", "rus", "Ð¤Ð¾Ñ€Ñ."), // forced, nameless
-        ];
-        let offered: Vec<usize> = (0..subs.len()).collect();
-        let names = TrackNames::new();
-        let (sections, _targets) =
-            sub_layout(&subs, &offered, &names, &["rus"], -1, true, 0);
-        let forced_row = sections[1]
-            .rows
-            .iter()
-            .find(|r| r.label == "Forced")
-            .expect("a nameless forced track reads as its kind word");
-        assert!(
-            forced_row.badges.is_empty(),
-            "the kind word already says Forced; the badge is dropped"
-        );
-    }
-
-    // ---- sub_layout: identical tracks get "Track N" --------------------------------------------
-
-    #[test]
-    fn identical_tracks_in_one_group_are_told_apart_by_an_ordinal() {
-        let subs = vec![
-            stream(1, 0, "Russian", "rus", "iTunes"),
-            stream(2, 1, "Russian", "rus", "iTunes"),
-        ];
-        let offered: Vec<usize> = (0..subs.len()).collect();
-        let names = TrackNames::new();
-        let (sections, _targets) =
-            sub_layout(&subs, &offered, &names, &["rus"], -1, true, 0);
-        let labels: Vec<&str> = sections[1].rows.iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, ["iTunes \u{b7} Track 1", "iTunes \u{b7} Track 2"]);
-    }
-
-    // ---- sub_layout: one badge per row, by priority --------------------------------------------
-
-    #[test]
-    fn one_kind_badge_per_row_by_priority_forced_over_sdh_over_external_and_an_image_codec_always_adds_its_own() {
-        let mk = |sdh: bool, external: bool, codec: &str| metadata::Stream {
-            sdh,
-            external,
-            lang: "English".into(),
-            lang_code: "eng".into(),
-            codec: codec.into(),
-            ..Default::default()
-        };
-        let names = TrackNames::new();
-
-        let subs = vec![mk(true, false, "srt")];
-        let (sections, _) = sub_layout(&subs, &[0], &names, &["eng"], -1, true, 0);
-        assert!(matches!(sections[0].rows[2].badges.as_slice(), [Badge::Sdh]));
-
-        let subs = vec![mk(false, true, "srt")];
-        let (sections, _) = sub_layout(&subs, &[0], &names, &["eng"], -1, true, 0);
-        assert!(matches!(sections[0].rows[2].badges.as_slice(), [Badge::Text(t)] if t == "EXTERNAL"));
-
-        let subs = vec![mk(true, true, "srt")];
-        let (sections, _) = sub_layout(&subs, &[0], &names, &["eng"], -1, true, 0);
-        assert!(
-            matches!(sections[0].rows[2].badges.as_slice(), [Badge::Sdh]),
-            "SDH beats EXTERNAL"
-        );
-
-        let subs = vec![mk(false, false, "pgs")];
-        let (sections, _) = sub_layout(&subs, &[0], &names, &["eng"], -1, true, 0);
-        assert!(matches!(sections[0].rows[2].badges.as_slice(), [Badge::Text(t)] if t == "PGS"));
-
-        // an image subtitle keeps its format whatever else it is: the codec chip follows the kind
-        let subs = vec![mk(true, false, "pgs")];
-        let (sections, _) = sub_layout(&subs, &[0], &names, &["eng"], -1, true, 0);
-        assert!(
-            matches!(sections[0].rows[2].badges.as_slice(), [Badge::Sdh, Badge::Text(t)] if t == "PGS"),
-            "SDH + PGS"
-        );
-        // a text subtitle never shows a format, external or not
-        let subs = vec![mk(false, true, "ass")];
-        let (sections, _) = sub_layout(&subs, &[0], &names, &["eng"], -1, true, 0);
-        assert!(matches!(sections[0].rows[2].badges.as_slice(), [Badge::Text(t)] if t == "EXTERNAL"));
-    }
-
-    // ---- sub_layout: "Other languages" is ONE drill-in row on the root -------------------------
-
-    #[test]
-    fn other_languages_are_one_chevron_row_reading_the_language_count() {
-        let subs = vec![
-            stream(1, 0, "German", "deu", ""),
-            stream(2, 1, "Arabic", "ara", ""),
-            stream(3, 2, "Arabic", "ara", "SDH"),
-        ];
-        let offered: Vec<usize> = (0..subs.len()).collect();
-        let (sections, ids) = sub_layout(&subs, &offered, &TrackNames::new(), &[], -1, true, 0);
-        assert_eq!(
-            ids,
-            [Some(TrackRow::SubOff), Some(TrackRow::SubForcedOnly), Some(TrackRow::OpenOther), Some(TrackRow::Timing), Some(TrackRow::Style)]
-        );
-        let row = &sections[1].rows[0];
-        assert_eq!((row.label.as_str(), row.value.as_deref()), ("Other languages", Some("2")), "two languages, three tracks");
-        assert!(!row.checked, "no active track behind it");
-    }
-
-    /// **Every Subtitles-panel row fits the panel in every shipped language** â€” the grouped
-    /// layout's section words, the kind fallbacks, the "Track N" ordinal and a region name beside
-    /// each badge, against [`MENU_MAX_W`](plx_ui::table::MENU_MAX_W), measured with the device's whole-pixel advances. (A source is
-    /// server text and may elide; the fixture's sources are short so only app text is judged.)
-    #[test]
-    fn every_subtitles_row_fits_the_panel_in_every_language() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
-        let mut subs = vec![
-            stream(1, 0, "Russian", "rus", "forced, DVD R5"),
-            stream(2, 1, "Russian", "rus", "Netflix"),
-            stream(3, 2, "Russian", "rus", ""),
-            stream(4, 3, "Russian", "rus", ""),
-            stream(5, 4, "Russian", "rus", "SDH"),
-            stream(6, 5, "Russian", "rus", "Commentary"),
-            stream(7, 6, "Spanish", "spa", ""),
-            stream(8, 7, "Portuguese", "por", "Full SDH"),
-        ];
-        subs[6].language_tag = "es-419".into();
-        subs[7].external = true;
-        let offered: Vec<usize> = (0..subs.len()).collect();
-        let names = TrackNames::new();
-        let mut out = Vec::new();
-        for language in SHIPPED {
-            let _guard = language_on_this_thread_for_test(language);
-            let (sections, _) =
-                sub_layout(&subs, &offered, &names, &["rus"], 1, true, -60_000);
-            let mut table = TableView::new();
-            table.set_sections(sections, 0, false);
-            out.extend(table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
-            out.extend(table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
-            out.extend(table.app_fit_failures_hugged(language.tag()));
-        }
-        plx_ui::table::assert_no_fit_failures(&out);
-    }
-
-    /// **The pseudo-locale sweep of the grouped Subtitles panel**: every header, accessory, label,
-    /// detail, value and badge it builds is catalog text (the pseudo-locale's `[!!` marker or its
-    /// accented vowels), the fixture's own server values, or letter-free.
-    #[test]
-    fn every_app_owned_subtitles_string_comes_from_the_catalog() {
-        let _pseudo = plx_platform::i18n::pseudo_on_this_thread_for_test();
-        // a title's own "Commentary" stays its source (the mock strips no commentary word), so it
-        // is server text here like the rest
-        let server = ["Russian", "Spanish", "Portuguese", "Netflix", "DVD R5", "Commentary"];
-        let mut subs = vec![
-            stream(1, 0, "Russian", "rus", "Netflix"),
-            stream(2, 1, "Russian", "rus", ""),
-            stream(3, 2, "Russian", "rus", ""),
-            stream(4, 3, "Russian", "rus", "forced"),
-            stream(5, 4, "Russian", "rus", "SDH"),
-            stream(6, 5, "Russian", "rus", "Commentary"),
-            stream(7, 6, "Spanish", "spa", ""),
-            stream(8, 7, "Portuguese", "por", "DVD R5"),
-            stream(9, 8, "", "", ""),
-        ];
-        subs[6].language_tag = "es-419".into();
-        subs[7].external = true;
-        let offered: Vec<usize> = (0..subs.len()).collect();
-        let (sections, _) =
-            sub_layout(&subs, &offered, &TrackNames::new(), &["rus"], 1, true, 300);
-        let mut runs: Vec<String> = Vec::new();
-        for sec in &sections {
-            runs.push(sec.header.clone());
-            runs.push(sec.accessory.clone());
-            for row in &sec.rows {
-                runs.push(row.label.clone());
-                runs.push(row.detail.clone());
-                runs.extend(row.value.clone());
-                runs.extend(row.badges.iter().map(|b| b.text().to_string()));
-            }
-        }
-        let pseudo = |run: &str| run.contains("[!!") || run.contains(['Ã¡', 'Ã«', 'Ã¯', 'Ã¶', 'Ã¼']);
-        let stray: Vec<&String> = runs
-            .iter()
-            .filter(|run| !pseudo(run))
-            .filter(|run| {
-                let mut rest = run.replace('\u{b7}', " ");
-                for value in server {
-                    rest = rest.replace(value, "");
-                }
-                rest.chars().any(char::is_alphabetic)
-            })
-            .collect();
-        assert!(stray.is_empty(), "text drawn without the catalog: {stray:?}");
-    }
-
-    // ---- sub_layout: Timing absent under transcode, dim while Off -----------------------------
-
-    #[test]
-    fn timing_is_omitted_under_transcode_and_dim_while_subtitles_are_off() {
-        let subs = vec![stream(1, 0, "English", "eng", "")];
-        let names = TrackNames::new();
-
-        let (sections, _) = sub_layout(&subs, &[0], &names, &[], -1, false, 0);
-        assert!(
-            sections.iter().flat_map(|s| &s.rows).all(|r| r.label != "Timing"),
-            "a transcode burns captions; no client offset can reach them"
-        );
-
-        let (sections, _) = sub_layout(&subs, &[0], &names, &[], -1, true, 0);
-        let timing = sections
-            .iter()
-            .flat_map(|s| &s.rows)
-            .find(|r| r.label == "Timing")
-            .expect("Timing row");
-        assert!(timing.dim, "subtitles are Off");
-
-        let (sections, _) = sub_layout(&subs, &[0], &names, &[], 0, true, 0);
-        let timing = sections
-            .iter()
-            .flat_map(|s| &s.rows)
-            .find(|r| r.label == "Timing")
-            .expect("Timing row");
-        assert!(!timing.dim);
-    }
-
-    // ---- track_menu: the targets mapping -------------------------------------------------------
-
-    #[test]
-    fn targets_map_flat_rows_to_off_sub_timing_and_style_in_drawn_order() {
-        let _g = plx_base::testlock::serial();
-        plx_media::player::sidecar::reset();
-        plx_media::player::set_subtitle_offset(0);
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let store = store_with(vec![plx_data::metadata::Stream {
-            id: 1,
-            index: 0,
-            lang: "English".into(),
-            lang_code: "eng".into(),
-            codec: "srt".into(),
-            ..Default::default()
-        }]);
-        let menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
-        assert_eq!(
-            menu.ids(),
-            vec![TrackRow::SubOff, TrackRow::SubForcedOnly, TrackRow::Sub(0), TrackRow::Timing, TrackRow::Style]
-        );
-    }
-
-    // ---- track_menu: a rebuild lands on the checked sub inside a group -------------------------
-
-    #[test]
-    fn a_rebuild_lands_on_the_checked_sub_inside_a_multitrack_group() {
-        let _g = plx_base::testlock::serial();
-        plx_media::player::sidecar::reset();
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let store = store_with(vec![
-            plx_data::metadata::Stream {
-                id: 1,
-                index: 0,
-                lang: "Russian".into(),
-                lang_code: "rus".into(),
-                codec: "srt".into(),
-                title: "iTunes".into(),
-                ..Default::default()
-            },
-            plx_data::metadata::Stream {
-                id: 2,
-                index: 1,
-                lang: "Russian".into(),
-                lang_code: "rus".into(),
-                codec: "srt".into(),
-                title: "Netflix".into(),
-                ..Default::default()
-            },
-        ]);
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["rus".into()]);
-        menu.active_sub = 1; // the second track is the checked one
-        menu.rebuild(&ps, store.view(), 1, false);
-        assert_eq!(menu.form.selected_id().copied(), Some(TrackRow::Sub(1)));
-    }
-
-    /// `sub_track_for_target("track:N")` names the N-th TRACK, never Off/Timing/Style: the
-    /// `subtitle_text_srt` manifest case once hard-coded row 3, which stopped being a track when
-    /// the panel's layout changed (it resolved to Style and committed nothing).
-    #[test]
-    fn sub_track_for_target_finds_tracks_and_skips_off_timing_and_color() {
-        let _g = plx_base::testlock::serial();
-        plx_media::player::sidecar::reset();
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let store = store_with(vec![
-            stream(1, 0, "English", "eng", "A"),
-            stream(2, 1, "French", "fra", "B"),
-        ]);
-        let menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into(), "fra".into()]);
-        assert_eq!(menu.sub_track_for_target("track:0"), Some(0));
-        assert_eq!(menu.sub_track_for_target("track:1"), Some(1));
-        assert_eq!(menu.sub_track_for_target("track:2"), None, "past the last track");
-        assert_eq!(menu.sub_track_for_target("boost"), None);
-        assert_eq!(menu.sub_track_for_target("track:x"), None);
-    }
-
-    // ---- track_menu: sidecar, tone and Timing rows dispatch to their own outcomes -------------
-
-    /// **A Subtitles-panel row is a track, Style, or Timing, never ambiguous â€” and the split is
-    /// by `targets[sel]`.** Off + an embedded English track + an external French sidecar (both
-    /// "yours", so both land flat under "Subtitles"), then the headerless Timing/Style section.
-    #[test]
-    fn sidecar_and_settings_rows_map_to_their_own_commits_in_one_menu() {
-        let _g = plx_base::testlock::serial();
-        plx_media::player::sidecar::reset();
-        plx_media::player::set_subtitle_offset(0);
-        plx_media::player::restore_subtitle_tone(SubtitleTone::White);
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let store = store_with(vec![
-            plx_data::metadata::Stream {
-                id: 41,
-                index: 0,
-                lang: "English".into(),
-                lang_code: "eng".into(),
-                codec: "srt".into(),
-                ..Default::default()
-            },
-            plx_data::metadata::Stream {
-                id: 42,
-                index: 1,
-                lang: "French".into(),
-                lang_code: "fre".into(),
-                codec: "srt".into(),
-                external: true,
-                key: "/library/streams/42.srt".into(),
-                ..Default::default()
-            },
-        ]);
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into(), "fre".into()]);
-        // Off(0), Forced only(1), English(2), French sidecar(3), then the headerless Timing(4) /
-        // Style(5) section
-        assert_eq!(
-            menu.ids(),
-            vec![
-                TrackRow::SubOff,
-                TrackRow::SubForcedOnly,
-                TrackRow::Sub(0),
-                TrackRow::Sub(1),
-                TrackRow::Timing,
-                TrackRow::Style,
-            ]
-        );
-
-        menu.focus_row(3);
-        assert_eq!(
-            menu.on_ok(store.view()),
-            TrackOk::Commit {
-                commit: TrackCommit::Subtitle {
-                    render_ordinal: -1,
-                    stream_id: 42,
-                    sidecar_key: Some("/library/streams/42.srt".into()),
-                    sidecar_codec: "srt".into(),
-                    memo: Some(plx_plex::plex::session::prefs::SubtitleMemo::Track(
-                        plx_plex::plex::session::prefs::SubtitleTrackMemo {
-                            lang: "fre".into(),
-                            kind: "text".into(),
-                            external: true,
-                            ..Default::default()
-                        }
-                    )),
-                },
-                keep_open: false,
-            }
-        );
-
-        menu.focus_row(4);
-        assert_eq!(
-            menu.on_ok(store.view()),
-            TrackOk::OpenTiming,
-            "the sidecar is now the active subtitle, so Timing is no longer inert"
-        );
-
-        // Style -> Color -> the second tone: a Nav row pushes, a choice commits and the panel stays
-        menu.focus_row(5);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated, "Size is first and live for a text subtitle");
-        assert_eq!(menu.page_path(), [TrackPage::Style, TrackPage::Picker(StyleField::Size)]);
-        assert!(menu.pop(&ps, store.view()));
-        menu.focus_key(TrackRow::OpenField(StyleField::Color).key().0);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
-        menu.focus_key(TrackRow::Choice(StyleField::Color, 1).key().0);
-        assert_eq!(
-            menu.on_ok(store.view()),
-            TrackOk::Commit { commit: TrackCommit::SubtitleTone(SubtitleTone::LADDER[1]), keep_open: true }
-        );
-    }
-
-    // ---- track_menu: Timing returns OpenTiming, and is inert while Off ------------------------
-
-    #[test]
-    fn timing_returns_open_timing_once_a_subtitle_is_active_and_is_inert_while_off() {
-        let _g = plx_base::testlock::serial();
-        plx_media::player::sidecar::reset();
-        plx_media::player::set_subtitle_offset(0);
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let store = store_with(vec![plx_data::metadata::Stream {
-            id: 1,
-            index: 0,
-            lang: "English".into(),
-            lang_code: "eng".into(),
-            codec: "srt".into(),
-            ..Default::default()
-        }]);
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
-        let timing_row = menu
-            .form
-            .index_of(&TrackRow::Timing)
-            .expect("Timing row");
-
-        menu.focus_row(timing_row as c_int);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Inert, "subtitles are Off: inert");
-
-        let sub_row = menu
-            .ids()
-            .iter()
-            .position(|t| matches!(t, TrackRow::Sub(_)))
-            .expect("a track row");
-        menu.focus_row(sub_row as c_int);
-        menu.on_ok(store.view());
-
-        menu.focus_row(timing_row as c_int);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::OpenTiming);
-    }
-
-    // ---- format_offset ---------------------------------------------------------------------------
-
-    #[test]
-    fn an_offset_reads_as_signed_seconds_to_the_tenth() {
-        assert_eq!(format_offset(0), "0.0 s");
-        assert_eq!(format_offset(100), "+0.1 s");
-        assert_eq!(format_offset(-100), "-0.1 s");
-        assert_eq!(format_offset(1_300), "+1.3 s");
-        assert_eq!(format_offset(-60_000), "-60.0 s");
-    }
-
-    /// **Position is the join, so an unnamed track must occupy a slot rather than be skipped.**
-    /// `TrackNames` is dense by contract; this pins the reader's half of it â€” the N-th entry, an
-    /// out-of-range index and the `-1` that `sub_render_ordinal` answers for an external sidecar
-    /// all resolve without panicking, and the sidecar gets no name rather than its neighbour's.
-    #[test]
-    fn a_track_index_resolves_by_position_and_an_absent_one_is_empty_not_a_neighbour() {
-        let n = TrackNames {
-            audio: vec!["Ð”ÑƒÐ±Ð»ÑÐ¶".into(), String::new(), "Original".into()],
-            subs: vec!["Forced".into(), "Full".into()],
-        };
-        assert_eq!(n.audio(0), "Ð”ÑƒÐ±Ð»ÑÐ¶");
-        assert_eq!(n.audio(1), "", "an untagged track holds its slot");
-        assert_eq!(
-            n.audio(2),
-            "Original",
-            "â€¦so the one after it is still its own"
-        );
-        assert_eq!(n.sub(1), "Full");
-        assert_eq!(
-            n.sub(-1),
-            "",
-            "an external sidecar is not in the container at all"
-        );
-        assert_eq!(n.sub(9), "", "past the end is empty, not a panic");
-        // the empty store â€” every read before a demuxer has opened, and every read on the host
-        assert_eq!(TrackNames::new().sub(0), "");
-    }
-
-    // ---- track_menu: audio OK commits a frozen CarriedAudio (issue #266) ----------------------
-
-    /// Picking a different audio row must commit the exact `CarriedAudio` snapshot
-    /// `CarriedAudio::from_stream` builds from the row's own `metadata::Stream` â€” not a bare
-    /// stream id, which is what the pre-refactor `TrackCommit::Audio(i32, String, i64, i64)`
-    /// forced every caller to reassemble by hand.
-    #[test]
-    fn audio_commit_carries_carried_audio() {
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let store = store_with_audio(vec![
-            plx_data::metadata::Stream {
-                id: 10,
-                index: 0,
-                codec: "aac".into(),
-                channels: 2,
-                default: true,
-                ..Default::default()
-            },
-            plx_data::metadata::Stream {
-                id: 20,
-                index: 1,
-                codec: "eac3".into(),
-                channels: 8,
-                profile: "dolby digital plus + dolby atmos".into(),
-                can_normalize_loudness: true,
-                ..Default::default()
-            },
-        ]);
-        let mut menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
-        assert_eq!(menu.active_audio(), 0, "the default track opens checked");
-
-        menu.focus_row(1);
-        let outcome = menu.on_ok(store.view());
-        assert_eq!(
-            outcome,
-            TrackOk::Commit {
-                commit: TrackCommit::Audio {
-                    carried: plx_media::route::CarriedAudio {
-                        sid: 20,
-                        ordinal: 1,
-                        codec: "eac3".into(),
-                        channels: 8,
-                        can_normalize_loudness: true,
-                        immersive: true,
-                        sample_rate: 0,
-                        bit_depth: 0,
-                    },
-                    memo: Some(plx_plex::plex::session::prefs::AudioMemo {
-                        codec: "eac3".into(),
-                        channels: 8,
-                        ..Default::default()
-                    }),
-                },
-                keep_open: false,
-            }
-        );
-    }
-
-    /// **A subtitle pick says what to remember.** Off commits `SubtitleMemo::Off` (stream 0); a track
-    /// commits its descriptor as the MENU reads it, so a track whose NAME says forced is remembered
-    /// forced although its flag is unset; and the audio pick commits the picked row's descriptor,
-    /// commentary-ness and all.
-    #[test]
-    fn a_pick_commits_the_descriptor_to_remember() {
-        use plx_plex::plex::session::prefs::SubtitleMemo;
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let store = store_with(vec![
-            plx_data::metadata::Stream { id: 41, index: 0, lang: "English".into(), lang_code: "eng".into(), codec: "srt".into(), ..Default::default() },
-            plx_data::metadata::Stream {
-                id: 42,
-                index: 1,
-                lang: "Spanish".into(),
-                lang_code: "spa".into(),
-                codec: "srt".into(),
-                title: "Forced".into(),
-                ..Default::default()
-            },
-        ]);
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into(), "spa".into()]);
-        let commit_of = |menu: &mut TrackMenuState, row: i32| {
-            menu.focus_row(row);
-            match menu.on_ok(store.view()) {
-                TrackOk::Commit { commit: TrackCommit::Subtitle { stream_id, memo, .. }, .. } => (stream_id, memo),
-                other => panic!("row {row} did not commit a subtitle: {other:?}"),
-            }
-        };
-        let (stream_id, memo) = commit_of(&mut menu, 3);
-        assert_eq!(stream_id, 42);
-        let Some(SubtitleMemo::Track(track)) = memo else { panic!("a track is remembered as a Track: {memo:?}") };
-        assert_eq!((track.lang.as_str(), track.kind.as_str(), track.title.as_str()), ("spa", "text", "Forced"));
-        assert!(track.forced, "its name says forced, so the menu badges it FORCED and the memo says forced");
-        assert!(!track.external && !track.sdh);
-        // the picked track is now the checked one, so Off is a change
-        assert_eq!(commit_of(&mut menu, 0), (0, Some(SubtitleMemo::Off)), "Off is remembered as Off");
-    }
-
-    /// **An OK that changes nothing remembers nothing.** A subtitle OK always commits (the route
-    /// republishes), but the descriptor to remember rides only a CHANGED pick, as on the Audio tab:
-    /// the panel opens with the focus on the checked row, so a press to close it on an Off the
-    /// ladder chose, or on a track the ladder chose, is not the viewer's choice and must not become
-    /// the show's absolute memory. The commit itself is still made (the republish stays); a change
-    /// after it is written as before.
-    #[test]
-    fn an_ok_that_changes_no_subtitle_commits_without_a_memo() {
-        use plx_plex::plex::session::prefs::SubtitleMemo;
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let store = store_with(vec![
-            plx_data::metadata::Stream { id: 41, index: 0, lang: "English".into(), lang_code: "eng".into(), codec: "srt".into(), ..Default::default() },
-            plx_data::metadata::Stream { id: 42, index: 1, lang: "Spanish".into(), lang_code: "spa".into(), codec: "srt".into(), ..Default::default() },
-        ]);
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into(), "spa".into()]);
-        let commit_of = |menu: &mut TrackMenuState, row: i32| {
-            menu.focus_row(row);
-            match menu.on_ok(store.view()) {
-                TrackOk::Commit { commit: TrackCommit::Subtitle { stream_id, memo, .. }, .. } => (stream_id, memo),
-                other => panic!("row {row} did not commit a subtitle: {other:?}"),
-            }
-        };
-        assert_eq!(commit_of(&mut menu, 0), (0, None), "Off is what the route shows: OK on it commits, remembers nothing");
-        let (stream_id, memo) = commit_of(&mut menu, 3);
-        assert_eq!((stream_id, memo.is_some()), (42, true), "control: a changed pick carries its memo");
-        assert_eq!(commit_of(&mut menu, 3), (42, None), "OK on the track that is already checked remembers nothing");
-        assert_eq!(commit_of(&mut menu, 0), (0, Some(SubtitleMemo::Off)), "Off after a track is a change, remembered as Off");
-        assert_eq!(commit_of(&mut menu, 0), (0, None), "and OK on that Off again is not");
-    }
-
-    /// Re-picking the already-active row is not a change: no commit, same as the pre-refactor
-    /// behaviour this test protects against a regression in.
-    #[test]
-    fn audio_reselecting_the_active_row_dismisses_without_a_commit() {
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let store = store_with_audio(vec![plx_data::metadata::Stream {
-            id: 10,
-            index: 0,
-            codec: "aac".into(),
-            channels: 2,
-            default: true,
-            ..Default::default()
-        }]);
-        let mut menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
-        menu.focus_row(0);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Dismiss);
-    }
-
-    /// [`TrackRow`]'s Audio-tab identities, with no enhancement offered: one [`TrackRow::Audio`]
-    /// per audio track, in the same order they were drawn, and nothing else â€” varying the track
-    /// count to prove the map tracks the list rather than assuming a fixed length.
-    #[test]
-    fn audio_targets_map_one_row_per_track_with_no_enhancement() {
-        for n in [0usize, 1, 3] {
-            let ps = plx_media::route::PlaybackSession::IDLE;
-            let audio = (0..n)
-                .map(|i| plx_data::metadata::Stream {
-                    id: 10 + i as i64,
-                    index: i as i64,
-                    codec: "aac".into(),
-                    channels: 2,
-                    default: i == 0,
-                    ..Default::default()
-                })
-                .collect();
-            let store = store_with_audio(audio);
-            let menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
-            let want: Vec<TrackRow> = (0..n).map(TrackRow::Audio).collect();
-            assert_eq!(menu.ids(), want, "n={n}");
-        }
-    }
-}
-
-/// Issue #266 PR 4: the Audio tab's Boost dialog / Normalize loudness toggle rows. The offer/
-/// refusal gating (I1-I7) is graded once, pure, over `route::plan::enhancements_offered` by PR
-/// 2/3's own suites; these tests instead pin the MENU's own contract on top of that predicate:
-/// the rows are ABSENT (never greyed â€” I1/I2) exactly when the live route does not offer them,
-/// PRESENT with the right labels/toggle-state when it does, and a press flips the right bit and
-/// keeps the panel open.
-#[cfg(test)]
-mod enhancement_menu_tests {
-    use super::*;
-    use super::tests::store_with_audio;
-    use plx_media::route::{enhancement_test_session, reset_player_control_for_test, EnhTestFixture};
-
-    /// One playing audio track â€” enough for `tracks(meta)` to be `Some` so `build_audio` does not
-    /// take its "no playing item" early return. The enhancement offer itself is driven entirely by
-    /// the `PlaybackSession` (`EnhTestFixture`), never by this store.
-    fn one_track_store() -> plx_data::stores::metadata::MetadataStore {
-        store_with_audio(vec![plx_data::metadata::Stream {
-            id: 501,
-            index: 0,
-            codec: "ac3".into(),
-            channels: 2,
-            default: true,
-            ..Default::default()
-        }])
-    }
-
-    /// Build the Audio tab against `route`. Caller holds `testlock::serial()` â€” `EnhTestFixture`
-    /// touches the process-global server registry and (when `in_flight`) `PLAYER_CONTROL`.
-    fn audio_tab(route: EnhTestFixture) -> (TrackMenuState, plx_media::route::PlaybackSession) {
-        let (ps, _sid) = enhancement_test_session(route);
-        let store = one_track_store();
-        let menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
-        (menu, ps)
-    }
-
-    fn teardown(ps: &plx_media::route::PlaybackSession) {
-        reset_player_control_for_test(ps);
-        plx_media::route::restore_quality(plx_media::route::Quality::Original);
-        plx_plex::plex::reset_servers_for_test();
-    }
-
-    /// **The other tab's warm is speculative to the recorder** (spec Â§5): its form build and
-    /// layout ask the measure about a page no frame draws, so a replay lacking those keys answers
-    /// 0.0 instead of refusing.
-    #[test]
-    fn the_background_warm_is_not_charged_against_a_strict_replay() {
-        use plx_ui::rec::{Measurements, TableMeasure};
-        let _g = plx_base::testlock::serial();
-        plx_gfx::text::reset_prewarm_for_test();
-        let (mut menu, ps) = audio_tab(EnhTestFixture::default());
-        let store = one_track_store();
-        let replay = Measurements::Replay(TableMeasure::new(std::collections::HashMap::new()));
-        menu.warm_other_tab(&ps, store.view(), &replay);
-        assert!(menu.background_owner.is_some(), "premise: the warm ran");
-        assert_eq!(replay.drain(), Ok(Vec::new()), "the warm's queries are not strict replay queries");
-        plx_gfx::text::reset_prewarm_for_test();
-        teardown(&ps);
-    }
-
-    /// **A closing menu's drop leaves a newer menu's background queue alone**: `ModalStack` keeps
-    /// a dismissed surface alive through its fade-out, so the old menu drops after the reopened
-    /// one has parked its own warm.
-    #[test]
-    fn a_closing_menus_drop_keeps_the_newer_menus_background_queue() {
-        use plx_ui::fixture::FixtureMeasure as M;
-        let _g = plx_base::testlock::serial();
-        plx_gfx::text::reset_prewarm_for_test();
-        let (mut old, ps) = audio_tab(EnhTestFixture::default());
-        let store = one_track_store();
-        old.warm_other_tab(&ps, store.view(), &M);
-        assert!(plx_gfx::text::background_prewarm_pending(), "premise: the old menu parked a warm");
-        let mut new = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
-        new.warm_other_tab(&ps, store.view(), &M);
-        drop(old);
-        assert!(plx_gfx::text::background_prewarm_pending(), "the old menu's drop wiped the new menu's queue");
-        drop(new);
-        assert!(!plx_gfx::text::background_prewarm_pending(), "the current owner clears on drop");
-        plx_gfx::text::reset_prewarm_for_test();
-        teardown(&ps);
-    }
-
-    // ---- absent: I1-I7 ---------------------------------------------------------------------
-
-    #[test]
-    fn enh_rows_absent_no_pass() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) =
-            audio_tab(EnhTestFixture { pass: plx_plex::plex::serverinfo::Subscription::No, ..Default::default() });
-        assert_eq!(menu.enhance_shown, None);
-        assert_eq!(menu.form.table.sections.len(), 1, "track list only â€” no second section at all");
-        teardown(&ps);
-    }
-
-    #[test]
-    fn enh_rows_absent_unknown_subscription() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture {
-            pass: plx_plex::plex::serverinfo::Subscription::Unknown,
-            ..Default::default()
-        });
-        assert_eq!(menu.enhance_shown, None);
-        teardown(&ps);
-    }
-
-    /// M7: a known-but-not-yet-analyzed (or definitively incapable) carried track reads the same to
-    /// a viewer either way â€” Disabled(NotAnalyzed), not Hidden (owner direction, 2026-09-29).
-    #[test]
-    fn enh_rows_disabled_incapable_track() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture { carried_capable: Some(false), ..Default::default() });
-        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotAnalyzed));
-        let note = menu.form.table.sections[1].rows.last().unwrap();
-        assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_not_analyzed());
-        teardown(&ps);
-    }
-
-    /// M7: a usable-base-layer Dolby Vision source is offered the plain remux, with no
-    /// Dolby-Vision-off note: whether the copied remux keeps DV is settled by its `/decision`
-    /// (`copied_video_dv`), and a copy keeps it.
-    #[test]
-    fn enh_rows_offered_dv_is_plain_remux() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture { dv_declared: true, ..Default::default() });
-        assert_eq!(menu.enhance_route, Some(plx_media::route::EnhancementRoute::Remux));
-        assert!(menu.enhance_shown.is_some());
-        let last = menu.form.table.sections[1].rows.last().unwrap();
-        assert_ne!(last.label, plx_platform::i18n::msg::widgets_tracks_enh_note_burn());
-        assert_ne!(last.label, plx_platform::i18n::msg::widgets_tracks_enh_note_sidecar());
-        assert_eq!(menu.form.table.sections[1].rows.len(), 2, "the two DSP toggles and no note row");
-        teardown(&ps);
-    }
-
-    /// P5 (or a dual layer without a cross-compatible base layer): no copy of the base layer is
-    /// ever correct, so there is nothing the enhancement's remux could decorate â€” Disabled, not
-    /// Hidden (owner direction, 2026-09-29).
-    #[test]
-    fn enh_rows_disabled_dv_unusable_base() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture { dv_base_unusable: true, ..Default::default() });
-        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::DolbyVisionUnusable));
-        assert_eq!(menu.enhance_shown, None);
-        let note = menu.form.table.sections[1].rows.last().unwrap();
-        assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_dv_unusable());
-        teardown(&ps);
-    }
-
-    /// A declared DV source with an embedded subtitle on screen: PMS measured copying the video
-    /// regardless of a burn request and silently dropping the subtitle â€” Disabled, telling the
-    /// viewer to turn subtitles off to use it.
-    #[test]
-    fn enh_rows_disabled_dv_with_embedded_subtitle() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture {
-            dv_declared: true,
-            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
-            ..Default::default()
-        });
-        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::DolbyVisionSubtitle));
-        let note = menu.form.table.sections[1].rows.last().unwrap();
-        assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_dv_subtitle());
-        teardown(&ps);
-    }
-
-    /// M7: an embedded subtitle no longer withdraws the offer (I6) â€” it routes to a forced re-
-    /// encode that burns it in, and the toggle stays enabled with a plain-language note.
-    #[test]
-    fn enh_rows_offered_embedded_subtitle_burns() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture {
-            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
-            ..Default::default()
-        });
-        assert_eq!(menu.enhance_route, Some(plx_media::route::EnhancementRoute::Burn));
-        assert!(menu.enhance_shown.is_some());
-        let note = menu.form.table.sections[1].rows.last().unwrap();
-        assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_note_burn());
-        teardown(&ps);
-    }
-
-    /// An external (sidecar) subtitle the client draws itself is unaffected by the enhancement â€”
-    /// still an ordinary remux, with a reassuring note.
-    #[test]
-    fn enh_rows_offered_sidecar_subtitle_unaffected() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture {
-            subtitle_effect: plx_media::route::SubtitleEffect::Sidecar,
-            ..Default::default()
-        });
-        assert_eq!(menu.enhance_route, Some(plx_media::route::EnhancementRoute::Remux));
-        assert!(menu.enhance_shown.is_some());
-        let note = menu.form.table.sections[1].rows.last().unwrap();
-        assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_note_sidecar());
-        teardown(&ps);
-    }
-
-    /// A quality that is NOT Original in force (Auto on HLS, a fixed rung) is the one case that
-    /// may say "only at Original quality"; M7: visible-and-dim, not hidden.
-    #[test]
-    fn enh_rows_disabled_hls_under_auto_blames_quality() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture {
-            remux: Some(false),
-            quality: plx_media::route::Quality::Auto,
-            ..Default::default()
-        });
-        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotOriginalQuality));
-        let note = menu.form.table.sections[1].rows.last().unwrap();
-        assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_quality());
-        teardown(&ps);
-    }
-
-    #[test]
-    fn enh_rows_disabled_fixed_rung_blames_quality() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture {
-            remux: Some(false),
-            base_present: false,
-            quality: plx_media::route::Quality::P720,
-            ..Default::default()
-        });
-        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotOriginalQuality));
-        teardown(&ps);
-    }
-
-    /// The owner's report: the note said "only at Original quality" while the Quality row read
-    /// Original. A non-copy route under Original must never blame the quality.
-    #[test]
-    fn enh_rows_disabled_under_original_never_blames_quality() {
-        let _g = plx_base::testlock::serial();
-        for fixture in [
-            EnhTestFixture {
-                base_present: false,
-                declined: Some(plx_media::route::OriginalDeclined::Relay),
-                ..Default::default()
-            },
-            EnhTestFixture {
-                base_present: false,
-                declined: Some(plx_media::route::OriginalDeclined::VideoNeedsConverting),
-                ..Default::default()
-            },
-            EnhTestFixture {
-                base_present: false,
-                declined: Some(plx_media::route::OriginalDeclined::TrackPickDropped),
-                ..Default::default()
-            },
-            EnhTestFixture { base_present: false, ..Default::default() },
-        ] {
-            let (menu, ps) = audio_tab(fixture);
-            assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotCopyable));
-            let note = menu.form.table.sections[1].rows.last().unwrap();
-            assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_not_copyable());
-            assert_ne!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_quality());
-            teardown(&ps);
-        }
-    }
-
-    /// A track pick the Original route could not follow dropped the candidate; under Auto (on HLS)
-    /// the quality in force is the honest reason.
-    #[test]
-    fn enh_rows_disabled_after_a_dropped_pick_under_auto_blames_quality() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture {
-            remux: Some(false),
-            base_present: false,
-            quality: plx_media::route::Quality::Auto,
-            declined: Some(plx_media::route::OriginalDeclined::TrackPickDropped),
-            ..Default::default()
-        });
-        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotOriginalQuality));
-        teardown(&ps);
-    }
-
-    /// A burn re-encodes the picture, so the Quality row says "Converted"; the Audio tab explains
-    /// its own state there (the burn note) rather than a converting reason.
-    #[test]
-    fn enh_rows_under_a_burn_explain_the_burn_not_a_conversion() {
-        let _g = plx_base::testlock::serial();
-        for fixture in [
-            EnhTestFixture {
-                subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
-                applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
-                applied_burn: true,
-                ..Default::default()
-            },
-            EnhTestFixture {
-                subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
-                remux: Some(false),
-                ..Default::default()
-            },
-        ] {
-            let (menu, ps) = audio_tab(fixture);
-            assert!(plx_media::route::original_is_converted(&ps), "the picture is re-encoded");
-            assert_eq!(menu.enhance_route, Some(plx_media::route::EnhancementRoute::Burn));
-            assert_eq!(menu.enhance_disabled, None);
-            let note = menu.form.table.sections[1].rows.last().unwrap();
-            assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_note_burn());
-            teardown(&ps);
-        }
-    }
-
-    /// Original picked and the server converting the video: the Quality row reads
-    /// "Original Â· Converted" and the note agrees (one fact).
-    #[test]
-    fn enh_rows_disabled_while_the_server_converts() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture { remux: Some(false), ..Default::default() });
-        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::ServerConverting));
-        assert!(plx_media::route::original_is_converted(&ps));
-        let note = menu.form.table.sections[1].rows.last().unwrap();
-        assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_converting());
-        teardown(&ps);
-    }
-
-    /// Force Direct Play never computes an `auto_original` candidate; the note names the setting.
-    #[test]
-    fn enh_rows_disabled_forced() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture {
-            base_present: false,
-            quality: plx_media::route::Quality::Auto,
-            declined: Some(plx_media::route::OriginalDeclined::ForcedDirectPlay),
-            ..Default::default()
-        });
-        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::ForcedDirectPlay));
-        let note = menu.form.table.sections[1].rows.last().unwrap();
-        assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_forced());
-        teardown(&ps);
-    }
-
-    #[test]
-    fn enh_rows_disabled_refused() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture { refused: true, ..Default::default() });
-        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::ServerRefused));
-        let note = menu.form.table.sections[1].rows.last().unwrap();
-        assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_refused());
-        teardown(&ps);
-    }
-
-    #[test]
-    fn enh_rows_disabled_server_default_audio() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture { carried_capable: None, ..Default::default() });
-        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotAnalyzed));
-        teardown(&ps);
-    }
-
-    // ---- present -----------------------------------------------------------------------------
-
-    #[test]
-    fn enh_rows_present_pass_capable_direct() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture { remux: None, ..Default::default() });
-        assert!(menu.enhance_shown.is_some());
-        assert_eq!(menu.form.table.sections.len(), 2, "track list + the headerless enhancement section");
-        let enh = &menu.form.table.sections[1];
-        assert_eq!(enh.header, "");
-        assert_eq!(enh.rows.len(), 2);
-        assert_eq!(enh.rows[0].label, plx_platform::i18n::msg::widgets_tracks_boost_dialog());
-        assert_eq!(enh.rows[1].label, plx_platform::i18n::msg::widgets_tracks_normalize_loudness());
-        teardown(&ps);
-    }
-
-    /// `TrackMenuState::row_for_audio_target` is the `/tmp/plxnative-menupick` named-target
-    /// resolver: `"boost"`/`"loudness"` map to the two toggle rows AFTER the one track, and any
-    /// other name is `None` rather than a guess â€” the same "unknown name, no commit" contract
-    /// `menupick_arm` logs on.
-    #[test]
-    fn row_for_audio_target_resolves_boost_and_loudness_when_shown() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture { remux: None, ..Default::default() });
-        assert_eq!(menu.row_for_audio_target("boost"), Some(1), "row 0 is the one track");
-        assert_eq!(menu.row_for_audio_target("loudness"), Some(2));
-        assert_eq!(menu.row_for_audio_target("normalize_loudness"), None, "the old op-name spelling is not a row name");
-        assert_eq!(menu.row_for_audio_target("bogus"), None);
-        teardown(&ps);
-    }
-
-    /// Without an offer, the DSP rows are not built at all, so their names resolve to nothing â€”
-    /// never to a stale row from a previous build.
-    #[test]
-    fn row_for_audio_target_none_without_enhancement_rows() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) =
-            audio_tab(EnhTestFixture { pass: plx_plex::plex::serverinfo::Subscription::No, ..Default::default() });
-        assert_eq!(menu.row_for_audio_target("boost"), None);
-        assert_eq!(menu.row_for_audio_target("loudness"), None);
-        teardown(&ps);
-    }
-
-    #[test]
-    fn enh_rows_present_pass_capable_enhanced_remux() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture {
-            remux: Some(true),
-            applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
-            ..Default::default()
-        });
-        assert!(menu.enhance_shown.is_some());
-        let enh = &menu.form.table.sections[1];
-        assert_eq!(enh.rows[0].toggle, Some(true));
-        assert_eq!(enh.rows[1].toggle, Some(false));
-        teardown(&ps);
-    }
-
-    // ---- row indices / toggling ---------------------------------------------------------------
-
-    #[test]
-    fn enh_rows_follow_audio_rows_indices_stable() {
-        let _g = plx_base::testlock::serial();
-        let (ps, _sid) = enhancement_test_session(EnhTestFixture::default());
-        let store = store_with_audio(vec![
-            plx_data::metadata::Stream {
-                id: 501,
-                index: 0,
-                codec: "ac3".into(),
-                channels: 2,
-                default: true,
-                ..Default::default()
-            },
-            plx_data::metadata::Stream { id: 502, index: 1, codec: "aac".into(), channels: 2, ..Default::default() },
-        ]);
-        let menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
-        assert_eq!(menu.form.table.sections[0].rows.len(), 2, "both tracks in the track section");
-        let enh = &menu.form.table.sections[1];
-        assert_eq!(enh.rows.len(), 2, "the toggle rows sit in their own section, right after the tracks");
-        assert_eq!(
-            menu.ids(),
-            vec![TrackRow::Audio(0), TrackRow::Audio(1), TrackRow::Boost, TrackRow::Loudness],
-            "the row map names both tracks, then Boost, then Loudness, in drawn order"
-        );
-        teardown(&ps);
-    }
-
-    #[test]
-    fn enh_ok_toggles_and_keeps_open() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps) = audio_tab(EnhTestFixture::default());
-        let store = one_track_store();
-        menu.focus_row(1); // row 0 = the one audio track; row 1 = Boost dialog
-        let outcome = menu.on_ok(store.view());
-        assert_eq!(
-            outcome,
-            TrackOk::Commit {
-                commit: TrackCommit::AudioEnhancement(plx_plex::plex::AudioEnhancements {
-                    boost_dialog: true,
-                    normalize_loudness: false,
-                }),
-                keep_open: true,
-            }
-        );
-        assert_eq!(menu.form.table.sections[1].rows[0].toggle, Some(true));
-
-        // a second press on the SAME row flips it back, and the panel is still open to take it
-        let outcome = menu.on_ok(store.view());
-        assert_eq!(
-            outcome,
-            TrackOk::Commit {
-                commit: TrackCommit::AudioEnhancement(plx_plex::plex::AudioEnhancements::NONE),
-                keep_open: true,
-            }
-        );
-        teardown(&ps);
-    }
-
-    #[test]
-    fn enh_row_shows_desired_while_pending_applied_otherwise() {
-        let _g = plx_base::testlock::serial();
-        // Settled (no user edit queued): the row reads what the contract actually APPLIED.
-        let (menu, ps) = audio_tab(EnhTestFixture {
-            applied: plx_plex::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
-            ..Default::default()
-        });
-        assert_eq!(
-            menu.enhance_shown,
-            Some(plx_plex::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true }),
-        );
-        teardown(&ps);
-        drop(_g);
-
-        // In flight (a user edit queued, not yet settled): the row reads the DESIRED preference.
-        let _g = plx_base::testlock::serial();
-        let desired = plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true };
-        plx_media::player::set_audio_enhancements(desired);
-        let (menu, ps) = audio_tab(EnhTestFixture { in_flight: true, ..Default::default() });
-        assert_eq!(menu.enhance_shown, Some(desired));
-        plx_media::player::set_audio_enhancements(plx_plex::plex::AudioEnhancements::NONE);
-        teardown(&ps);
-    }
-
-    #[test]
-    fn enh_row_stops_reading_on_once_a_live_refusal_settles() {
-        let _g = plx_base::testlock::serial();
-        // Opens reading Normalize Loudness ON â€” the same shape `on_ok`'s own optimistic
-        // `self.enhance_shown = Some(a)` leaves a freshly-picked row in, before the server has
-        // answered.
-        let (mut menu, ps_ok) = audio_tab(EnhTestFixture {
-            applied: plx_plex::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
-            ..Default::default()
-        });
-        assert_eq!(menu.form.table.sections[1].rows[1].toggle, Some(true));
-
-        // The SAME playback settles as Refused (I5 excludes it from the offer entirely) â€” a LIVE
-        // change this menu never caused, delivered exactly the way `PlayerOverlayScreen`'s Tick
-        // handler feeds it: a fresh `&PlaybackSession` from the host every frame, not a rebuild
-        // the panel triggers itself.
-        let (ps_refused, _sid2) = enhancement_test_session(EnhTestFixture { refused: true, ..Default::default() });
-        let store = one_track_store();
-        menu.update(0.0, &plx_ui::fixture::FixtureMeasure, &ps_refused, store.view());
-        assert_eq!(
-            menu.enhance_shown, None,
-            "a settled refusal must drop the optimistic On reading, not leave a row reading On"
-        );
-        // M7: the refusal is now a plain-language `Disabled` reason, not a vanished section â€” the
-        // rows stay, dim, reading Off, with a one-line note naming why.
-        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::ServerRefused));
-        assert_eq!(menu.form.table.sections.len(), 2, "the headerless DSP section stays, dim, with its reason");
-        assert_eq!(menu.form.table.sections[1].rows[1].toggle, Some(false));
-        assert!(menu.form.table.sections[1].rows[1].dim);
-
-        teardown(&ps_ok);
-    }
-
-    /// **A rebuilt page's strings are rasterised in `update`, ahead of the draw.** On the player
-    /// route the draw's first framebuffer command waits ~15 ms for a free back buffer, so text a
-    /// new page met cold in its draw stacked on top of that wait: a 26.7 ms frame on the TV
-    /// (`clear:12.8 â€¦ textx8:7.4`) on the first visit to each Tracks sub-page. `PanelMotion::
-    /// prewarm_text` walks the live table through the recorder in `update`, once per table layout;
-    /// the queue is drained on the presenting side (`app::run::prepare_window`) and NEVER in
-    /// `update`, because a frame that does not present uploads nothing (spec Â§10).
-    #[test]
-    fn update_rasterises_the_live_pages_text_before_the_draw() {
-        use plx_ui::fixture::FixtureMeasure as M;
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps) = audio_tab(EnhTestFixture::default());
-        let store = one_track_store();
-        plx_gfx::text::reset_prewarm_for_test();
-        // a held modal's leftover must not eat the drain's budget
-        plx_gfx::text::queue_prewarm(c"stale held string".as_ptr(), 24, 0);
-        menu.update(0.0, &M, &ps, store.view());
-        let labels: Vec<String> =
-            menu.form.table.sections.iter().flat_map(|s| s.rows.iter()).map(|r| r.label.clone()).collect();
-        assert!(!labels.is_empty(), "premise: the Audio tab has rows");
-        // `update` alone is a frame that may not present: it records, it uploads nothing.
-        assert!(plx_gfx::text::prewarm_pending(), "update queued the page's strings");
-        for label in &labels {
-            assert!(
-                !plx_gfx::text::prewarm_resident_any_size_for_test(label.as_bytes()),
-                "{label:?} was uploaded by update, which may run on a frame that does not present"
-            );
-        }
-        // The presenting side's drain rasterises them, up to its time budget.
-        plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
-        let resident =
-            labels.iter().filter(|l| plx_gfx::text::prewarm_resident_any_size_for_test(l.as_bytes())).count();
-        assert!(resident > 0, "the drain rasterised none of the page's strings");
-        assert!(
-            !plx_gfx::text::prewarm_resident_any_size_for_test(b"stale held string"),
-            "the walk's queue must replace, not extend, what a held surface left"
-        );
-
-        // The same layout is walked once, not every frame.
-        plx_gfx::text::reset_prewarm_for_test();
-        menu.update(0.016, &M, &ps, store.view());
-        assert!(
-            !plx_gfx::text::prewarm_resident_any_size_for_test(labels[0].as_bytes()),
-            "an unchanged layout was walked again"
-        );
-        teardown(&ps);
-    }
-
-    /// **The root page's strings are resident before the OPEN frame draws, with no `update` yet.**
-    /// A surface mounts after its frame's Tick fan-out was built, so `update` (the walk above)
-    /// first runs a frame late: the open frame met `textx4:2.1 â€¦ textx4:10.8` cold on the TV.
-    /// `warm_open` is the screen's `prepare` hook, which runs after the mount on the same frame;
-    /// the presenting side's drain then uploads what it queued.
-    ///
-    /// Observed RED with `warm_open` a no-op: nothing pending, no label resident.
-    #[test]
-    fn warm_open_makes_the_root_strings_resident_without_an_update() {
-        use plx_ui::fixture::FixtureMeasure as M;
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture::default());
-        plx_gfx::text::reset_prewarm_for_test();
-        menu.warm_open(&M);
-        assert!(plx_gfx::text::prewarm_pending(), "warm_open queued the root page's strings");
-        let labels: Vec<String> = menu
-            .form
-            .table
-            .sections
-            .iter()
-            .flat_map(|s| s.rows.iter())
-            .map(|r| r.label.clone())
-            .filter(|l| !l.is_empty())
-            .collect();
-        assert!(!labels.is_empty(), "premise: the Audio tab has rows");
-        for label in &labels {
-            assert!(
-                !plx_gfx::text::prewarm_resident_any_size_for_test(label.as_bytes()),
-                "{label:?} was uploaded by a walk, which may run on a frame that does not present"
-            );
-        }
-        plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
-        assert!(
-            labels.iter().any(|l| plx_gfx::text::prewarm_resident_any_size_for_test(l.as_bytes())),
-            "the presenting side's drain rasterised none of the root page"
-        );
-        // The same layout is walked once: the first `update` does not queue it again.
-        plx_gfx::text::clear_prewarm();
-        menu.warm_open(&M);
-        assert!(!plx_gfx::text::prewarm_pending(), "an unchanged layout was walked again by warm_open");
-        let mut menu = menu;
-        menu.update(0.016, &M, &ps, plx_data::stores::metadata::MetadataStore::default().view());
-        assert!(!plx_gfx::text::prewarm_pending(), "the first update walked the layout again");
-        teardown(&ps);
-    }
-
-    /// **An idle menu has the OTHER tab's strings resident before the first switch.** The key
-    /// rebuilds the table after the frame's `update`, so the live page's prewarm cannot cover a
-    /// tab switch: on the TV the first switch to Audio drew `textx8:9.5` in a 24.8â€“29.0 ms frame.
-    #[test]
-    fn an_idle_menu_warms_the_other_tabs_strings_before_a_switch() {
-        use plx_ui::fixture::FixtureMeasure as M;
-        let _g = plx_base::testlock::serial();
-        let (ps, _sid) = enhancement_test_session(EnhTestFixture::default());
-        let mut store = plx_data::stores::metadata::MetadataStore::default();
-        let sub = |id: i64, index: i64, lang: &str, code: &str| metadata::Stream {
-            id,
-            index,
-            lang: lang.into(),
-            lang_code: code.into(),
-            codec: "srt".into(),
-            ..Default::default()
-        };
-        let mut item = metadata::PlayingItem::with_subs(vec![
-            sub(601, 2, "Spanish", "spa"),
-            sub(602, 3, "Czech", "ces"),
-        ]);
-        item.audio = vec![metadata::Stream { id: 501, index: 0, codec: "ac3".into(), channels: 2, default: true, ..Default::default() }];
-        assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
-        let mut menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
-        plx_gfx::text::reset_prewarm_for_test();
-        // A second of presented frames on the Audio tab: open, settle, drain. The first frame
-        // drains the live page; every later one drains the other tab's strings in the
-        // background, as many as the frame's time budget admits (the host clock charges 1 ms a
-        // string; on the TV the whole tab in one frame was `warmdrain:11.4`, a 21.3 ms frame right
-        // after the open).
-        for frame in 0..60 {
-            menu.update(0.016, &M, &ps, store.view());
-            let drained = plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
-            // The draw drops whatever the live queue still holds (`ui::dispatch`, every frame
-            // with no page warm), which on the TV left the background warm one string deep.
-            plx_gfx::text::clear_prewarm();
-            if frame > 0 {
-                assert!(drained <= 3, "frame {frame} rasterised {drained} background strings");
-            }
-        }
-        menu.focus_tab(&ps, store.view(), 1);
-        let labels: Vec<String> = menu
-            .form
-            .table
-            .sections
-            .iter()
-            .flat_map(|s| s.rows.iter())
-            .map(|r| r.label.clone())
-            .filter(|l| !l.is_empty())
-            .collect();
-        assert!(!labels.is_empty(), "premise: the Subtitles tab has rows");
-        let cold: Vec<&String> =
-            labels.iter().filter(|l| !plx_gfx::text::prewarm_resident_any_size_for_test(l.as_bytes())).collect();
-        assert!(cold.is_empty(), "the switch met these Subtitles labels cold: {cold:?}");
-        teardown(&ps);
-    }
-
-    /// **A page walked while the other tab's warm is still draining does not cancel it.** A live
-    /// walk replaces the live queue and the draw empties it, but the background queue is neither:
-    /// on the TV the osc's first sub-page push, a few frames after the open, used to wipe the
-    /// one-a-frame warm, and the first switch to Audio met `textx7:6.6` cold.
-    #[test]
-    fn a_live_walk_that_interrupts_the_other_tabs_warm_requeues_it() {
-        use plx_ui::fixture::FixtureMeasure as M;
-        let _g = plx_base::testlock::serial();
-        let (ps, _sid) = enhancement_test_session(EnhTestFixture::default());
-        let mut store = plx_data::stores::metadata::MetadataStore::default();
-        let sub = |id: i64, index: i64, lang: &str, code: &str| metadata::Stream {
-            id,
-            index,
-            lang: lang.into(),
-            lang_code: code.into(),
-            codec: "srt".into(),
-            ..Default::default()
-        };
-        let mut item = metadata::PlayingItem::with_subs(vec![
-            sub(601, 2, "Spanish", "spa"),
-            sub(602, 3, "Czech", "ces"),
-        ]);
-        item.audio = vec![
-            metadata::Stream {
-                id: 501,
-                index: 0,
-                lang: "English".into(),
-                codec: "ac3".into(),
-                channels: 2,
-                default: true,
-                ..Default::default()
-            },
-            metadata::Stream {
-                id: 502,
-                index: 1,
-                lang: "German".into(),
-                codec: "aac".into(),
-                channels: 6,
-                ..Default::default()
-            },
-        ];
-        assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
-        plx_gfx::text::reset_prewarm_for_test();
-        let frame = |menu: &mut TrackMenuState| {
-            menu.update(0.016, &M, &ps, store.view());
-            plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
-            // What the drain left of the live queue, the draw drops (`ui::dispatch`).
-            plx_gfx::text::clear_prewarm();
-        };
-        // The open drains the Subtitles root; the next frame queues Audio and drains one string.
-        frame(&mut menu);
-        frame(&mut menu);
-        assert!(plx_gfx::text::background_prewarm_pending(), "premise: the Audio warm is draining");
-        // Into Other languages and straight back, the way the osc walks it.
-        let nav = (menu.form.table.sections.iter())
-            .flat_map(|s| s.rows.iter())
-            .position(|r| r.label == "Other languages");
-        menu.focus_row(nav.expect("premise: an Other languages row") as c_int);
-        menu.on_right(&ps, store.view());
-        assert!(!menu.pages.is_empty(), "premise: the page opened");
-        for _ in 0..40 {
-            frame(&mut menu);
-        }
-        menu.on_left(&ps, store.view());
-        for _ in 0..80 {
-            frame(&mut menu);
-        }
-        menu.focus_tab(&ps, store.view(), 0);
-        let cold: Vec<String> = menu
-            .form
-            .table
-            .sections
-            .iter()
-            .flat_map(|s| s.rows.iter())
-            .map(|r| r.label.clone())
-            .filter(|l| {
-                !l.is_empty() && !plx_gfx::text::prewarm_resident_any_size_for_test(l.as_bytes())
-            })
-            .collect();
-        assert!(cold.is_empty(), "the switch met these Audio labels cold: {cold:?}");
-        teardown(&ps);
-    }
-
-    /// **A note that appears in a rebuild is sized on that same `update`.** A note's line count
-    /// depends on the panel width, so it is resolved against the measure `update` now carries;
-    /// before, the count a rebuild left was read by the panel height until the NEXT draw measured
-    /// it, so a wrapped note's panel was one frame short.
-    #[test]
-    fn a_note_added_by_a_live_rebuild_sizes_the_panel_on_the_same_update() {
-        use plx_ui::fixture::FixtureMeasure as M;
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps_ok) = audio_tab(EnhTestFixture {
-            applied: plx_plex::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
-            ..Default::default()
-        });
-        assert!(!menu.form.table.sections.iter().flat_map(|s| s.rows.iter()).any(|r| r.is_note()), "premise: no note yet");
-        let (ps_refused, _sid) = enhancement_test_session(EnhTestFixture { refused: true, ..Default::default() });
-        let store = one_track_store();
-        menu.update(0.0, &M, &ps_refused, store.view());
-        // no draw, no panel_rect in between: read the table as `update` left it
-        let after_update = menu.form.table.measured_height();
-        let pw = menu.form.table.menu_panel_width(&M);
-        menu.form.table.fit_notes(pw, &M);
-        let note = menu.form.table.sections.iter().flat_map(|s| s.rows.iter()).find(|r| r.is_note()).expect("the refusal note");
-        assert!(note.note_lines.get() >= 2, "premise: the note wraps at {pw}");
-        assert_eq!(after_update, menu.form.table.measured_height(), "update left the note at a stale line count");
-        teardown(&ps_ok);
-    }
-
-    /// **The reported bug.** A viewer holds the Audio tab open with the Boost dialog row FOCUSED
-    /// (not necessarily checked â€” a toggle row is never the checked track) and presses OK; the
-    /// server settles the request asynchronously, and the next frame's live poll
-    /// (`TrackMenuState::update`) sees the answer change and rebuilds. Before the fix,
-    /// `rebuild_audio` always re-homed `table.sel` onto the checked audio track, so the drawn
-    /// highlight jumped there while the ENGINE's own focus â€” which only moves on an actual
-    /// `FocusMoved`, never fired by this poll â€” stayed on the toggle row: the visual cursor and the
-    /// row the next OK/UP/DOWN actually acts on disagreed. `focus_key` here stands in for the
-    /// engine's write-back exactly as `screens::player::overlay::PlayerOverlayScreen::step` performs
-    /// it on a real `FocusMoved`, so `menu.sel()` staying put after `update` is the proof the
-    /// engine's remembered element and the drawn cursor still name the same row.
-    #[test]
-    fn live_update_preserves_focus_on_the_toggled_row_not_the_checked_track() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps_before) = audio_tab(EnhTestFixture {
-            applied: plx_plex::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: false },
-            ..Default::default()
-        });
-        // Row 0 is the one audio track (checked/active); row 1 is Boost dialog. Move the ENGINE's
-        // focus there the way a real UP press's `FocusMoved` write-back does.
-        assert_eq!(menu.ids()[1], TrackRow::Boost, "fixture shape: row 1 is Boost");
-        assert!(menu.focus_id(TrackRow::Boost));
-
-        // The SAME playback settles Boost dialog ON â€” a LIVE change this menu did not itself
-        // request (mirrors the server's async `EnhancementOutcome` landing), delivered the way
-        // `update` is fed every frame: a fresh `&PlaybackSession`, not a rebuild the panel triggers.
-        let (ps_after, _sid2) = enhancement_test_session(EnhTestFixture {
-            applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
-            ..Default::default()
-        });
-        let store = one_track_store();
-        menu.update(0.0, &plx_ui::fixture::FixtureMeasure, &ps_after, store.view());
-
-        assert_eq!(
-            menu.sel(),
-            1,
-            "the toggle row stays focused across a live poll rebuild, not snapped to the checked track"
-        );
-        assert_eq!(
-            menu.form.selected_id().copied(),
-            Some(TrackRow::Boost),
-            "and the row at that position is still, logically, the same Boost row"
-        );
-
-        teardown(&ps_before);
-    }
-
-    /// **The follow-up gap the previous fix left open.** The offer can VANISH entirely for a poll
-    /// or two and return before the viewer acts. M7 narrowed what can cause that: a subtitle
-    /// appearing no longer withdraws the offer at all (it routes to Burn or Remux instead, still
-    /// drawn); the ONE thing that still flips the rows fully absent is the Plex Pass fact itself
-    /// (I1/I2), which is what this fixture now simulates. While the rows are gone, `table.sel`
-    /// falls back to the checked track (there is no Boost/Loudness row left to preserve identity
-    /// against), and the ENGINE's own reconcile can independently clamp its stale remembered key
-    /// into the smaller row count and write a DIFFERENT row back via `focus_key` â€” exactly the way
-    /// `PlayerOverlayScreen::step`'s `FocusMoved` arm does on a real device. Simulating that clamp
-    /// here (rather than the checked-track fallback) proves the fix reads back the identity that
-    /// was banked before the vanish, not whatever `table.sel` happens to hold once the rows return.
-    #[test]
-    fn a_rows_vanish_and_return_restores_focus_on_the_toggle_row_not_wherever_the_clamp_landed() {
-        let _g = plx_base::testlock::serial();
-        let two_tracks = || {
-            store_with_audio(vec![
-                plx_data::metadata::Stream {
-                    id: 501,
-                    index: 0,
-                    codec: "ac3".into(),
-                    channels: 2,
-                    default: true,
-                    ..Default::default()
-                },
-                plx_data::metadata::Stream { id: 502, index: 1, codec: "aac".into(), channels: 2, ..Default::default() },
-            ])
-        };
-        let (ps_before, _sid_before) = enhancement_test_session(EnhTestFixture::default());
-        let store = two_tracks();
-        let mut menu = TrackMenuState::new(&ps_before, store.view(), 0, Vec::new());
-        assert_eq!(
-            menu.ids(),
-            vec![TrackRow::Audio(0), TrackRow::Audio(1), TrackRow::Boost, TrackRow::Loudness],
-            "fixture shape: two tracks, then Boost, then Loudness"
-        );
-        // The engine's focus lands on Boost, the way a real UP/DOWN's `FocusMoved` write-back does.
-        assert!(menu.focus_id(TrackRow::Boost));
-
-        // The offer vanishes for a frame â€” under M7 only a Plex Pass flip does that (I1/I2); every
-        // other gate that used to hide the rows is now a visible `Disabled` reason instead.
-        let (ps_hidden, _sid_hidden) = enhancement_test_session(EnhTestFixture {
-            pass: plx_plex::plex::serverinfo::Subscription::No,
-            ..Default::default()
-        });
-        let store_hidden = two_tracks();
-        menu.update(0.0, &plx_ui::fixture::FixtureMeasure, &ps_hidden, store_hidden.view());
-        assert_eq!(menu.enhance_shown, None, "fixture shape: no Plex Pass withdraws the offer entirely (I1/I2)");
-
-        // The ENGINE's own reconcile runs the same frame right after this poll (Â§7.3 step 6): its
-        // stale remembered index (2, Boost) is now out of range for the 2-row table and clamps to
-        // the last row â€” Track(1), not the checked Track(0) the fallback above chose. Simulate that
-        // write-back exactly as `live_update_preserves_focus_on_the_toggled_row_not_the_checked_track`
-        // simulates a real `FocusMoved` via `focus_key`.
-        assert!(menu.focus_id(TrackRow::Audio(1)));
-
-        // The offer returns (the subtitle switched off again) â€” the same live poll this menu never
-        // triggered itself.
-        let (ps_shown, _sid_shown) = enhancement_test_session(EnhTestFixture::default());
-        let store_shown = two_tracks();
-        menu.update(0.0, &plx_ui::fixture::FixtureMeasure, &ps_shown, store_shown.view());
-
-        assert!(menu.enhance_shown.is_some(), "fixture shape: the offer is back");
-        assert_eq!(
-            menu.form.selected_id().copied(),
-            Some(TrackRow::Boost),
-            "a rows-vanish-and-return round trip must restore focus to the row the viewer was \
-             actually on, not wherever the vanished frame's engine-side clamp happened to land"
-        );
-
-        teardown(&ps_before);
-    }
-
-    // ---- locale + width gates ------------------------------------------------------------------
-
-    /// **No row label ever leaks a "Plex Pass" mention**, in any shipped locale â€” the rows are
-    /// ordinary audio settings; the gate that hid them from everyone else is never named in
-    /// prose the viewer who HAS them ever reads.
-    #[test]
-    fn enh_locale_values_never_mention_plex_pass() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
-        for language in SHIPPED {
-            let _guard = language_on_this_thread_for_test(language);
-            for value in [
-                plx_platform::i18n::msg::widgets_tracks_boost_dialog(),
-                plx_platform::i18n::msg::widgets_tracks_normalize_loudness(),
-            ] {
-                let lower = value.to_lowercase();
-                assert!(!lower.contains("plex pass"), "{language:?}: {value:?} names the gate");
-            }
-        }
-    }
-
-    /// **No new M7 note or reason string ever uses the engineering jargon it exists to translate
-    /// away from** ("remux", "transcode", "burn", "re-encode", "sidecar", "analyzed audio stream",
-    /// "base layer", "HDR10") â€” in any shipped locale. These strings are read by a viewer who has
-    /// never heard the word "remux" and should not need to.
-    #[test]
-    fn enh_notes_and_reasons_never_use_jargon() {
-        use plx_platform::i18n::{language_on_this_thread_for_test};
-        const BANNED: &[&str] = &[
-            "remux",
-            "transcode",
-            "burn",
-            "re-encode",
-            "reencode",
-            "sidecar",
-            "analyzed audio stream",
-            "base layer",
-            "hdr10",
-        ];
-        for language in plx_platform::i18n::SHIPPED {
-            let _guard = language_on_this_thread_for_test(language);
-            for (name, value) in [
-                ("enh_note_sidecar", plx_platform::i18n::msg::widgets_tracks_enh_note_sidecar()),
-                ("enh_note_burn", plx_platform::i18n::msg::widgets_tracks_enh_note_burn()),
-                ("enh_reason_not_analyzed", plx_platform::i18n::msg::widgets_tracks_enh_reason_not_analyzed()),
-                ("enh_reason_dv_unusable", plx_platform::i18n::msg::widgets_tracks_enh_reason_dv_unusable()),
-                ("enh_reason_dv_subtitle", plx_platform::i18n::msg::widgets_tracks_enh_reason_dv_subtitle()),
-                ("enh_reason_quality", plx_platform::i18n::msg::widgets_tracks_enh_reason_quality()),
-                ("enh_reason_converting", plx_platform::i18n::msg::widgets_tracks_enh_reason_converting()),
-                ("enh_reason_forced", plx_platform::i18n::msg::widgets_tracks_enh_reason_forced()),
-                ("enh_reason_not_copyable", plx_platform::i18n::msg::widgets_tracks_enh_reason_not_copyable()),
-                ("enh_reason_refused", plx_platform::i18n::msg::widgets_tracks_enh_reason_refused()),
-                ("sub_burn_audio", plx_platform::i18n::msg::widgets_tracks_sub_burn_audio()),
-                ("sub_burn_quality", plx_platform::i18n::msg::widgets_tracks_sub_burn_quality()),
-            ] {
-                let lower = value.to_lowercase();
-                for word in BANNED {
-                    assert!(
-                        !lower.contains(word),
-                        "{language:?}/{name}: {value:?} uses the banned engineering term {word:?}"
-                    );
-                }
-            }
-        }
-    }
-
-    /// **Every enhancement row fits the Audio panel in every shipped language**, same discipline
-    /// as `every_subtitles_row_fits_the_panel_in_every_language` above over the Subtitles panel.
-    ///
-    /// `locales/be/widgets.json`'s `normalize_loudness` reads "ÐÐ°Ñ€Ð¼Ð°Ð»Ñ–Ð·Ð°Ñ†Ñ‹Ñ Ð³ÑƒÐºÑƒ" ("normalization
-    /// of sound") rather than the more literal "ÐÐ°Ñ€Ð¼Ð°Ð»Ñ–Ð·Ð°Ñ†Ñ‹Ñ Ð³ÑƒÑ‡Ð½Ð°ÑÑ†Ñ–" ("normalization of
-    /// loudness") on purpose: the literal phrase was chosen against when the Audio panel was a fixed
-    /// 560px with a 369px column, where it measured 378px (9px over) and "Ð³ÑƒÐºÑƒ" measured under.
-    /// This test now grades every row at the shared menu cap (`MENU_MAX_W`) and at the width the
-    /// hugged popover actually gets. Re-check with this test before changing the Belarusian
-    /// string back; do not assume either phrase's width from the source text alone.
-    #[test]
-    fn enh_rows_fit_menu_cap_es_be() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
-        let mut out = Vec::new();
-        for language in SHIPPED {
-            let _g = plx_base::testlock::serial();
-            let _guard = language_on_this_thread_for_test(language);
-            let (menu, ps) = audio_tab(EnhTestFixture {
-                applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true },
-                ..Default::default()
-            });
-            out.extend(menu.form.table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
-            out.extend(menu.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
-            out.extend(menu.form.table.app_fit_failures_hugged(language.tag()));
-            teardown(&ps);
-        }
-        plx_ui::table::assert_no_fit_failures(&out);
-    }
-
-    // ---- the converted-audio sub-line --------------------------------------------------------
-
-    /// **A track the server would convert says so on its own sub-line**; a track the TV decodes
-    /// keeps today's sub-line. One line, the value stays out of it (it is the descriptor).
-    #[test]
-    fn a_converted_track_names_the_server_on_its_sub_line_and_a_playable_one_does_not() {
-        let _g = plx_base::testlock::serial();
-        assert_eq!(audio_sub_line_for("AAC 7.1".into(), true, false), "AAC 7.1 \u{b7} converted by your server");
-        assert_eq!(audio_sub_line_for("Dolby Digital 5.1".into(), false, false), "Dolby Digital 5.1");
-        assert_eq!(audio_sub_line_for(String::new(), true, false), "", "no descriptor, nothing to extend");
-        assert_eq!(audio_sub_line_for(String::new(), false, true), "", "no descriptor, nothing to extend");
-        assert_eq!(
-            audio_sub_line_for("DTS 5.1".into(), true, true),
-            "DTS 5.1 \u{b7} converted by your server",
-            "the server mark outranks the app's"
-        );
-        // the capability answer it is fed: TrueHD is outside the profile's audio list, AC-3 is not
-        let truehd = metadata::Stream { codec: "truehd".into(), channels: 8, ..Default::default() };
-        let ac3 = metadata::Stream { codec: "ac3".into(), channels: 6, ..Default::default() };
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        assert!(plx_media::route::audio_converted_by_server(&ps, &truehd.codec, truehd.channels, truehd.sampling_rate));
-        assert!(!plx_media::route::audio_converted_by_server(&ps, &ac3.codec, ac3.channels, ac3.sampling_rate));
-    }
-
-    /// **A surround track the app decodes says it plays in stereo** (Auto's very last rung, which put DTS
-    /// in force on a set whose pipeline refused it): the descriptor alone ("DTS 5.1") would promise a
-    /// layout the downmix does not keep. Force Direct Play never takes a surround track down, so it says
-    /// nothing of the kind there. A stereo track, a track the set decodes itself and a codec nothing
-    /// enabled say nothing extra, and the server mark outranks it.
-    #[test]
-    fn an_app_decoded_surround_track_says_it_plays_in_stereo() {
-        let _g = plx_base::testlock::serial();
-        assert_eq!(audio_sub_line_for("DTS 7.1".into(), false, true), "DTS 7.1 \u{b7} played in stereo");
-        assert_eq!(audio_sub_line_for("DTS 7.1".into(), false, false), "DTS 7.1");
-        let dts = |channels| metadata::Stream { codec: "dca".into(), channels, sampling_rate: 48_000, ..Default::default() };
-        let measured = std::sync::Arc::new(plx_platform::devcaps::Caps {
-            app_lossy: plx_platform::devcaps::AppLossy::Measured,
-            ..plx_platform::devcaps::Caps::assumed()
-        });
-        let mut ps = plx_media::route::PlaybackSession::IDLE;
-        plx_media::route::begin_attempt_for_test(&mut ps, measured.clone());
-        assert_eq!(audio_sub_line(&ps, "DTS 5.1".into(), &dts(6)), "DTS 5.1 \u{b7} converted by your server", "Auto: the server converts it");
-        // The recovery's last rung put DTS in force: the attempt now plays the 5.1 track as stereo.
-        let rung = std::sync::Arc::new((*measured).clone().with_app_lossy_for("dts"));
-        plx_media::route::begin_attempt_for_test(&mut ps, rung.clone());
-        assert_eq!(audio_sub_line(&ps, "DTS 5.1".into(), &dts(6)), "DTS 5.1 \u{b7} played in stereo");
-        assert_eq!(audio_sub_line(&ps, "DTS 2.0".into(), &dts(2)), "DTS 2.0", "a stereo track is not a downmix");
-        // Force Direct Play refuses a surround track the set cannot decode instead of mixing it down, even
-        // with the codec in force: no mark, because nothing plays it.
-        plx_media::route::set_direct_play_mode_for_test(&mut ps, plx_media::route::DirectPlayMode::Forced);
-        assert_eq!(audio_sub_line(&ps, "DTS 5.1".into(), &dts(6)), "DTS 5.1", "Forced: no downmix, so no mark");
-        plx_media::route::begin_attempt_for_test(&mut ps, measured.clone());
-        assert_eq!(audio_sub_line(&ps, "DTS 5.1".into(), &dts(6)), "DTS 5.1", "Forced on a measured set: the refusal, no mark");
-        let truehd = metadata::Stream { codec: "truehd".into(), channels: 8, sampling_rate: 48_000, ..Default::default() };
-        assert_eq!(audio_sub_line(&ps, "Dolby TrueHD 7.1".into(), &truehd), "Dolby TrueHD 7.1", "unmeasured: not decoded here");
-        let native = std::sync::Arc::new(plx_platform::devcaps::Caps {
-            audio: "aac,ac3,eac3,dts".into(),
-            audio_channels: [("dts".into(), 6)].into(),
-            ..(*measured).clone()
-        });
-        plx_media::route::begin_attempt_for_test(&mut ps, native);
-        assert_eq!(audio_sub_line(&ps, "DTS 5.1".into(), &dts(6)), "DTS 5.1", "the set decodes it itself");
-    }
-
-    /// **The longest converted sub-line fits the Audio panel in every shipped language** â€” graded
-    /// against the shared menu cap with the row's real measure, on the longest codec label
-    /// (`Dolby Digital Plus 7.1`, `Dolby TrueHD 7.1`).
-    #[test]
-    fn converted_audio_sub_lines_fit_the_panel_in_every_language() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
-        let mut out = Vec::new();
-        for language in SHIPPED {
-            let _g = plx_base::testlock::serial();
-            let _guard = language_on_this_thread_for_test(language);
-            let (mut ps, _sid) = enhancement_test_session(EnhTestFixture::default());
-            let mk = |id: i64, codec: &str| metadata::Stream {
-                id, index: id, lang: "English".into(), lang_code: "eng".into(),
-                codec: codec.into(), channels: 8, layout: "7.1".into(), default: id == 1, ..Default::default()
-            };
-            let store = super::tests::store_with_audio(vec![mk(1, "truehd"), mk(2, "eac3"), mk(3, "dts")]);
-            let menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
-            out.extend(menu.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
-            // The same track menu once the recovery's last rung put DTS in force on a measured set: the DTS
-            // 7.1 track is decoded in the app, and its "played in stereo" line is graded the same way.
-            plx_media::route::begin_attempt_for_test(&mut ps, std::sync::Arc::new(
-                plx_platform::devcaps::Caps {
-                    app_lossy: plx_platform::devcaps::AppLossy::Measured,
-                    ..plx_platform::devcaps::Caps::assumed()
-                }
-                .with_app_lossy_for("dts"),
-            ));
-            let menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
-            let line = audio_sub_line(&ps, "DTS 7.1".into(), &mk(3, "dts"));
-            assert_ne!(line, "DTS 7.1", "{}: the app-decoded track says so", language.tag());
-            out.extend(menu.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
-            teardown(&ps);
-        }
-        plx_ui::table::assert_no_fit_failures(&out);
-    }
-
-    // ---- M7 follow-up: the Subtitles tab under a live Burn ------------------------------------
-
-    /// Build the Subtitles tab against `route`, with one embedded subtitle track whose PMS id
-    /// (999) matches `enhancement_test_session`'s own `cur_sub_sid` for a non-`None`
-    /// `subtitle_effect` â€” the Subtitles-tab counterpart of [`audio_tab`].
-    fn subtitles_tab(route: EnhTestFixture) -> (TrackMenuState, plx_media::route::PlaybackSession) {
-        let (ps, _sid) = enhancement_test_session(route);
-        let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
-        let menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
-        (menu, ps)
-    }
-
-    fn flat_rows(menu: &TrackMenuState) -> Vec<&Row> {
-        menu.form.table.sections.iter().flat_map(|s| &s.rows).collect()
-    }
-
-    /// **The failing case this fix closes**: while the audio enhancement is actually burning the
-    /// on-screen (embedded) subtitle into the picture, the Subtitles tab's Timing and Style rows
-    /// must stay VISIBLE (not omitted the way an ordinary transcode omits Timing), drawn dim, with
-    /// one plain-language note â€” the text is already in the video, and neither control can reach
-    /// it. The track-selection rows (Off, the embedded track itself) are unaffected.
-    #[test]
-    fn subtitles_tab_dims_timing_and_color_under_live_burn() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = subtitles_tab(EnhTestFixture {
-            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
-            applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
-            applied_burn: true,
-            ..Default::default()
-        });
-        assert!(menu.server_burn_built(), "the live route is burning this subtitle in");
-
-        let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing row present");
-        let style_i = menu.form.index_of(&TrackRow::Style).expect("Style row present");
-        let rows = flat_rows(&menu);
-        assert!(rows[timing_i].dim, "Timing is dim under a live burn");
-        assert!(rows[style_i].dim, "Style is dim under a live burn");
-
-        let note_i = style_i + 1;
-        assert_eq!(menu.form.id_at(note_i), None, "a note is an inert slot with no id");
-        assert_eq!(rows[note_i].label, plx_platform::i18n::msg::widgets_tracks_sub_burn_audio());
-        assert!(rows[note_i].sep, "a note row is non-selectable");
-
-        // The track rows themselves stay live: Off, and the embedded subtitle, neither dim.
-        let off_i = menu.form.index_of(&TrackRow::SubOff).expect("Off row present");
-        assert!(!rows[off_i].dim);
-        let sub_i = menu.form.index_of(&TrackRow::Sub(0)).expect("Sub(0) row present");
-        assert!(!rows[sub_i].dim);
-
-        teardown(&ps);
-    }
-
-    /// Offered-but-not-applied (the enhancement toggle is off, or the offer is merely available)
-    /// must NOT lock the rows: `table_form` locks only when `subtitle_presenter` is `ServerBurn`,
-    /// and here the live route is Direct, so Timing stays live and no reason note is drawn.
-    #[test]
-    fn subtitles_tab_timing_and_color_stay_live_when_not_applied() {
-        let _g = plx_base::testlock::serial();
-        // `remux: None` (Direct family) so this is not itself "a transcode" â€” isolates the case
-        // from `timing_is_omitted_under_transcode_and_dim_while_subtitles_are_off`'s own coverage
-        // of an ordinary (non-enhancement) transcode omitting Timing outright.
-        let (menu, ps) = subtitles_tab(EnhTestFixture {
-            remux: None,
-            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
-            ..Default::default()
-        });
-        assert!(!menu.server_burn_built());
-        let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing row present");
-        assert!(!flat_rows(&menu)[timing_i].dim);
-        assert!(!menu.form.table.sections.iter().flat_map(|s| s.rows.iter()).any(|r| r.is_note()));
-        teardown(&ps);
-    }
-
-    /// **The owner's report**: a remux (the server converts the audio) cannot carry a subtitle, so
-    /// picking one makes the server burn it â€” and Style and Timing used to VANISH. They stay, dim
-    /// and inert, with the reason under them; a quality-limited re-encode says its own reason.
-    #[test]
-    fn subtitles_tab_keeps_style_and_timing_dim_with_the_reason_when_the_server_burns() {
-        let _g = plx_base::testlock::serial();
-        for (route, reason) in [
-            (
-                EnhTestFixture { remux: Some(true), subtitle_effect: plx_media::route::SubtitleEffect::Embedded, ..Default::default() },
-                plx_platform::i18n::msg::widgets_tracks_sub_burn_audio(),
-            ),
-            (
-                EnhTestFixture {
-                    remux: Some(false),
-                    base_present: false,
-                    subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
-                    ..Default::default()
-                },
-                plx_platform::i18n::msg::widgets_tracks_sub_burn_quality(),
-            ),
-        ] {
-            let (mut menu, ps) = subtitles_tab(route);
-            let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing stays in the menu");
-            let style_i = menu.form.index_of(&TrackRow::Style).expect("Style stays in the menu");
-            let rows = flat_rows(&menu);
-            assert!(rows[timing_i].dim && rows[style_i].dim, "both dim");
-            assert_eq!(menu.form.id_at(style_i + 1), None, "the reason is an inert slot");
-            assert_eq!(rows[style_i + 1].label, reason);
-            let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
-            menu.focus_row(timing_i as c_int);
-            assert_eq!(menu.on_ok(store.view()), TrackOk::Inert);
-            menu.focus_row(style_i as c_int);
-            assert_eq!(menu.on_ok(store.view()), TrackOk::Inert);
-            assert!(menu.page_path().is_empty());
-            teardown(&ps);
-        }
-    }
-
-    /// A sidecar on a remux is drawn by the app over the copied video, so Timing and Style are
-    /// live and no reason line is drawn; the embedded twin (burned) keeps its dim rows above.
-    #[test]
-    fn timing_and_style_rows_are_live_over_a_remux_with_a_sidecar() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = subtitles_tab(EnhTestFixture {
-            remux: Some(true),
-            subtitle_effect: plx_media::route::SubtitleEffect::Sidecar,
-            ..Default::default()
-        });
-        assert_eq!(
-            plx_media::route::subtitle_presenter(&ps),
-            plx_media::route::SubtitlePresenter::ClientOverRemux
-        );
-        assert!(!menu.server_burn_built(), "nothing is burned");
-        let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing row present");
-        let style_i = menu.form.index_of(&TrackRow::Style).expect("Style row present");
-        let rows = flat_rows(&menu);
-        assert!(!rows[timing_i].dim && !rows[style_i].dim, "both live");
-        assert!(!menu.form.table.sections.iter().flat_map(|s| s.rows.iter()).any(|r| r.is_note()), "no reason line");
-        teardown(&ps);
-    }
-
-    /// An EMBEDDED track the side reader draws over a remux is drawn by the app too: Timing and
-    /// Style are live, no reason line; the same fixture without the reader burns and dims.
-    #[test]
-    fn timing_and_style_rows_are_live_over_a_remux_with_an_embedded_track() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = subtitles_tab(EnhTestFixture {
-            remux: Some(true),
-            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
-            side_reader: true,
-            ..Default::default()
-        });
-        assert_eq!(
-            plx_media::route::subtitle_presenter(&ps),
-            plx_media::route::SubtitlePresenter::ClientOverRemux
-        );
-        assert!(!menu.server_burn_built(), "nothing is burned");
-        let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing row present");
-        let style_i = menu.form.index_of(&TrackRow::Style).expect("Style row present");
-        let rows = flat_rows(&menu);
-        assert!(!rows[timing_i].dim && !rows[style_i].dim, "both live");
-        assert!(!rows.iter().any(|r| r.is_note()), "no reason line");
-        teardown(&ps);
-    }
-
-    /// A client-drawn subtitle (direct play) keeps both rows live with no reason.
-    #[test]
-    fn subtitles_tab_client_drawn_subtitle_has_live_style_and_timing_and_no_reason() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps) = subtitles_tab(EnhTestFixture {
-            remux: None,
-            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
-            ..Default::default()
-        });
-        let timing_i = menu.form.index_of(&TrackRow::Timing).expect("Timing");
-        let style_i = menu.form.index_of(&TrackRow::Style).expect("Style");
-        let rows = flat_rows(&menu);
-        assert!(!rows[timing_i].dim && !rows[style_i].dim);
-        assert!(!rows.iter().any(|r| r.is_note()));
-        teardown(&ps);
-    }
-
-    /// OK on the dimmed Timing/Style rows is a no-op (`TrackOk::Inert`), the same "focusable but
-    /// inert" contract `TrackRow::Timing` already had while subtitles are Off â€” it must not open
-    /// the Timing capsule or push Style while the server owns the picture.
-    #[test]
-    fn subtitles_ok_on_locked_timing_and_color_is_inert() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps) = subtitles_tab(EnhTestFixture {
-            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
-            applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
-            applied_burn: true,
-            ..Default::default()
-        });
-        let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
-
-        let timing_i = menu.form.index_of(&TrackRow::Timing).unwrap();
-        menu.focus_row(timing_i as c_int);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Inert);
-
-        let style_i = menu.form.index_of(&TrackRow::Style).unwrap();
-        menu.focus_row(style_i as c_int);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Inert);
-        assert!(menu.page_path().is_empty(), "a locked Style row opens no page");
-
-        teardown(&ps);
-    }
-
-    /// Turning the subtitle Off while a Burn is live is still a live pick, not inert â€” the panel
-    /// must keep re-routing normally; only Timing/Style are locked.
-    #[test]
-    fn subtitles_off_stays_live_under_a_burn() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps) = subtitles_tab(EnhTestFixture {
-            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
-            applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
-            applied_burn: true,
-            ..Default::default()
-        });
-        let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
-        let off_i = menu.form.index_of(&TrackRow::SubOff).unwrap();
-        menu.focus_row(off_i as c_int);
-        match menu.on_ok(store.view()) {
-            TrackOk::Commit { commit: TrackCommit::Subtitle { render_ordinal, stream_id, .. }, keep_open } => {
-                assert_eq!(render_ordinal, -1);
-                assert_eq!(stream_id, 0);
-                assert!(!keep_open);
-            }
-            other => panic!("expected a live Subtitle commit, got {other:?}"),
-        }
-        teardown(&ps);
-    }
-
-    /// **PR #309 field report**: a TV screenshot taken ~14s after a subtitle pick showed the
-    /// Subtitles menu still open â€” "Full" (the embedded track) focused, but the checkmark still on
-    /// "Off" and Color not dimmed. The pick's own optimistic write (`Self::on_ok`) lands
-    /// `active_sub` at once, but the Burn it triggers is a real `/decision` network round trip
-    /// (`route::decision::request_retranscode` on a flight worker) that only lands `live_is_own_burn` seconds later â€” the
-    /// gap between the pick and the screenshot. A panel built before that round trip landed, and
-    /// left open across it the way the diagnostic `screens::player::overlay::pick_track_row`
-    /// trigger deliberately does ("the trigger exists to leave the chosen track's panel on screen
-    /// for a capture"), never rebuilt its checked row or its lock â€” until `Self::update`'s new
-    /// per-tick poll (mirroring the Audio tab's own live poll just above it) started catching it.
-    #[test]
-    fn subtitles_tab_poll_catches_a_burn_that_lands_after_the_panel_opened() {
-        let _g = plx_base::testlock::serial();
-        // Opened before the pick: subtitle Off, no burn yet â€” the same cold-start shape
-        // `subtitle_first_pick_while_plain_enhanced_remux_burns_it` (route/decision_audio_
-        // enhancement_tests.rs) drives before its own live pick.
-        let (mut menu, _ps_before) = subtitles_tab(EnhTestFixture {
-            subtitle_effect: plx_media::route::SubtitleEffect::None,
-            applied: plx_plex::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
-            applied_burn: false,
-            ..Default::default()
-        });
-        assert_eq!(menu.active_sub, -1, "off is checked before the pick");
-        assert!(!menu.server_burn_built(), "not a burn yet");
-
-        // Seconds later: the SAME session's route has actually landed the Burn (a fresh
-        // `PlaybackSession` standing in for the live one having moved on while this menu instance
-        // sat untouched â€” `ps` is process-external state the menu never owns a copy of).
-        let (ps_after, _sid) = enhancement_test_session(EnhTestFixture {
-            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
-            applied: plx_plex::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
-            applied_burn: true,
-            ..Default::default()
-        });
-        let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
-        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps_after, store.view());
-
-        assert_eq!(menu.active_sub, 0, "the embedded track must read checked once the route shows it");
-        assert!(menu.server_burn_built(), "Color/Timing must lock once the live route is really a Burn");
-        let style_i = menu.form.index_of(&TrackRow::Style).expect("Style row present");
-        assert!(flat_rows(&menu)[style_i].dim, "Style must actually redraw dim, not just flag it internally");
-        let off_i = menu.form.index_of(&TrackRow::SubOff).expect("Off row present");
-        assert!(!flat_rows(&menu)[off_i].checked, "Off must no longer read checked");
-        let sub_i = menu.form.index_of(&TrackRow::Sub(0)).expect("Sub(0) row present");
-        assert!(flat_rows(&menu)[sub_i].checked, "the embedded track must read checked, not Off");
-
-        teardown(&ps_after);
-    }
-
-    /// The locked note fits the Subtitles panel in every shipped language, same discipline as
-    /// `enh_rows_fit_menu_cap_es_be` over the Audio panel.
-    #[test]
-    fn subtitles_locked_note_fits_menu_cap_es_be() {
-        use plx_platform::i18n::{language_on_this_thread_for_test};
-        let mut out = Vec::new();
-        for language in plx_platform::i18n::SHIPPED {
-            let _g = plx_base::testlock::serial();
-            let _guard = language_on_this_thread_for_test(language);
-            // the audio-conversion reason (a remux) and the quality reason, as well as the own burn
-            let (menu, ps) = subtitles_tab(EnhTestFixture {
-                subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
-                applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
-                applied_burn: true,
-                ..Default::default()
-            });
-            let (menu_q, ps_q) = subtitles_tab(EnhTestFixture {
-                remux: Some(false),
-                base_present: false,
-                subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
-                ..Default::default()
-            });
-            out.extend(menu_q.form.table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
-            out.extend(menu_q.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
-            out.extend(menu_q.form.table.app_fit_failures_hugged(language.tag()));
-            teardown(&ps_q);
-            out.extend(menu.form.table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
-            out.extend(menu.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
-            out.extend(menu.form.table.app_fit_failures_hugged(language.tag()));
-            teardown(&ps);
-        }
-        plx_ui::table::assert_no_fit_failures(&out);
-    }
-
-    /// The note rows a Subtitles tab draws, in order.
-    fn notes(menu: &TrackMenuState) -> Vec<String> {
-        flat_rows(menu).into_iter().filter(|r| r.is_note()).map(|r| r.label.clone()).collect()
-    }
-
-    /// **Track memory (C4): a remembered subtitle the route cannot show says so.** On a copy remux
-    /// the app cannot draw, the show's remembered subtitle is not on screen and Off reads checked;
-    /// without a reason the viewer would take the choice for forgotten. The reason is one inert
-    /// note under the first group (Off and the tracks), shown only while the landing set it.
-    #[test]
-    fn a_remembered_subtitle_the_route_cannot_show_is_explained_under_the_first_group() {
-        let _g = plx_base::testlock::serial();
-        let (without, ps_without) = subtitles_tab(EnhTestFixture { remux: Some(true), ..Default::default() });
-        assert!(notes(&without).is_empty(), "no landing note, no row: {:?}", notes(&without));
-        teardown(&ps_without);
-
-        let (menu, ps) =
-            subtitles_tab(EnhTestFixture { remux: Some(true), memory_note: true, ..Default::default() });
-        assert_eq!(notes(&menu), vec![plx_platform::i18n::msg::widgets_tracks_sub_remembered_note()]);
-        let rows = flat_rows(&menu);
-        let note_i = rows.iter().position(|r| r.is_note()).expect("the note row");
-        assert_eq!(menu.form.id_at(note_i), None, "a note is an inert slot with no id");
-        let off_i = menu.form.index_of(&TrackRow::SubOff).expect("Off row present");
-        let sub_i = menu.form.index_of(&TrackRow::Sub(0)).expect("Sub(0) row present");
-        assert!(off_i < sub_i && sub_i < note_i, "the note closes the first group, after Off and the track");
-        assert_eq!(menu.form.index_of(&TrackRow::Timing), None, "an Off remux omits Timing, so the note is last");
-        assert_eq!(note_i, rows.len() - 1);
-        assert!(rows[off_i].checked, "Off is what is on screen, which is what the note explains");
-        teardown(&ps);
-    }
-
-    /// The note follows the landing: a panel opened without it gains it when the poll sees the
-    /// flag ([`SubSig`] carries it), and loses it when the flag clears.
-    #[test]
-    fn the_poll_adds_and_drops_the_remembered_note_with_the_landing() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, _ps_before) = subtitles_tab(EnhTestFixture { remux: Some(true), ..Default::default() });
-        assert!(notes(&menu).is_empty());
-        let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
-
-        let (with, _sid) =
-            enhancement_test_session(EnhTestFixture { remux: Some(true), memory_note: true, ..Default::default() });
-        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &with, store.view());
-        assert_eq!(notes(&menu), vec![plx_platform::i18n::msg::widgets_tracks_sub_remembered_note()]);
-
-        let (without, _sid) = enhancement_test_session(EnhTestFixture { remux: Some(true), ..Default::default() });
-        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &without, store.view());
-        assert!(notes(&menu).is_empty(), "{:?}", notes(&menu));
-        teardown(&without);
-    }
-
-    /// What OK on `row` of the Subtitles tab commits: the picked stream and the descriptor to
-    /// remember.
-    fn sub_commit_of(
-        menu: &mut TrackMenuState,
-        store: &plx_data::stores::metadata::MetadataStore,
-        row: TrackRow,
-    ) -> (i64, Option<plx_plex::plex::session::prefs::SubtitleMemo>) {
-        let at = menu.form.index_of(&row).expect("the row is on the page");
-        menu.focus_row(at as c_int);
-        match menu.on_ok(store.view()) {
-            TrackOk::Commit { commit: TrackCommit::Subtitle { stream_id, memo, .. }, .. } => (stream_id, memo),
-            other => panic!("{row:?} did not commit a subtitle: {other:?}"),
-        }
-    }
-
-    /// **Closing the menu with OK is not a choice (track memory, an automatic pick is not written).**
-    /// The panel opens on the checked row, so on a show whose ladder landed on Off (the note case:
-    /// the route can show none of the remembered subtitle) one OK on Off would write an absolute Off
-    /// over the very track the note is about. An OK on what is already shown commits, so the route
-    /// republishes, and carries no memo; the control is a change, which does.
-    #[test]
-    fn an_ok_on_what_the_route_already_shows_remembers_nothing() {
-        use plx_plex::plex::session::prefs::SubtitleMemo;
-        let _g = plx_base::testlock::serial();
-        let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
-
-        // the note state: Off is on screen because the route could show nothing
-        let (mut menu, ps) =
-            subtitles_tab(EnhTestFixture { remux: Some(true), memory_note: true, ..Default::default() });
-        assert_eq!(sub_commit_of(&mut menu, &store, TrackRow::SubOff), (0, None), "OK on the checked Off under the note");
-        assert!(
-            sub_commit_of(&mut menu, &store, TrackRow::Sub(0)).1.is_some(),
-            "control: a different row is a change and carries its descriptor"
-        );
-        assert_eq!(
-            sub_commit_of(&mut menu, &store, TrackRow::SubOff),
-            (0, Some(SubtitleMemo::Off)),
-            "control: Off after a track is a change, remembered as Off"
-        );
-        teardown(&ps);
-
-        // a track the ladder chose: OK on it is not a choice either
-        let (mut menu, ps) = subtitles_tab(EnhTestFixture {
-            remux: Some(true),
-            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
-            ..Default::default()
-        });
-        assert_eq!(sub_commit_of(&mut menu, &store, TrackRow::Sub(0)), (999, None), "OK on the checked track");
-        teardown(&ps);
-    }
-
-    /// **The note goes when a pick the app draws in place replaces what it explained.** On the copy
-    /// remux the viewer's sidecar is drawn over the stream, so no landing ever runs to clear the
-    /// flag; the note would go on saying the chosen subtitle cannot be shown under a visible
-    /// subtitle. The next poll drops it. The control is the press that changes nothing: Off under
-    /// the note, which the route already shows and which writes nothing, leaves the note true.
-    #[test]
-    fn an_in_place_pick_drops_the_remembered_note_on_the_next_poll() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, mut ps) =
-            subtitles_tab(EnhTestFixture { remux: Some(true), memory_note: true, ..Default::default() });
-        let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
-        let note = vec![plx_platform::i18n::msg::widgets_tracks_sub_remembered_note()];
-        assert_eq!(notes(&menu), note, "setup: the note is up");
-
-        plx_media::route::commit_subtitle_pick(&mut ps, -1, 0, false, None);
-        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store.view());
-        assert_eq!(notes(&menu), note, "control: Off under the note changes nothing on screen, so the note is still true");
-
-        plx_media::route::commit_subtitle_pick(&mut ps, -1, 78, true, None);
-        assert!(!plx_media::route::cur_memory_note(&ps), "a sidecar is on screen now");
-        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store.view());
-        assert!(notes(&menu).is_empty(), "{:?}", notes(&menu));
-        teardown(&ps);
-    }
-
-    /// **The remembered-subtitle note fits the Subtitles panel in every shipped language**
-    /// (`i18n::SHIPPED`, so a language added later is graded without touching this test), at the
-    /// shared menu cap and at the hugged width, with the real font measure.
-    #[test]
-    fn the_remembered_note_fits_the_subtitles_panel_in_every_shipped_language() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
-        let mut out = Vec::new();
-        for language in SHIPPED {
-            let _g = plx_base::testlock::serial();
-            let _guard = language_on_this_thread_for_test(language);
-            let (menu, ps) =
-                subtitles_tab(EnhTestFixture { remux: Some(true), memory_note: true, ..Default::default() });
-            assert_eq!(notes(&menu), vec![plx_platform::i18n::msg::widgets_tracks_sub_remembered_note()], "{language:?}");
-            out.extend(menu.form.table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
-            out.extend(menu.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
-            out.extend(menu.form.table.app_fit_failures_hugged(language.tag()));
-            teardown(&ps);
-        }
-        plx_ui::table::assert_no_fit_failures(&out);
-    }
-
-    /// The note says what is true in plain words in every shipped language: no engineering term a
-    /// viewer should not have to learn.
-    #[test]
-    fn the_remembered_note_never_uses_jargon() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
-        for language in SHIPPED {
-            let _guard = language_on_this_thread_for_test(language);
-            let note = plx_platform::i18n::msg::widgets_tracks_sub_remembered_note().to_lowercase();
-            for word in ["remux", "transcode", "burn", "re-encode", "reencode", "sidecar"] {
-                assert!(!note.contains(word), "{language:?}: {note:?} uses the banned engineering term {word:?}");
-            }
-        }
-    }
-
-    /// **The Spanish locked-style note WRAPS instead of running off the panel**: the fit gate now
-    /// judges the note row, and its row is as tall as its wrapped lines.
-    #[test]
-    fn spanish_locked_note_wraps_within_the_subtitles_panel() {
-        use plx_machine::machine::Measure;
-        use plx_base::fontcov::advances::ShippedMeasure;
-        use plx_ui::fit::HEADROOM;
-        use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
-        let _g = plx_base::testlock::serial();
-        let _guard = language_on_this_thread_for_test(Preference::Es);
-        let (menu, ps) = subtitles_tab(EnhTestFixture {
-            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
-            applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
-            applied_burn: true,
-            ..Default::default()
-        });
-        let note = plx_platform::i18n::msg::widgets_tracks_sub_burn_audio();
-        let line = ShippedMeasure.width_str(&note, plx_ui::theme::size::CAPTION, false);
-        let before = menu.form.table.measured_height();
-        let pw = menu.form.table.menu_panel_width(&ShippedMeasure);
-        let issues = menu.form.table.fit_report(pw, &ShippedMeasure, HEADROOM);
-        assert!(issues.iter().all(|i| i.origin != plx_ui::table::Origin::App), "{issues:?}");
-        assert!(line > pw, "the premise: one line of it is wider than the panel");
-        assert!(menu.form.table.measured_height() > before, "the panel grows by the wrapped note's extra lines");
-        teardown(&ps);
-    }
-}
-
-/// **Forced only (FO)**: the row after Off, the one checkmark, what OK
-/// on it commits and remembers, and the read-out that tells the audio's language from the
-/// account setting's.
-#[cfg(test)]
-mod forced_only_tests {
-    use super::tests::stream;
-    use super::*;
-    use plx_media::route::{
-        enhancement_test_session, reset_player_control_for_test, set_forced_only_lang_for_test, set_sub_mode_for_test,
-        EnhTestFixture, SubMode, SubtitleEffect,
-    };
-    use plx_plex::plex::session::prefs::SubtitleMemo;
-
-    fn audio(id: i64, lang: &str, code: &str) -> metadata::Stream {
-        metadata::Stream {
-            id,
-            index: 0,
-            lang: lang.into(),
-            lang_code: code.into(),
-            codec: "eac3".into(),
-            channels: 6,
-            default: true,
-            ..Default::default()
-        }
-    }
-
-    fn forced(id: i64, index: i64, lang: &str, code: &str) -> metadata::Stream {
-        metadata::Stream { forced: true, ..stream(id, index, lang, code, "") }
-    }
-
-    fn store_of(audio: Vec<metadata::Stream>, subs: Vec<metadata::Stream>) -> plx_data::stores::metadata::MetadataStore {
-        let mut store = plx_data::stores::metadata::MetadataStore::default();
-        let mut item = metadata::PlayingItem::with_subs(subs);
-        item.audio = audio;
-        assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
-        store
-    }
-
-    /// The Subtitles tab on a direct play in `mode`. `drawn` is `Embedded` when the route shows a
-    /// track (`enhancement_test_session` names it stream 999) or `None` when it shows nothing.
-    /// Caller holds `testlock::serial()` and tears the session down.
-    fn open(
-        mode: SubMode,
-        drawn: SubtitleEffect,
-        audio: Vec<metadata::Stream>,
-        subs: Vec<metadata::Stream>,
-    ) -> (TrackMenuState, plx_media::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
-        open_with_fallback(mode, drawn, audio, subs, "")
-    }
-
-    /// [`open`] on a session whose Forced only falls back to `fallback` for audio that names no
-    /// language (what a landing under a Forced only memo recorded).
-    fn open_with_fallback(
-        mode: SubMode,
-        drawn: SubtitleEffect,
-        audio: Vec<metadata::Stream>,
-        subs: Vec<metadata::Stream>,
-        fallback: &str,
-    ) -> (TrackMenuState, plx_media::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
-        let (mut ps, _sid) = enhancement_test_session(EnhTestFixture {
-            remux: None,
-            subtitle_effect: drawn,
-            ..Default::default()
-        });
-        set_sub_mode_for_test(&mut ps, mode);
-        if !fallback.is_empty() {
-            set_forced_only_lang_for_test(&mut ps, fallback);
-        }
-        let store = store_of(audio, subs);
-        let menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
-        (menu, ps, store)
-    }
-
-    fn teardown(ps: &plx_media::route::PlaybackSession) {
-        reset_player_control_for_test(ps);
-        plx_plex::plex::reset_servers_for_test();
-    }
-
-    fn rows(menu: &TrackMenuState) -> Vec<&Row> {
-        menu.form.table.sections.iter().flat_map(|s| &s.rows).collect()
-    }
-
-    fn row_of(menu: &TrackMenuState, id: TrackRow) -> &Row {
-        rows(menu)[menu.form.index_of(&id).unwrap_or_else(|| panic!("{id:?} is not on this page"))]
-    }
-
-    /// The rows carrying a checkmark, by identity.
-    fn checked(menu: &TrackMenuState) -> Vec<TrackRow> {
-        let flags: Vec<bool> = rows(menu).iter().map(|r| r.checked).collect();
-        let ids = menu.ids();
-        // notes carry no id, so line the ids up with the focusable rows only
-        let focusable: Vec<bool> = (0..flags.len()).filter(|&i| menu.form.id_at(i).is_some()).map(|i| flags[i]).collect();
-        ids.into_iter().zip(focusable).filter(|(_, c)| *c).map(|(id, _)| id).collect()
-    }
-
-    fn ok_on(menu: &mut TrackMenuState, store: &plx_data::stores::metadata::MetadataStore, id: TrackRow) -> TrackOk {
-        let i = menu.form.index_of(&id).unwrap_or_else(|| panic!("{id:?} is not on this page"));
-        menu.focus_row(i as c_int);
-        menu.on_ok(store.view())
-    }
-
-    fn english_with_a_forced_track() -> Vec<metadata::Stream> {
-        vec![stream(1, 0, "English", "eng", ""), forced(999, 1, "English", "eng")]
-    }
-
-    /// **One checkmark.** While Forced only is the mode the check sits on its row and nowhere
-    /// else: not on Off, and not on the forced track it drew (whose own row stays unchecked). The
-    /// row reads out the drawn track's language. Outside the mode the drawn track is the checked
-    /// one and the Forced only row is plain.
-    #[test]
-    fn the_check_is_on_forced_only_and_not_on_the_track_it_drew() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps, _store) = open(
-            SubMode::ForcedOnly,
-            SubtitleEffect::Embedded,
-            vec![audio(10, "English", "eng")],
-            english_with_a_forced_track(),
-        );
-        assert_eq!(menu.ids()[..2], [TrackRow::SubOff, TrackRow::SubForcedOnly], "directly after Off");
-        assert_eq!(checked(&menu), [TrackRow::SubForcedOnly], "exactly one checkmark, on Forced only");
-        assert_eq!(row_of(&menu, TrackRow::SubForcedOnly).value.as_deref(), Some("English"), "it reads out the language");
-        assert_eq!(menu.selected_id(), Some(TrackRow::SubForcedOnly), "the cursor lands on the checked row");
-        assert!(menu.forced_only() && menu.active_sub() == 1, "the mode, and the track it drew");
-        teardown(&ps);
-
-        let (menu, ps, _store) = open(
-            SubMode::Track,
-            SubtitleEffect::Embedded,
-            vec![audio(10, "English", "eng")],
-            english_with_a_forced_track(),
-        );
-        assert_eq!(checked(&menu), [TrackRow::Sub(1)], "control: a picked track carries the check");
-        assert_eq!(row_of(&menu, TrackRow::SubForcedOnly).value, None, "and the plain row reads out nothing");
-        teardown(&ps);
-    }
-
-    /// The one checkmark holds behind Other languages too: a forced track whose language is not
-    /// "yours" is reached through that row and its page, and neither shows a check while Forced
-    /// only is the mode.
-    #[test]
-    fn the_check_is_not_on_other_languages_or_its_pages_under_forced_only() {
-        let _g = plx_base::testlock::serial();
-        let subs = vec![stream(1, 0, "English", "eng", ""), forced(999, 1, "German", "deu")];
-        let (mut menu, ps, _store) =
-            open(SubMode::ForcedOnly, SubtitleEffect::Embedded, vec![audio(10, "German", "deu")], subs.clone());
-        assert_eq!(checked(&menu), [TrackRow::SubForcedOnly]);
-        assert!(!row_of(&menu, TrackRow::OpenOther).checked, "the drawn track sits behind Other languages, unchecked");
-        assert_eq!(row_of(&menu, TrackRow::OpenOther).value.as_deref(), Some("1"), "it counts languages, it does not name one");
-        menu.push(TrackPage::OtherLanguages);
-        assert_eq!(checked(&menu), Vec::<TrackRow>::new(), "no checkmark on the page either");
-        teardown(&ps);
-
-        let (mut menu, ps, _store) = open(SubMode::Track, SubtitleEffect::Embedded, vec![audio(10, "German", "deu")], subs);
-        assert_eq!(checked(&menu), [TrackRow::OpenOther], "control: a picked track behind it checks the row");
-        menu.push(TrackPage::OtherLanguages);
-        assert_eq!(checked(&menu), [TrackRow::Sub(1)]);
-        teardown(&ps);
-    }
-
-    /// Timing follows whether a track is DRAWN, not which row holds the check: dim and inert while
-    /// Forced only shows nothing, live once it draws a track. The read-out names the language it
-    /// looked for when nothing matched.
-    #[test]
-    fn timing_is_dim_while_forced_only_draws_nothing_and_live_once_it_draws() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open(
-            SubMode::ForcedOnly,
-            SubtitleEffect::None,
-            vec![audio(10, "Japanese", "jpn")],
-            english_with_a_forced_track(),
-        );
-        assert_eq!(checked(&menu), [TrackRow::SubForcedOnly]);
-        assert_eq!(
-            row_of(&menu, TrackRow::SubForcedOnly).value.as_deref(),
-            Some("Japanese"),
-            "nothing matched: the language it looked for, the audio's"
-        );
-        assert!(row_of(&menu, TrackRow::Timing).dim, "nothing is drawn");
-        assert_eq!(ok_on(&mut menu, &store, TrackRow::Timing), TrackOk::Inert);
-        teardown(&ps);
-
-        let (mut menu, ps, store) = open(
-            SubMode::ForcedOnly,
-            SubtitleEffect::Embedded,
-            vec![audio(10, "English", "eng")],
-            english_with_a_forced_track(),
-        );
-        assert!(!row_of(&menu, TrackRow::Timing).dim, "a forced track is drawn");
-        assert_eq!(ok_on(&mut menu, &store, TrackRow::Timing), TrackOk::OpenTiming);
-        teardown(&ps);
-    }
-
-    fn forced_commit(ok: TrackOk) -> (c_int, i64, String, bool) {
-        match ok {
-            TrackOk::Commit {
-                commit: TrackCommit::SubtitleForcedOnly { render_ordinal, stream_id, lang, changed },
-                keep_open: false,
-            } => (render_ordinal, stream_id, lang, changed),
-            other => panic!("not a Forced only commit: {other:?}"),
-        }
-    }
-
-    /// **OK on Forced only commits the forced track for the AUDIO that plays**, or nothing, and
-    /// says which language to remember: the drawn track's, else the audio's. A second OK on the row
-    /// that is already the mode closes the menu and changes nothing.
-    #[test]
-    fn ok_on_forced_only_commits_the_forced_track_in_the_playing_audios_language() {
-        let _g = plx_base::testlock::serial();
-        let subs = vec![stream(1, 0, "English", "eng", ""), forced(2, 1, "English", "eng"), forced(3, 2, "Spanish", "spa")];
-        let (mut menu, ps, store) = open(SubMode::Track, SubtitleEffect::None, vec![audio(10, "English", "eng")], subs.clone());
-        assert_eq!(
-            forced_commit(ok_on(&mut menu, &store, TrackRow::SubForcedOnly)),
-            (1, 2, "eng".to_string(), true),
-            "English audio: the English forced track, by its demuxer ordinal"
-        );
-        assert!(menu.forced_only() && menu.active_sub() == 1);
-        assert_eq!(
-            forced_commit(ok_on(&mut menu, &store, TrackRow::SubForcedOnly)),
-            (1, 2, "eng".to_string(), false),
-            "OK on the row that is the mode again changes nothing"
-        );
-        teardown(&ps);
-
-        let (mut menu, ps, store) = open(SubMode::Track, SubtitleEffect::None, vec![audio(10, "Spanish", "spa")], subs);
-        assert_eq!(
-            forced_commit(ok_on(&mut menu, &store, TrackRow::SubForcedOnly)),
-            (2, 3, "spa".to_string(), true),
-            "Spanish audio: the Spanish one"
-        );
-        teardown(&ps);
-    }
-
-    /// Forced only is offered and chosen where there is no forced track at all: it commits
-    /// nothing-on-screen, is still the mode, and is remembered with the audio's language.
-    #[test]
-    fn forced_only_with_no_forced_track_commits_nothing_and_is_still_the_mode() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open(
-            SubMode::Off,
-            SubtitleEffect::None,
-            vec![audio(10, "English", "eng")],
-            vec![stream(1, 0, "English", "eng", "")],
-        );
-        assert_eq!(forced_commit(ok_on(&mut menu, &store, TrackRow::SubForcedOnly)), (-1, 0, "eng".to_string(), true));
-        assert!(menu.forced_only() && menu.active_sub() == -1);
-        teardown(&ps);
-
-        // untagged audio and no language to name: nothing to match, nothing to say
-        let (mut menu, ps, store) =
-            open(SubMode::Track, SubtitleEffect::None, vec![audio(10, "", "")], english_with_a_forced_track());
-        assert_eq!(forced_commit(ok_on(&mut menu, &store, TrackRow::SubForcedOnly)), (-1, 0, String::new(), true));
-        teardown(&ps);
-    }
-
-    /// **Untagged audio: the language the mode fell back to is what the row and the next episode
-    /// choose by.** An episode whose audio names no language drew its forced track through the
-    /// memo's language (`forced_only_lang`). OK on the CHECKED row, the natural way to dismiss the
-    /// menu it opened on, must recommit that track unchanged, not turn the subtitle off; "und" is
-    /// as untagged as nothing.
-    #[test]
-    fn ok_on_the_checked_forced_only_row_keeps_what_untagged_audio_drew() {
-        let _g = plx_base::testlock::serial();
-        for code in ["", "und"] {
-            let (mut menu, ps, store) = open_with_fallback(
-                SubMode::ForcedOnly,
-                SubtitleEffect::Embedded,
-                vec![audio(10, "", code)],
-                english_with_a_forced_track(),
-                "eng",
-            );
-            assert_eq!(menu.active_sub(), 1, "setup: the forced track is drawn ({code:?})");
-            assert_eq!(
-                forced_commit(ok_on(&mut menu, &store, TrackRow::SubForcedOnly)),
-                (1, 999, "eng".to_string(), false),
-                "{code:?}: the same track, the same stream, nothing changed"
-            );
-            assert!(menu.forced_only() && menu.active_sub() == 1, "{code:?}: and the mode is held");
-            teardown(&ps);
-        }
-
-        // Nothing drawn (no forced track in this item): the press commits nothing-on-screen and
-        // still names the fallback, never a blank language that would erase it.
-        let (mut menu, ps, store) = open_with_fallback(
-            SubMode::ForcedOnly,
-            SubtitleEffect::None,
-            vec![audio(10, "", "")],
-            vec![stream(1, 0, "English", "eng", "")],
-            "eng",
-        );
-        assert_eq!(forced_commit(ok_on(&mut menu, &store, TrackRow::SubForcedOnly)), (-1, 0, "eng".to_string(), false));
-        teardown(&ps);
-    }
-
-    /// Entering Forced only on untagged audio matches in the same language the resolve did: Off,
-    /// then Forced only, draws the memo-language forced track, and remembers that language. With no
-    /// fallback to name (a first press on an episode nothing remembered), it still finds nothing.
-    #[test]
-    fn entering_forced_only_on_untagged_audio_draws_the_fallback_languages_track() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open_with_fallback(
-            SubMode::Off,
-            SubtitleEffect::None,
-            vec![audio(10, "", "")],
-            english_with_a_forced_track(),
-            "eng",
-        );
-        assert_eq!(
-            forced_commit(ok_on(&mut menu, &store, TrackRow::SubForcedOnly)),
-            (1, 999, "eng".to_string(), true),
-            "the route's own rule: the fallback language stands in for audio that names none"
-        );
-        assert!(menu.forced_only() && menu.active_sub() == 1);
-        teardown(&ps);
-
-        let (mut menu, ps, store) = open(SubMode::Off, SubtitleEffect::None, vec![audio(10, "", "")], english_with_a_forced_track());
-        assert_eq!(
-            forced_commit(ok_on(&mut menu, &store, TrackRow::SubForcedOnly)),
-            (-1, 0, String::new(), true),
-            "control: no fallback, no language to match in"
-        );
-        teardown(&ps);
-
-        // tagged audio wins over the fallback, as in the resolve
-        let (mut menu, ps, store) = open_with_fallback(
-            SubMode::Off,
-            SubtitleEffect::None,
-            vec![audio(10, "Spanish", "spa")],
-            vec![stream(1, 0, "English", "eng", ""), forced(2, 1, "English", "eng"), forced(3, 2, "Spanish", "spa")],
-            "eng",
-        );
-        assert_eq!(forced_commit(ok_on(&mut menu, &store, TrackRow::SubForcedOnly)), (2, 3, "spa".to_string(), true));
-        teardown(&ps);
-    }
-
-    /// The read-out names the language the mode looked in. Untagged audio with nothing drawn used to
-    /// read "Unknown" although the mode was looking in the fallback language; it names that one now,
-    /// by a track of the item that carries it. Without a fallback it is still "Unknown".
-    #[test]
-    fn the_readout_names_the_fallback_language_for_untagged_audio() {
-        let _g = plx_base::testlock::serial();
-        let subs = vec![stream(1, 0, "English", "eng", ""), forced(2, 1, "Spanish", "spa")];
-        let (menu, ps, _store) = open_with_fallback(
-            SubMode::ForcedOnly,
-            SubtitleEffect::None,
-            vec![audio(10, "", "")],
-            subs.clone(),
-            "eng",
-        );
-        assert_eq!(row_of(&menu, TrackRow::SubForcedOnly).value.as_deref(), Some("English"));
-        teardown(&ps);
-
-        let (menu, ps, _store) =
-            open(SubMode::ForcedOnly, SubtitleEffect::None, vec![audio(10, "", "")], subs);
-        assert_eq!(
-            row_of(&menu, TrackRow::SubForcedOnly).value.as_deref(),
-            Some(plx_platform::i18n::msg::widgets_tracks_unknown()),
-            "control: no fallback, nothing to name"
-        );
-        teardown(&ps);
-    }
-
-    /// **Leaving Forced only is a change** even onto the very stream it drew, or onto Off while it
-    /// drew nothing: the stream id is the same, the state is not, so the pick carries its memo.
-    /// The control is the ordinary rule, an OK on the checked track remembering nothing.
-    #[test]
-    fn leaving_forced_only_is_remembered_even_onto_the_same_stream_or_onto_nothing() {
-        let _g = plx_base::testlock::serial();
-        let commit_memo = |ok: TrackOk| match ok {
-            TrackOk::Commit { commit: TrackCommit::Subtitle { stream_id, memo, .. }, .. } => (stream_id, memo),
-            other => panic!("not a subtitle commit: {other:?}"),
-        };
-        let (mut menu, ps, store) = open(
-            SubMode::ForcedOnly,
-            SubtitleEffect::Embedded,
-            vec![audio(10, "English", "eng")],
-            english_with_a_forced_track(),
-        );
-        let (stream_id, memo) = commit_memo(ok_on(&mut menu, &store, TrackRow::Sub(1)));
-        assert_eq!(stream_id, 999);
-        assert!(matches!(memo, Some(SubtitleMemo::Track(_))), "the forced track's own row is a track pick now: {memo:?}");
-        assert!(!menu.forced_only(), "and the mode is left");
-        let (_, memo) = commit_memo(ok_on(&mut menu, &store, TrackRow::Sub(1)));
-        assert_eq!(memo, None, "control: OK on the checked track again remembers nothing");
-        teardown(&ps);
-
-        let (mut menu, ps, store) = open(
-            SubMode::ForcedOnly,
-            SubtitleEffect::None,
-            vec![audio(10, "English", "eng")],
-            english_with_a_forced_track(),
-        );
-        assert_eq!(commit_memo(ok_on(&mut menu, &store, TrackRow::SubOff)), (0, Some(SubtitleMemo::Off)), "Off after Forced only");
-        assert!(!menu.forced_only());
-        assert_eq!(commit_memo(ok_on(&mut menu, &store, TrackRow::SubOff)), (0, None), "control: Off again is not a change");
-        teardown(&ps);
-    }
-
-    /// The panel follows the route's mode on the live poll: a Forced only pick the loop has
-    /// performed (or a landing's) moves the check onto its row, and leaving it moves it back.
-    #[test]
-    fn the_live_poll_moves_the_check_with_the_routes_mode() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, mut ps, store) = open(
-            SubMode::Track,
-            SubtitleEffect::Embedded,
-            vec![audio(10, "English", "eng")],
-            english_with_a_forced_track(),
-        );
-        assert_eq!(checked(&menu), [TrackRow::Sub(1)]);
-        set_sub_mode_for_test(&mut ps, SubMode::ForcedOnly);
-        menu.poll_subtitle_state(&ps, store.view());
-        assert_eq!(checked(&menu), [TrackRow::SubForcedOnly]);
-        assert_eq!(row_of(&menu, TrackRow::SubForcedOnly).value.as_deref(), Some("English"));
-        set_sub_mode_for_test(&mut ps, SubMode::Track);
-        menu.poll_subtitle_state(&ps, store.view());
-        assert_eq!(checked(&menu), [TrackRow::Sub(1)]);
-        teardown(&ps);
-    }
-
-    /// **The row fits the panel in every shipped language WITH its read-out**, the longest case: the
-    /// catalog words beside the longest language names a stream can carry (the read-out is bounded,
-    /// so a long name or a region qualifier never clips the row's own words), at the shared menu cap
-    /// and hugged.
-    #[test]
-    fn the_forced_only_row_with_its_readout_fits_the_panel_in_every_shipped_language() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
-        let mut out = Vec::new();
-        for language in SHIPPED {
-            for name in ["Portuguese (Brazil)", "Norwegian Bokm\u{e5}l", "Serbo-Croatian", "Scottish Gaelic", "Tagalog"] {
-                let _g = plx_base::testlock::serial();
-                let _guard = language_on_this_thread_for_test(language);
-                let subs = vec![stream(1, 0, name, "xxx", ""), forced(999, 1, name, "xxx")];
-                let (menu, ps, _store) =
-                    open(SubMode::ForcedOnly, SubtitleEffect::Embedded, vec![audio(10, name, "xxx")], subs);
-                let row = row_of(&menu, TrackRow::SubForcedOnly);
-                assert_eq!(row.label, plx_platform::i18n::msg::widgets_tracks_forced_only(), "{language:?}");
-                assert!(row.value.as_deref().is_some_and(|v| !v.is_empty() && v.chars().count() <= 11), "{language:?} {name}");
-                out.extend(menu.form.table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
-                out.extend(menu.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
-                out.extend(menu.form.table.app_fit_failures_hugged(language.tag()));
-                teardown(&ps);
-            }
-        }
-        plx_ui::table::assert_no_fit_failures(&out);
-    }
-
-    /// The key-level gate: the row's words exist in every shipped catalogue and are the SAME words
-    /// the account-wide Forced Subtitles setting already ships (`settings.audio.only_forced.short`),
-    /// which the Belarusian review (skarnik.by, verbum.by) covered once.
-    #[test]
-    fn the_forced_only_words_are_in_every_catalogue_and_match_the_settings_value() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, msg, SHIPPED};
-        for language in SHIPPED {
-            let _g = plx_base::testlock::serial();
-            let _guard = language_on_this_thread_for_test(language);
-            let words = msg::widgets_tracks_forced_only();
-            assert!(!words.trim().is_empty(), "{language:?}");
-            assert_eq!(words, msg::settings_audio_only_forced_short(), "{language:?}: one vocabulary for one concept");
-        }
-    }
-}
-
-#[cfg(test)]
-mod focus_tests {
-    use super::*;
-    use plx_machine::machine::{FocusRead, InputOwner, PressRead, Tick};
-
-    /// The focus element of the `i`-th Audio row, named by identity.
-    fn audio_key(i: usize) -> u32 {
-        TrackRow::Audio(i).key().0
-    }
-
-    struct HostFixture;
-    impl Host for HostFixture {
-        type Arg = plx_ui::fixture::FixtureArg;
-        type Fx = plx_ui::fixture::FixtureFx;
-        type Msg = plx_ui::fixture::FixtureMsg;
-        type Elem = u32;
-        type Views<'a> = ();
-        type Init = plx_ui::fixture::FixtureInit;
-        type Memory = ();
-    }
-
-    fn with_cx<R>(entry: EntryId, test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {
-        let measure = plx_ui::fixture::FixtureMeasure;
-        test(&Cx {
-            views: (),
-            tick: Tick::default(),
-            measure: &measure,
-            focus: FocusRead::default(),
-            press: PressRead::default(),
-            owner: InputOwner::Entry(entry),
-        })
-    }
-
-    /// A three-row Audio tab, built without a `PlaybackSession` or a playing item â€” nothing here
-    /// reads either.
-    fn three_row_menu() -> TrackMenuState {
-        let mut sec = FormSection::new("Audio");
-        for (i, label) in ["English", "Ð ÑƒÑÑÐºÐ¸Ð¹", "FranÃ§ais"].into_iter().enumerate() {
-            sec = sec.item(TrackRow::Audio(i), RowKind::Choice, (), Row::new(label));
-        }
-        let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
-        form.set(TrackForm::new().section(sec), None);
-        TrackMenuState {
-            tab: 0,
-            active_audio: 0,
-            active_sub: -1,
-            forced_only: false,
-            forced_lang: String::new(),
-            form,
-            offset_ms: 0,
-            tone: SubtitleTone::White,
-            size: SubtitleSize::Medium,
-            position: SubtitlePosition::Low,
-            pages: PageStack::new(),
-            renderer: SubRenderer::Text,
-            sub_sig: None,
-            other: Vec::new(),
-            root_tracks: Vec::new(),
-            yours: Vec::new(),
-            enhance_shown: None,
-            enhance_route: None,
-            enhance_disabled: None,
-            enhance_subtitle_effect: plx_media::route::SubtitleEffect::None,
-            sticky_audio_target: None,
-            motion: PanelMotion::new(),
-            background_owner: None,
-            search: None,
-            search_watching: false,
-            item_sidecars: Vec::new(),
-            anchor: crate::player_hud::classic::ctrl_row_hit_rect(),
-            side: std::cell::Cell::new(plx_ui::popover::Side::Above),
-        }
-    }
-
-    /// **UP/DOWN step by one row and clamp at both ends**, matching
-    /// [`TrackMenuState::move_focus`]'s own clamp.
-    #[test]
-    fn up_down_step_by_one_and_clamp_at_both_ends() {
-        let e = EntryId(5);
-        let st = three_row_menu();
-        let part = TrackMenuPart { state: &st, entry: e, group: GroupId(0) };
-        with_cx(e, |cx| {
-            let step = |i: u32, dir: Dir| {
-                match <TrackMenuPart as Focusable<HostFixture>>::neighbour(
-                    &part,
-                    FocusKey { entry: e, elem: i },
-                    dir,
-                    cx,
-                ) {
-                    Step::Move(k) => Some(k.elem),
-                    Step::Edge => None,
-                }
-            };
-            assert_eq!(step(audio_key(0), Dir::Down), Some(audio_key(1)));
-            assert_eq!(step(audio_key(2), Dir::Down), None, "the last row does not wrap");
-            assert_eq!(step(audio_key(0), Dir::Up), None, "the first row does not wrap");
-            assert_eq!(step(audio_key(1), Dir::Up), Some(audio_key(0)));
-        });
-    }
-
-    /// **LEFT/RIGHT never move within the group** â€” they are the screen's own tab switch
-    /// (`TrackMenuState::focus_tab`), which is why `neighbour` always answers `Step::Edge` for
-    /// them and [`groups`] hands both edges to [`EdgeRule::Screen`].
-    #[test]
-    fn left_right_are_edges_the_screen_interprets_as_a_tab_switch() {
-        let e = EntryId(5);
-        let st = three_row_menu();
-        let part = TrackMenuPart { state: &st, entry: e, group: GroupId(0) };
-        with_cx(e, |cx| {
-            assert!(matches!(
-                <TrackMenuPart as Focusable<HostFixture>>::neighbour(
-                    &part,
-                    FocusKey { entry: e, elem: audio_key(1) },
-                    Dir::Left,
-                    cx,
-                ),
-                Step::Edge
-            ));
-            let mut groups = Vec::new();
-            <TrackMenuPart as Focusable<HostFixture>>::groups(&part, cx, &mut groups);
-            let g = groups.into_iter().next().expect("one group");
-            assert!(matches!(g.edge[2], plx_ui::screen::EdgeRule::Screen));
-            assert!(matches!(g.edge[3], plx_ui::screen::EdgeRule::Screen));
-        });
-    }
-
-    /// `place` reports exactly the row rect `TableView::row_frame` â€” and so the old `draw` â€”
-    /// paints at.
-    #[test]
-    fn place_matches_the_tables_own_row_frame() {
-        let e = EntryId(5);
-        let st = three_row_menu();
-        let r = st.panel_rect(&plx_ui::fixture::FixtureMeasure);
-        let want = st.form.table.row_frame(r, 2);
-        let part = TrackMenuPart { state: &st, entry: e, group: GroupId(0) };
-        with_cx(e, |cx| {
-            let placed = <TrackMenuPart as Focusable<HostFixture>>::place(&part, &audio_key(2), cx, At::Drawn);
-            assert_eq!(
-                placed.map(|p| (p.rect.x, p.rect.y, p.rect.w, p.rect.h)),
-                want.map(|r| (r.x, r.y, r.w, r.h))
-            );
-        });
-    }
-
-    /// **Reordering the menu moves no focus key.** The rows are the same three identities in the
-    /// opposite order: the focused row stays focused (by identity, through `FormTable::set`), its
-    /// key is the one it always had, `seat` hands the engine that key, `place` finds it at its new
-    /// position, and a DOWN step from it goes to whichever row now sits below.
-    #[test]
-    fn reordering_the_rows_moves_no_focus_key() {
-        let e = EntryId(5);
-        let mut st = three_row_menu();
-        st.form.table.sel = 2; // Audio(2), the last row
-        let mut sec = FormSection::new("Audio");
-        for i in [2usize, 1, 0] {
-            sec = sec.item(TrackRow::Audio(i), RowKind::Choice, (), Row::new(format!("row {i}")));
-        }
-        st.form.set(TrackForm::new().section(sec), st.form.selected_id().copied().as_ref());
-        assert_eq!(st.form.selected_id(), Some(&TrackRow::Audio(2)), "focus followed the identity");
-        assert_eq!(st.form.table.sel, 0, "â€¦to its new position");
-
-        let part = TrackMenuPart { state: &st, entry: e, group: GroupId(0) };
-        with_cx(e, |cx| {
-            let seat = <TrackMenuPart as Focusable<HostFixture>>::seat(
-                &part,
-                GroupId(0),
-                Placed { rect: Rect::new(0.0, 0.0, 1.0, 1.0), rest_rect: Rect::new(0.0, 0.0, 1.0, 1.0), clip: Rect::new(0.0, 0.0, 1.0, 1.0), index: None },
-                cx,
-            );
-            assert_eq!(seat.elem, audio_key(2), "the engine is told the key the row always had");
-            let placed = <TrackMenuPart as Focusable<HostFixture>>::place(&part, &audio_key(2), cx, At::Drawn)
-                .expect("the moved row still places");
-            assert_eq!(placed.index, Some(0));
-            let Step::Move(next) = <TrackMenuPart as Focusable<HostFixture>>::neighbour(
-                &part,
-                FocusKey { entry: e, elem: audio_key(2) },
-                Dir::Down,
-                cx,
-            ) else {
-                panic!("DOWN from the first row moves")
-            };
-            assert_eq!(next.elem, audio_key(1), "stepping follows the NEW order");
-        });
-    }
-
-    /// **The follow-up gap.** A row count that shrinks and grows back (the Audio tab's enhancement
-    /// rows vanishing under a live poll rebuild, then returning) can leave the ENGINE's own
-    /// remembered focus index stale relative to `table.sel`: `TrackMenuState::rebuild_audio`
-    /// restores `table.sel` onto the toggle row's new position (`sticky_audio_target`), but the
-    /// engine has no way to learn that unless `reconcile` actually reports it. Before the fix,
-    /// `reconcile` answered `settle(want)` â€” clamping the ENGINE's own possibly-stale index â€” which
-    /// only differs from `want` when that raw index is now literally out of range, so a mere
-    /// position change the panel already resolved (not a shrink past it) went unreported and the
-    /// engine's remembered element stayed wrong. `reconcile` must instead always answer the panel's
-    /// own `table.sel`, so the engine adopts it whenever it disagrees.
-    #[test]
-    fn reconcile_reports_the_panels_own_cursor_not_a_clamp_of_the_engines_stale_index() {
-        let e = EntryId(5);
-        let mut st = three_row_menu();
-        // The panel's own rebuild has already moved `table.sel` to row 2 (e.g. `sticky_audio_target`
-        // restoring focus onto the toggle row once the enhancement rows came back).
-        st.form.table.sel = 2;
-        let part = TrackMenuPart { state: &st, entry: e, group: GroupId(0) };
-        with_cx(e, |cx| {
-            // The engine still remembers row 0 â€” a perfectly in-range index for this 3-row table,
-            // so the old clamp-`want` implementation would answer it back UNCHANGED.
-            let want = FocusKey { entry: e, elem: audio_key(0) };
-            let got = <TrackMenuPart as Focusable<HostFixture>>::reconcile(&part, want, cx);
-            assert_eq!(
-                got.elem, audio_key(2),
-                "reconcile must follow the panel's own table.sel, not echo back an in-range `want`"
-            );
-        });
-    }
-}
-
-#[cfg(test)]
-mod localized_offset_tests {
-    #[test]
-    fn subtitle_timing_uses_locale_decimal_and_unit_without_changing_offset_sign() {
-        use plx_platform::i18n::{LocaleContext, Preference};
-        for (preference, region, negative, positive) in [
-            (Preference::En, "en-US", "-0.1 s", "+1.3 s"),
-            (Preference::Es, "es-ES", "-0,1 s", "+1,3 s"),
-            (Preference::Be, "be-BY", "-0,1 Ñ", "+1,3 Ñ"),
-            (Preference::Fr, "fr-FR", "-0,1 s", "+1,3 s"),
-            (Preference::De, "de-DE", "-0,1 s", "+1,3 s"),
-            (Preference::Hu, "hu-HU", "-0,1 mp", "+1,3 mp"),
-            (Preference::Ru, "ru-RU", "-0,1 Ñ", "+1,3 Ñ"),
-        ] {
-            let locale = LocaleContext::resolve(preference, None, Some(region), None, None);
-            assert_eq!(crate::timing_capsule::offset_seconds_in(-100, true, &locale), negative);
-            assert_eq!(crate::timing_capsule::offset_seconds_in(1300, true, &locale), positive);
-        }
-    }
-}
-
-#[cfg(test)]
-mod keyed_form_tests {
-    use super::tests::{store_with, store_with_audio, stream};
-    use super::*;
-    use plx_ui::form::RowKeys;
-    use plx_media::route::{enhancement_test_session, reset_player_control_for_test, EnhTestFixture};
-
-    fn audio(id: i64, index: i64, default: bool) -> metadata::Stream {
-        metadata::Stream { id, index, codec: "aac".into(), channels: 2, default, ..Default::default() }
-    }
-
-    fn key_of(menu: &TrackMenuState, id: TrackRow) -> Option<RowKey> {
-        menu.form.index_of(&id).and_then(|i| menu.form.key_at(i))
-    }
-
-    #[test]
-    fn keys_are_distinct_across_both_tabs_and_below_the_ceiling() {
-        let mut ids = vec![TrackRow::SubOff, TrackRow::Timing, TrackRow::Style, TrackRow::Boost, TrackRow::Loudness];
-        for field in StyleField::ALL {
-            ids.push(TrackRow::OpenField(field));
-            ids.extend((0..field.rungs()).map(|i| TrackRow::Choice(field, i)));
-        }
-        ids.extend((0..40).flat_map(|i| [TrackRow::Sub(i), TrackRow::Audio(i)]));
-        let keys: Vec<u32> = ids.iter().map(|i| i.key().0).collect();
-        for (n, a) in keys.iter().enumerate() {
-            assert!(*a < BAND_BASE);
-            assert!(!keys[n + 1..].contains(a), "duplicate key {a:#x}");
-        }
-    }
-
-    /// **A live refresh that inserts the enhancement rows leaves focus on the same audio track**,
-    /// found by id, with no pending reseat (the engine's key still names the landed row).
-    #[test]
-    fn a_live_refresh_inserting_the_enhancement_rows_keeps_focus_on_the_same_audio_track() {
-        let _g = plx_base::testlock::serial();
-        let store = store_with_audio(vec![audio(501, 0, true), audio(502, 1, false)]);
-        let (ps_hidden, _s1) = enhancement_test_session(EnhTestFixture {
-            pass: plx_plex::plex::serverinfo::Subscription::No,
-            ..Default::default()
-        });
-        let mut menu = TrackMenuState::new(&ps_hidden, store.view(), 0, Vec::new());
-        assert_eq!(menu.ids(), vec![TrackRow::Audio(0), TrackRow::Audio(1)]);
-        menu.focus_key(TrackRow::Audio(1).key().0);
-        let before = key_of(&menu, TrackRow::Audio(1));
-
-        let (ps_offered, _s2) = enhancement_test_session(EnhTestFixture::default());
-        menu.update(0.0, &plx_ui::fixture::FixtureMeasure, &ps_offered, store.view());
-
-        assert!(menu.enhance_shown.is_some(), "premise: the pair was inserted");
-        assert_eq!(menu.ids().len(), 4, "two tracks + Boost + Loudness");
-        assert_eq!(menu.selected_id(), Some(TrackRow::Audio(1)));
-        assert_eq!(key_of(&menu, TrackRow::Audio(1)), before, "the track's key did not move");
-        assert_eq!(RowKeys::reseat(&menu.form), None, "the engine's key still names the landed row");
-        reset_player_control_for_test(&ps_hidden);
-        plx_plex::plex::reset_servers_for_test();
-    }
-
-    /// **Adding a subtitle track to the offered list moves no other row's key**, even though the
-    /// added track sorts above them on screen (its key is its subs-list index, not its position).
-    #[test]
-    fn focus_keys_are_stable_when_a_subtitle_track_is_added() {
-        let _g = plx_base::testlock::serial();
-        plx_media::player::sidecar::reset();
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let two = vec![stream(1, 0, "English", "eng", ""), stream(2, 1, "French", "fra", "")];
-        let mut three = two.clone();
-        three.push(stream(3, 2, "Arabic", "ara", "")); // "yours" ranks Arabic first
-        let yours = || vec!["ara".to_string(), "eng".to_string(), "fra".to_string()];
-        let (a, b) = (store_with(two), store_with(three));
-        let before = TrackMenuState::new(&ps, a.view(), 1, yours());
-        let after = TrackMenuState::new(&ps, b.view(), 1, yours());
-        assert!(after.form.index_of(&TrackRow::Sub(2)) < after.form.index_of(&TrackRow::Sub(0)),
-            "premise: the new track is drawn ABOVE the existing ones");
-        for id in [TrackRow::SubOff, TrackRow::Timing, TrackRow::Style, TrackRow::Sub(0), TrackRow::Sub(1)] {
-            assert!(key_of(&before, id).is_some(), "{id:?} is built");
-            assert_eq!(key_of(&before, id), key_of(&after, id), "{id:?} kept its key");
-        }
-    }
-
-    /// **A language's drill-in keeps its identity when tracks are added** â€” a track of another
-    /// language that sorts above it, a second track of its own language, a later track of a new
-    /// language: `OpenLang` is the stream id of the language's first track, never a list position.
-    /// Its KEY is its ordinal on the page (what the focus engine needs: unique, below the ceiling),
-    /// so it follows the language when another sorts above it, and the form's `reseat` carries the
-    /// engine along.
-    #[test]
-    fn an_open_lang_is_the_same_row_when_tracks_are_added() {
-        let _g = plx_base::testlock::serial();
-        plx_media::player::sidecar::reset();
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let base = vec![
-            stream(1, 0, "German", "deu", ""),
-            stream(2, 1, "French", "fra", ""),
-            stream(3, 2, "French", "fra", "SDH"),
-        ];
-        let mut more = base.clone();
-        more.push(stream(4, 3, "Arabic", "ara", "")); // sorts above French on the page
-        more.push(stream(5, 4, "French", "fra", "Commentary"));
-        let other_page = |subs: Vec<metadata::Stream>| {
-            let store = store_with(subs);
-            let mut menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
-            menu.push(TrackPage::OtherLanguages);
-            menu
-        };
-        let (before, after) = (other_page(base), other_page(more));
-        let french = TrackRow::OpenLang(LangId { stream: 2, slot: 0 });
-        assert!(key_of(&before, french).is_some(), "French is a drill-in on the page");
-        assert!(after.form.index_of(&french).is_some(), "the same identity is on the page after");
-        assert!(after.form.index_of(&TrackRow::Sub(3)) < after.form.index_of(&french), "premise: Arabic is drawn above it");
-        let keys = after.keys();
-        assert_eq!(keys.len(), keys.iter().collect::<std::collections::HashSet<_>>().len(), "keys are unique on the page");
-        assert_ne!(key_of(&after, french), key_of(&after, TrackRow::OpenOther));
-    }
-
-    /// **Initial focus is the active track on both tabs** â€” and Off when no subtitle is active.
-    #[test]
-    fn initial_focus_lands_on_the_active_track_on_both_tabs() {
-        let _g = plx_base::testlock::serial();
-        plx_media::player::sidecar::reset();
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        // Audio: the flagged default (IDLE records no sid) is the SECOND track
-        let store = store_with_audio(vec![audio(501, 0, false), audio(502, 1, true), audio(503, 2, false)]);
-        let menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
-        assert_eq!(menu.selected_id(), Some(TrackRow::Audio(1)));
-        assert_eq!(menu.sel(), 1);
-
-        // Subtitles: Off when none is active, else the active track (even inside "Other languages")
-        let subs = vec![stream(1, 0, "English", "eng", ""), stream(2, 1, "French", "fra", "")];
-        let store = store_with(subs);
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into(), "fra".into()]);
-        assert_eq!(menu.selected_id(), Some(TrackRow::SubOff));
-        menu.active_sub = 1;
-        menu.rebuild(&ps, store.view(), 1, false);
-        assert_eq!(menu.selected_id(), Some(TrackRow::Sub(1)));
-        menu.focus_tab(&ps, store.view(), 0); // a tab switch re-opens on that tab's own active row
-        menu.focus_tab(&ps, store.view(), 1);
-        assert_eq!(menu.selected_id(), Some(TrackRow::Sub(1)));
-    }
-}
-
-#[cfg(test)]
-mod style_page_tests {
-    use super::tests::{store_with, stream};
-    use super::*;
-    use plx_media::route::{enhancement_test_session, reset_player_control_for_test, EnhTestFixture, SubtitleEffect};
-
-    fn teardown(ps: &plx_media::route::PlaybackSession) {
-        reset_player_control_for_test(ps);
-        plx_plex::plex::reset_servers_for_test();
-    }
-
-    /// A direct-play route with the subtitle `codec` active (or none when `effect` is `None`).
-    fn open_with(
-        codec: &str,
-        effect: SubtitleEffect,
-    ) -> (TrackMenuState, plx_media::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
-        let (ps, _sid) = enhancement_test_session(EnhTestFixture {
-            remux: None,
-            subtitle_effect: effect,
-            ..Default::default()
-        });
-        let mut s = stream(999, 0, "English", "eng", "");
-        s.codec = codec.into();
-        let store = store_with(vec![s]);
-        let menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
-        (menu, ps, store)
-    }
-
-    fn open_text() -> (TrackMenuState, plx_media::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
-        open_with("srt", SubtitleEffect::Sidecar)
-    }
-
-    fn focus_id(menu: &mut TrackMenuState, id: TrackRow) {
-        let i = menu.form.index_of(&id).unwrap_or_else(|| panic!("{id:?} is not on this page"));
-        menu.focus_row(i as c_int);
-        assert_eq!(menu.selected_id(), Some(id));
-    }
-
-    fn row_of(menu: &TrackMenuState, id: TrackRow) -> &Row {
-        let i = menu.form.index_of(&id).unwrap_or_else(|| panic!("{id:?} is not on this page"));
-        menu.form.table.sections.iter().flat_map(|s| &s.rows).nth(i).unwrap()
-    }
-
-    /// OK on Style pushes the Style page, focus on Size by id; OK on Size pushes its picker with
-    /// the checked rung focused; LEFT pops each back onto the row that opened it.
-    #[test]
-    fn push_lands_on_an_explicit_id_and_pop_restores_the_opener() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open_text();
-        focus_id(&mut menu, TrackRow::Style);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
-        assert_eq!(menu.page_path(), [TrackPage::Style]);
-        assert_eq!(menu.selected_id(), Some(TrackRow::OpenField(StyleField::Size)));
-        assert_eq!(menu.form.table.title(), Some(TrackPage::Style.title(&[]).as_str()));
-
-        focus_id(&mut menu, TrackRow::OpenField(StyleField::Position));
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
-        assert_eq!(menu.page_path(), [TrackPage::Style, TrackPage::Picker(StyleField::Position)]);
-        assert_eq!(
-            menu.selected_id(),
-            Some(TrackRow::Choice(StyleField::Position, menu.position.index() as usize)),
-            "a picker opens on its checked rung"
-        );
-
-        menu.on_left(&ps, store.view());
-        assert_eq!(menu.page_path(), [TrackPage::Style]);
-        assert_eq!(menu.selected_id(), Some(TrackRow::OpenField(StyleField::Position)), "the opener, by id");
-        menu.on_left(&ps, store.view());
-        assert!(menu.page_path().is_empty());
-        assert_eq!(menu.selected_id(), Some(TrackRow::Style));
-        assert_eq!(menu.form.table.title(), None, "the root has no title band");
-        teardown(&ps);
-    }
-
-    /// RIGHT on a Nav row enters the page exactly as OK does; RIGHT off one is the tab switch.
-    #[test]
-    fn right_on_a_nav_row_pushes_and_left_at_the_root_switches_tab() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open_text();
-        focus_id(&mut menu, TrackRow::Style);
-        menu.on_right(&ps, store.view());
-        assert_eq!(menu.page_path(), [TrackPage::Style]);
-        assert!(!menu.pop(&ps, store.view()) || menu.page_path().is_empty());
-        assert!(!menu.pop(&ps, store.view()), "BACK at the root pops nothing: the caller dismisses");
-        menu.on_left(&ps, store.view());
-        assert_eq!(menu.tab, 0, "LEFT at the root is still the tab switch");
-        teardown(&ps);
-    }
-
-    /// A pop reinstates the scroll the page was left at, not the top.
-    #[test]
-    fn pop_restores_the_scroll_the_root_was_left_at() {
-        let _g = plx_base::testlock::serial();
-        let (ps, _sid) = enhancement_test_session(EnhTestFixture {
-            remux: None,
-            subtitle_effect: SubtitleEffect::Sidecar,
-            ..Default::default()
-        });
-        let subs: Vec<_> = (0..40).map(|i| stream(999 + i, i, "English", "eng", &format!("Track {i}"))).collect();
-        let store = store_with(subs);
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".to_string()]);
-        focus_id(&mut menu, TrackRow::Style);
-        for _ in 0..240 {
-            menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store.view());
-        }
-        let left_at = menu.form.table.scroll_pos();
-        assert!(left_at > 0.0, "the premise: 40 tracks push Style below the fold ({left_at})");
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
-        assert!(menu.form.table.scroll_pos() < left_at, "a page starts at its top");
-        assert!(menu.pop(&ps, store.view()));
-        assert_eq!(menu.form.table.scroll_pos(), left_at);
-        assert_eq!(menu.selected_id(), Some(TrackRow::Style));
-        teardown(&ps);
-    }
-
-    /// Picking a rung commits it live, keeps the panel and page open and moves the checkmark; the
-    /// already-checked rung is inert.
-    #[test]
-    fn a_picker_pick_commits_live_and_moves_the_checkmark() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open_text();
-        focus_id(&mut menu, TrackRow::Style);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated, "Size");
-        let current = menu.current_rung(StyleField::Size);
-        assert!(row_of(&menu, TrackRow::Choice(StyleField::Size, current)).checked);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Inert, "the focused rung is the checked one");
-
-        let other = (current + 1) % StyleField::Size.rungs();
-        focus_id(&mut menu, TrackRow::Choice(StyleField::Size, other));
-        assert_eq!(
-            menu.on_ok(store.view()),
-            TrackOk::Commit {
-                commit: TrackCommit::SubtitleSize(SubtitleSize::from_index(other as u8)),
-                keep_open: true
-            }
-        );
-        assert_eq!(menu.page_path().len(), 2, "the page stays");
-        assert!(row_of(&menu, TrackRow::Choice(StyleField::Size, other)).checked);
-        assert!(!row_of(&menu, TrackRow::Choice(StyleField::Size, current)).checked);
-        teardown(&ps);
-    }
-
-    /// The Style page reads the current value of each field on its Nav row.
-    #[test]
-    fn the_style_page_shows_each_fields_current_value() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open_text();
-        focus_id(&mut menu, TrackRow::Style);
-        menu.on_ok(store.view());
-        for field in StyleField::ALL {
-            let row = row_of(&menu, TrackRow::OpenField(field));
-            assert_eq!(row.label, field.label());
-            assert_eq!(row.value.as_deref(), Some(field.rung_label(menu.current_rung(field))));
-        }
-        teardown(&ps);
-    }
-
-    /// Locks per renderer kind: plain text leaves all three live; an image subtitle dims Size and
-    /// Position with the image note; ASS dims them with its own; Color stays live in every case,
-    /// and a dimmed row is inert for OK.
-    #[test]
-    fn size_and_position_lock_by_renderer_kind_and_color_never_does() {
-        let _g = plx_base::testlock::serial();
-        for (codec, renderer, note) in [
-            ("srt", SubRenderer::Text, None),
-            ("pgs", SubRenderer::Image, Some(plx_platform::i18n::msg::widgets_tracks_style_image_note())),
-            ("ass", SubRenderer::Styled, Some(plx_platform::i18n::msg::widgets_tracks_style_styled_note())),
-        ] {
-            let (mut menu, ps, store) = open_with(codec, SubtitleEffect::Sidecar);
-            assert_eq!(menu.renderer, renderer, "{codec}");
-            focus_id(&mut menu, TrackRow::Style);
-            assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated, "{codec}: Style itself is live");
-            let locked = renderer != SubRenderer::Text;
-            for field in [StyleField::Size, StyleField::Position] {
-                assert_eq!(row_of(&menu, TrackRow::OpenField(field)).dim, locked, "{codec} {field:?}");
-            }
-            assert!(!row_of(&menu, TrackRow::OpenField(StyleField::Color)).dim, "{codec}: Color stays live");
-            let notes: Vec<_> = menu
-                .form
-                .table
-                .sections
-                .iter()
-                .flat_map(|s| &s.rows)
-                .filter(|r| r.is_note())
-                .map(|r| r.label.to_string())
-                .collect();
-            assert_eq!(notes, note.map(|n| n.to_string()).into_iter().collect::<Vec<_>>(), "{codec}");
-            if locked {
-                focus_id(&mut menu, TrackRow::OpenField(StyleField::Size));
-                assert_eq!(menu.on_ok(store.view()), TrackOk::Inert, "{codec}: a dim Size row opens nothing");
-                menu.on_right(&ps, store.view());
-                assert_eq!(menu.page_path(), [TrackPage::Style], "{codec}: RIGHT is inert on it too");
-            }
-            focus_id(&mut menu, TrackRow::OpenField(StyleField::Color));
-            assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated, "{codec}: Color opens its picker");
-            teardown(&ps);
-        }
-    }
-
-    /// Style follows Timing's availability: a transcode with no subtitle selected omits both, a
-    /// server burn (any `ServerBurn`) keeps both drawn and dim with the reason under Style.
-    #[test]
-    fn style_follows_timings_availability() {
-        let _g = plx_base::testlock::serial();
-        let has = |menu: &TrackMenuState, id| menu.form.index_of(&id).is_some();
-        // a transcode with no subtitle selected: nothing to offset or style, so neither row
-        let (ps, _) = enhancement_test_session(EnhTestFixture { remux: Some(false), ..Default::default() });
-        let store = store_with(vec![stream(999, 0, "English", "eng", "")]);
-        let menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
-        assert!(!has(&menu, TrackRow::Timing) && !has(&menu, TrackRow::Style));
-        teardown(&ps);
-        // direct play: both, live
-        let (menu, ps, _store) = open_text();
-        assert!(has(&menu, TrackRow::Timing) && has(&menu, TrackRow::Style));
-        assert!(!row_of(&menu, TrackRow::Style).dim);
-        teardown(&ps);
-    }
-
-    /// **A Style page never outlives what it was built for**: a change of the
-    /// page's availability (here the renderer kind) while on a sub-page pops to the root (opener and
-    /// scroll restored); an unchanged signature leaves the page alone; on the root any change
-    /// refreshes in place.
-    #[test]
-    fn a_rebuild_signature_mismatch_on_a_sub_page_pops_to_the_root() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open_with("srt", SubtitleEffect::Sidecar);
-        focus_id(&mut menu, TrackRow::Style);
-        menu.on_ok(store.view());
-        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store.view());
-        assert_eq!(menu.page_path(), [TrackPage::Style], "an unchanged signature leaves the page");
-
-        // the same subtitle, now an image one: the renderer kind moved under the page
-        let mut image = stream(999, 0, "English", "eng", "");
-        image.codec = "pgs".into();
-        let store2 = store_with(vec![image]);
-        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store2.view());
-        assert!(menu.page_path().is_empty(), "popped to the root");
-        assert_eq!(menu.renderer, SubRenderer::Image);
-        assert_eq!(menu.selected_id(), Some(TrackRow::Style), "on the row that opened it");
-        assert_eq!(menu.form.table.title(), None);
-        teardown(&ps);
-    }
-
-    /// **Only an availability change pops a sub-page.** A subs fingerprint change (a track offered
-    /// mid-play) or an enhancement-route change that leaves the renderer and the Style gate alone
-    /// refreshes the open Size picker in place: same page, same focused row, new signature stored.
-    #[test]
-    fn a_signature_change_that_keeps_the_pages_availability_refreshes_in_place() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open_text();
-        focus_id(&mut menu, TrackRow::Style);
-        menu.on_ok(store.view());
-        focus_id(&mut menu, TrackRow::OpenField(StyleField::Size));
-        menu.on_ok(store.view());
-        let picker = [TrackPage::Style, TrackPage::Picker(StyleField::Size)];
-        assert_eq!(menu.page_path(), picker);
-        let focused = TrackRow::Choice(StyleField::Size, 0);
-        focus_id(&mut menu, focused);
-        let before = menu.sub_sig.clone();
-
-        // a second subtitle offered mid-play: the fingerprint moves, the renderer does not
-        let store2 = store_with(vec![stream(999, 0, "English", "eng", ""), stream(1000, 1, "French", "fra", "")]);
-        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store2.view());
-        assert_ne!(menu.sub_sig, before, "the new fingerprint is stored");
-        assert_eq!(menu.page_path(), picker, "the picker stays");
-        assert_eq!(menu.selected_id(), Some(focused), "on the row the viewer was on");
-        teardown(&ps);
-
-        // the enhancement's subtitle effect moves (an embedded track is now the one on screen), still no own burn
-        let (mut menu, ps, store) = open_text();
-        focus_id(&mut menu, TrackRow::Style);
-        menu.on_ok(store.view());
-        focus_id(&mut menu, TrackRow::OpenField(StyleField::Size));
-        menu.on_ok(store.view());
-        focus_id(&mut menu, focused);
-        let before = menu.sub_sig.clone();
-        teardown(&ps);
-        let (ps2, _sid) = enhancement_test_session(EnhTestFixture {
-            remux: None,
-            subtitle_effect: SubtitleEffect::Embedded,
-            ..Default::default()
-        });
-        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps2, store.view());
-        assert_ne!(menu.sub_sig, before, "the enhancement route is part of the signature");
-        assert_eq!(menu.page_path(), picker, "the picker stays");
-        assert_eq!(menu.selected_id(), Some(focused));
-        teardown(&ps2);
-    }
-
-    /// **Every Style surface fits the panel in every shipped language**: the Subtitles root with
-    /// its Style row, the Style page under each renderer kind (Size and Position dim with their
-    /// notes), and each picker page, judged by the same gates as the rest of the menu.
-    #[test]
-    fn every_style_page_fits_the_panel_in_every_language() {
-        use plx_platform::i18n::{language_on_this_thread_for_test};
-        let mut out = Vec::new();
-        for language in plx_platform::i18n::SHIPPED {
-            let _g = plx_base::testlock::serial();
-            let _guard = language_on_this_thread_for_test(language);
-            for codec in ["srt", "pgs", "ass"] {
-                let (mut menu, ps, store) = open_with(codec, SubtitleEffect::Sidecar);
-                let mut judge = |menu: &TrackMenuState| {
-                    out.extend(menu.form.table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
-                    out.extend(menu.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
-                    out.extend(menu.form.table.app_fit_failures_hugged(language.tag()));
-                };
-                judge(&menu);
-                menu.push(TrackPage::Style);
-                judge(&menu);
-                for field in StyleField::ALL {
-                    menu.push(TrackPage::Picker(field));
-                    judge(&menu);
-                    assert!(menu.pop(&ps, store.view()));
-                }
-                teardown(&ps);
-            }
-        }
-        plx_ui::table::assert_no_fit_failures(&out);
-    }
-
-    /// **The locked-renderer notes wrap to two lines at the player-menu floor (three in Spanish).** A Style page is a few
-    /// short rows; without [`theme::layout::PLAYER_MENU_MIN_W`] it shrank to its labels and the
-    /// note wrapped to three lines in a sliver.
-    #[test]
-    fn the_style_note_fits_two_lines_at_the_player_menu_floor() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
-        let measure = plx_base::fontcov::advances::ShippedMeasure;
-        for language in plx_platform::i18n::SHIPPED {
-            let _g = plx_base::testlock::serial();
-            let _guard = language_on_this_thread_for_test(language);
-            for codec in ["pgs", "ass"] {
-                let (mut menu, ps, _store) = open_with(codec, SubtitleEffect::Sidecar);
-                menu.push(TrackPage::Style);
-                let w = menu.form.table.menu_panel_width(&measure);
-                assert!(w >= theme::layout::PLAYER_MENU_MIN_W, "{language:?}: the page is not a sliver ({w})");
-                menu.form.table.fit_notes(w, &measure);
-                let lines = menu.form.table.sections.iter().flat_map(|s| &s.rows)
-                    .filter(|r| r.is_note()).map(|r| r.note_lines.get()).max().expect("a note row");
-                // Spanish's longer wording needs ~520px for two lines; at the 440 floor it takes three
-                // (measured), English and Belarusian take two
-                let allowed = if language == Preference::Es { 3 } else { 2 };
-                assert!(lines <= allowed, "{language:?} {codec}: the note takes {lines} lines at {w}px");
-                teardown(&ps);
-            }
-        }
-    }
-
-    /// The title band is a pointer-only stop: its key is recognised, no row owns it.
-    #[test]
-    fn the_title_key_is_the_bands_and_no_rows() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open_text();
-        focus_id(&mut menu, TrackRow::Style);
-        menu.on_ok(store.view());
-        assert!(page_stack::is_title_key(page_stack::TITLE_KEY));
-        assert!(menu.keys().iter().all(|k| !page_stack::is_title_key(*k)));
-        teardown(&ps);
-    }
-
-    /// The replay canon carries the tab, the page path, each opener and the selected key: two
-    /// states that differ in any of them hash apart.
-    #[test]
-    fn the_canon_tells_pages_openers_and_selections_apart() {
-        let _g = plx_base::testlock::serial();
-        let hash = |menu: &TrackMenuState| {
-            let mut c = Canon::new();
-            menu.canon(&mut c);
-            c.finish()
-        };
-        let (mut menu, ps, store) = open_text();
-        focus_id(&mut menu, TrackRow::Style);
-        let root = hash(&menu);
-        menu.on_ok(store.view());
-        let style = hash(&menu);
-        focus_id(&mut menu, TrackRow::OpenField(StyleField::Color));
-        let style_color = hash(&menu);
-        menu.on_ok(store.view());
-        let picker = hash(&menu);
-        let all = [root, style, style_color, picker];
-        for (i, a) in all.iter().enumerate() {
-            for b in &all[i + 1..] {
-                assert_ne!(a, b);
-            }
-        }
-        menu.on_left(&ps, store.view());
-        assert_eq!(hash(&menu), style_color, "a pop returns to the recorded state");
-        teardown(&ps);
-    }
-}
-
-/// **The Other languages page and the language pages** (`docs/player-submenus.md`, PR 3).
-#[cfg(test)]
-mod language_page_tests {
-    use super::tests::{store_with, stream};
-    use super::*;
-    use plx_media::route::reset_player_control_for_test;
-
-    fn teardown(ps: &plx_media::route::PlaybackSession) {
-        reset_player_control_for_test(ps);
-        plx_plex::plex::reset_servers_for_test();
-    }
-
-    fn pgs(mut s: metadata::Stream) -> metadata::Stream {
-        s.codec = "pgs".into();
-        s
-    }
-
-    /// English is "yours" (index 0, a root row); Dutch (PGS) and German are single-track others;
-    /// French has a full, an SDH and a forced PGS track.
-    fn subs() -> Vec<metadata::Stream> {
-        vec![
-            stream(10, 0, "English", "eng", ""),
-            stream(11, 1, "French", "fra", ""),
-            stream(12, 2, "French", "fra", "SDH"),
-            pgs(stream(13, 3, "French", "fra", "Forced")),
-            stream(14, 4, "German", "deu", ""),
-            pgs(stream(15, 5, "Dutch", "nld", "")),
-        ]
-    }
-
-    /// [`subs`] plus Italian: a text full track and a VobSub SDH one (`dvd_subtitle` is Plex's
-    /// own name for it), the long raw codec the badge must shorten.
-    fn subs_with_vobsub() -> Vec<metadata::Stream> {
-        let mut v = subs();
-        v.push(stream(16, 6, "Italian", "ita", "Netflix"));
-        let mut sdh = stream(17, 7, "Italian", "ita", "Netflix");
-        sdh.codec = "dvd_subtitle".into();
-        sdh.sdh = true;
-        v.push(sdh);
-        v
-    }
-
-    fn open(subs: Vec<metadata::Stream>) -> (TrackMenuState, plx_media::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
-        let _ = plx_media::player::sidecar::reset();
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let store = store_with(subs);
-        let menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
-        (menu, ps, store)
-    }
-
-    fn focus_id(menu: &mut TrackMenuState, id: TrackRow) {
-        let i = menu.form.index_of(&id).unwrap_or_else(|| panic!("{id:?} is not on this page"));
-        menu.focus_row(i as c_int);
-        assert_eq!(menu.selected_id(), Some(id));
-    }
-
-    fn row_of(menu: &TrackMenuState, id: TrackRow) -> &Row {
-        let i = menu.form.index_of(&id).unwrap_or_else(|| panic!("{id:?} is not on this page"));
-        menu.form.table.sections.iter().flat_map(|s| &s.rows).nth(i).unwrap()
-    }
-
-    /// OK on the root's Other languages row opens the page A-Z (a single-track language is a pick
-    /// row, French a drill-in reading its track count); OK on French opens its page, ranked; LEFT
-    /// pops each back onto the row that opened it, by id, and the title follows the page.
-    #[test]
-    fn push_and_pop_walk_root_other_languages_and_a_language() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open(subs());
-        assert_eq!(menu.ids()[..4], [TrackRow::SubOff, TrackRow::SubForcedOnly, TrackRow::Sub(0), TrackRow::OpenOther]);
-        assert_eq!(row_of(&menu, TrackRow::OpenOther).value.as_deref(), Some("3"), "Dutch, French, German");
-
-        focus_id(&mut menu, TrackRow::OpenOther);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
-        assert_eq!(menu.page_path(), [TrackPage::OtherLanguages]);
-        assert_eq!(menu.form.table.title(), Some("Other languages"));
-        assert_eq!(
-            menu.ids(),
-            [TrackRow::Sub(5), TrackRow::OpenLang(LangId { stream: 11, slot: 1 }), TrackRow::Sub(4)],
-            "Dutch, French, German"
-        );
-        assert_eq!(menu.selected_id(), Some(TrackRow::Sub(5)), "nothing checked: the first row");
-        assert_eq!(row_of(&menu, TrackRow::OpenLang(LangId { stream: 11, slot: 1 })).value.as_deref(), Some("3 tracks"));
-
-        focus_id(&mut menu, TrackRow::OpenLang(LangId { stream: 11, slot: 1 }));
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
-        assert_eq!(menu.page_path(), [TrackPage::OtherLanguages, TrackPage::Language(11)]);
-        assert_eq!(menu.form.table.title(), Some("French"));
-        assert_eq!(
-            menu.ids(),
-            [TrackRow::Sub(1), TrackRow::Sub(2), TrackRow::Sub(3)],
-            "full, SDH, forced"
-        );
-
-        assert!(menu.pop(&ps, store.view()));
-        assert_eq!(menu.selected_id(), Some(TrackRow::OpenLang(LangId { stream: 11, slot: 1 })), "the opener, by id");
-        assert_eq!(menu.form.table.title(), Some("Other languages"));
-        assert!(menu.pop(&ps, store.view()));
-        assert_eq!(menu.selected_id(), Some(TrackRow::OpenOther), "the root's row");
-        assert_eq!(menu.form.table.title(), None);
-        teardown(&ps);
-    }
-
-    /// RIGHT on a drill-in enters it like OK; LEFT on a page pops, never switches tab.
-    #[test]
-    fn right_enters_a_language_and_left_leaves_it() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open(subs());
-        focus_id(&mut menu, TrackRow::OpenOther);
-        menu.on_right(&ps, store.view());
-        focus_id(&mut menu, TrackRow::OpenLang(LangId { stream: 11, slot: 1 }));
-        menu.on_right(&ps, store.view());
-        assert_eq!(menu.page_path(), [TrackPage::OtherLanguages, TrackPage::Language(11)]);
-        menu.on_left(&ps, store.view());
-        menu.on_left(&ps, store.view());
-        assert!(menu.page_path().is_empty());
-        assert_eq!(menu.tab, 1, "still the Subtitles tab");
-        teardown(&ps);
-    }
-
-    /// **Only image subtitles carry a format badge**: PGS shows one, a text track (SRT) none â€” on
-    /// the Other languages page and on a language page alike.
-    #[test]
-    fn the_format_badge_is_only_on_image_subtitles() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, _store) = open(subs_with_vobsub());
-        menu.push(TrackPage::OtherLanguages);
-        let badges = |m: &TrackMenuState, id| row_of(m, id).badges.iter().map(|b| b.text().to_string()).collect::<Vec<_>>();
-        assert_eq!(badges(&menu, TrackRow::Sub(5)), ["PGS"], "Dutch is an image subtitle");
-        assert!(badges(&menu, TrackRow::Sub(4)).is_empty(), "German SRT shows no format");
-        assert!(badges(&menu, TrackRow::OpenLang(LangId { stream: 11, slot: 1 })).is_empty(), "a drill-in is not a track");
-        menu.push(TrackPage::Language(11));
-        assert!(badges(&menu, TrackRow::Sub(1)).is_empty(), "French full is SRT");
-        assert!(badges(&menu, TrackRow::Sub(2)).is_empty(), "the SDH chip would only repeat its label");
-        assert_eq!(row_of(&menu, TrackRow::Sub(2)).label, "SDH");
-        assert_eq!(badges(&menu, TrackRow::Sub(3)), ["PGS"], "a forced image track still shows its format");
-        assert_eq!(row_of(&menu, TrackRow::Sub(3)).label, "Forced");
-        // a VobSub SDH track: its raw codec ("dvd_subtitle") shows as the short name, after the kind
-        menu.push(TrackPage::Language(16));
-        assert!(badges(&menu, TrackRow::Sub(6)).is_empty(), "Italian text shows no format");
-        assert_eq!(badges(&menu, TrackRow::Sub(7)), ["SDH", "VOBSUB"]);
-        // a row whose only badge could be the codec: the same French forced track, unlabelled
-        let (mut menu2, ps2, _s2) = open(vec![
-            stream(1, 0, "French", "fra", ""),
-            pgs(stream(2, 1, "French", "fra", "")),
-        ]);
-        menu2.push(TrackPage::OtherLanguages);
-        menu2.push(TrackPage::Language(1));
-        assert!(badges(&menu2, TrackRow::Sub(0)).is_empty());
-        assert_eq!(badges(&menu2, TrackRow::Sub(1)), ["PGS"]);
-        teardown(&ps);
-        teardown(&ps2);
-    }
-
-    /// **Initial focus**: Other languages opens on the checked row (the language's drill-in when
-    /// the active track is inside one), a language page on its active variant, else on its first.
-    #[test]
-    fn a_page_opens_on_the_active_track_when_it_is_inside() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open(subs());
-        menu.active_sub = 2; // French SDH
-        menu.rebuild(&ps, store.view(), 1, false);
-        assert!(row_of(&menu, TrackRow::OpenOther).checked, "the active track lives behind it");
-        assert_eq!(row_of(&menu, TrackRow::OpenOther).value.as_deref(), Some("French"));
-        focus_id(&mut menu, TrackRow::OpenOther);
-        menu.on_ok(store.view());
-        assert_eq!(menu.selected_id(), Some(TrackRow::OpenLang(LangId { stream: 11, slot: 1 })), "the language holding the active track");
-        let french = row_of(&menu, TrackRow::OpenLang(LangId { stream: 11, slot: 1 }));
-        assert!(french.checked);
-        assert_eq!(french.value.as_deref(), Some("SDH"), "reads the active variant");
-        menu.on_ok(store.view());
-        assert_eq!(menu.selected_id(), Some(TrackRow::Sub(2)), "the active variant");
-        assert!(row_of(&menu, TrackRow::Sub(2)).checked);
-
-        // a single-track active language: its pick row on Other languages
-        let (mut menu, ps2, store) = open(subs());
-        menu.active_sub = 4; // German
-        menu.rebuild(&ps2, store.view(), 1, false);
-        focus_id(&mut menu, TrackRow::OpenOther);
-        menu.on_ok(store.view());
-        assert_eq!(menu.selected_id(), Some(TrackRow::Sub(4)));
-
-        // the active track is NOT in the language: its first track
-        let (mut menu, ps3, store) = open(subs());
-        menu.active_sub = 0; // English, on the root
-        menu.push(TrackPage::OtherLanguages);
-        menu.push(TrackPage::Language(11));
-        assert_eq!(menu.selected_id(), Some(TrackRow::Sub(1)));
-        teardown(&ps);
-        teardown(&ps2);
-        teardown(&ps3);
-        let _ = store;
-    }
-
-    /// A pick on a language page commits like a root pick does and dismisses the panel.
-    #[test]
-    fn a_pick_on_a_language_page_commits_and_dismisses() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open(subs());
-        menu.push(TrackPage::OtherLanguages);
-        menu.push(TrackPage::Language(11));
-        focus_id(&mut menu, TrackRow::Sub(2));
-        match menu.on_ok(store.view()) {
-            TrackOk::Commit { commit: TrackCommit::Subtitle { stream_id, .. }, keep_open } => {
-                assert_eq!(stream_id, 12);
-                assert!(!keep_open, "a track pick at any depth dismisses");
-            }
-            other => panic!("expected a subtitle commit, got {other:?}"),
-        }
-        assert_eq!(menu.active_sub, 2);
-        teardown(&ps);
-    }
-
-    /// French as sidecars the client can draw only while each has a `key`: an empty one is not
-    /// offered on this route, which is how a language leaves the offered list under a fixed item.
-    fn sidecar_french(keys: [&str; 3]) -> Vec<metadata::Stream> {
-        let mut v = subs();
-        for (n, key) in keys.iter().enumerate() {
-            v[1 + n].external = true;
-            v[1 + n].codec = "srt".into();
-            v[1 + n].key = key.to_string();
-        }
-        v
-    }
-
-    /// **A language page never outlives its language**: the live offered list loses French while
-    /// its page is open, so the stack pops to the root (opener and root restored by id). A change
-    /// that leaves the language offered (one of its tracks going away) refreshes the page in place
-    /// and keeps the viewer's row.
-    #[test]
-    fn a_vanished_language_pops_to_the_root_and_a_changed_one_refreshes_in_place() {
-        let _g = plx_base::testlock::serial();
-        let store = store_with(sidecar_french(["/a.srt", "/b.srt", "/c.srt"]));
-        let _ = plx_media::player::sidecar::reset();
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
-        focus_id(&mut menu, TrackRow::OpenOther);
-        menu.on_ok(store.view());
-        focus_id(&mut menu, TrackRow::OpenLang(LangId { stream: 11, slot: 1 }));
-        menu.on_ok(store.view());
-        assert_eq!(menu.ids().len(), 3);
-        focus_id(&mut menu, TrackRow::Sub(2));
-        let measure = plx_ui::fixture::FixtureMeasure;
-        menu.update(0.016, &measure, &ps, store.view());
-        assert_eq!(menu.page_path(), [TrackPage::OtherLanguages, TrackPage::Language(11)], "an unchanged signature leaves it");
-
-        // one French sidecar is no longer offered: still a page, refreshed in place
-        let store2 = store_with(sidecar_french(["/a.srt", "/b.srt", ""]));
-        menu.update(0.016, &measure, &ps, store2.view());
-        assert_eq!(menu.page_path(), [TrackPage::OtherLanguages, TrackPage::Language(11)], "French is still offered");
-        assert_eq!(menu.selected_id(), Some(TrackRow::Sub(2)), "on the row the viewer was on");
-        assert_eq!(menu.ids().len(), 2, "the departed track left the page");
-
-        // none of French is offered: its page cannot be listed any more
-        let store3 = store_with(sidecar_french(["", "", ""]));
-        menu.update(0.016, &measure, &ps, store3.view());
-        assert!(menu.page_path().is_empty(), "popped to the root");
-        assert_eq!(menu.selected_id(), Some(TrackRow::OpenOther), "on the row that opened the stack");
-        assert_eq!(menu.form.table.title(), None);
-        teardown(&ps);
-    }
-
-    /// With no language left to list, an open Other languages page pops too.
-    #[test]
-    fn the_other_languages_page_pops_when_nothing_is_left_to_list() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open(subs());
-        focus_id(&mut menu, TrackRow::OpenOther);
-        menu.on_ok(store.view());
-        let store2 = store_with(vec![stream(10, 0, "English", "eng", "")]);
-        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store2.view());
-        assert!(menu.page_path().is_empty());
-        assert!(menu.form.index_of(&TrackRow::OpenOther).is_none(), "and the root no longer offers it");
-        teardown(&ps);
-    }
-
-    /// Open the Other languages page, then `name`'s drill-in, the way a viewer's keys would.
-    fn open_language_named(menu: &mut TrackMenuState, store: &plx_data::stores::metadata::MetadataStore, name: &str) {
-        focus_id(menu, TrackRow::OpenOther);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
-        let at = (0..menu.form.table.n_rows().max(0) as usize)
-            .find(|&i| {
-                matches!(menu.form.id_at(i), Some(TrackRow::OpenLang(_)))
-                    && menu.form.table.sections.iter().flat_map(|s| &s.rows).nth(i).is_some_and(|r| r.label == name)
-            })
-            .unwrap_or_else(|| panic!("{name} has no drill-in on the Other languages page"));
-        menu.focus_row(at as c_int);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
-    }
-
-    /// **Finding 1: the harness can pick a subtitle that sits behind Other languages.** An item
-    /// whose subs are all non-"yours" has no root track row at all; `track:N` still resolves, and
-    /// commits by the track's own id.
-    #[test]
-    fn the_harness_picks_a_subtitle_behind_other_languages() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open(vec![stream(21, 0, "German", "deu", ""), stream(22, 1, "Dutch", "nld", "")]);
-        // page order: Dutch (A-Z) is the first Other-languages row, German the second
-        let i = menu.sub_track_for_target("track:0").expect("track:0 resolves behind Other languages");
-        assert_eq!(i, 1, "track N follows page order, root tracks first");
-        match menu.commit_sub_track(i, store.view()) {
-            TrackOk::Commit { commit: TrackCommit::Subtitle { stream_id, .. }, .. } => assert_eq!(stream_id, 22),
-            other => panic!("expected a subtitle commit, got {other:?}"),
-        }
-        assert_eq!(menu.active_sub, 1);
-        assert_eq!(menu.sub_track_for_target("track:1"), Some(0));
-        assert_eq!(menu.sub_track_for_target("track:2"), None);
-        teardown(&ps);
-    }
-
-    /// `track:N` counts root tracks first, then Other languages in page order, expanding a
-    /// multi-track language's own ranked page.
-    #[test]
-    fn the_harness_track_order_is_root_then_other_pages_expanded() {
-        let _g = plx_base::testlock::serial();
-        let (menu, ps, _store) = open(subs());
-        // root: English(0); Other A-Z: Dutch(5), French full/SDH/forced (1,2,3), German(4)
-        let order: Vec<_> = (0..7).map(|n| menu.sub_track_for_target(&format!("track:{n}"))).collect();
-        assert_eq!(order, [Some(0), Some(5), Some(1), Some(2), Some(3), Some(4), None]);
-        teardown(&ps);
-    }
-
-    /// **Finding 2: the menu opens on Other languages when the active track is behind it** â€” a
-    /// codeless or unrecognised-language subtitle is never "yours", so its own row is not on the
-    /// root.
-    #[test]
-    fn opening_with_the_active_track_behind_other_languages_focuses_that_row() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open(vec![stream(10, 0, "English", "eng", ""), stream(11, 1, "Unknown", "", "")]);
-        menu.active_sub = 1;
-        menu.rebuild(&ps, store.view(), 1, false);
-        assert_eq!(menu.selected_id(), Some(TrackRow::OpenOther));
-        teardown(&ps);
-    }
-
-    /// The same landing on the live poll's fallback, when the viewer's own row left the root.
-    #[test]
-    fn the_poll_fallback_lands_on_other_languages_when_the_active_track_is_behind_it() {
-        use plx_media::route::{enhancement_test_session, EnhTestFixture, SubtitleEffect};
-        let _g = plx_base::testlock::serial();
-        let _ = plx_media::player::sidecar::reset();
-        // cur_sub_sid is 999: no such stream yet
-        let (ps, _sid) = enhancement_test_session(EnhTestFixture { subtitle_effect: SubtitleEffect::Embedded, ..Default::default() });
-        let yours = vec!["eng".into(), "spa".into(), "fra".into()];
-        let store = store_with(vec![
-            stream(10, 0, "English", "eng", ""),
-            stream(11, 1, "Spanish", "spa", ""),
-            stream(12, 2, "French", "fra", ""),
-        ]);
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, yours);
-        focus_id(&mut menu, TrackRow::Sub(2));
-        // the three languages leave, and the playing subtitle (999) is a codeless track
-        let store2 = store_with(vec![stream(999, 0, "Unknown", "", "")]);
-        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store2.view());
-        assert_eq!(menu.active_sub, 0);
-        assert_eq!(menu.selected_id(), Some(TrackRow::OpenOther), "the viewer's row is gone: the checked row, which is Other languages");
-        teardown(&ps);
-    }
-
-    /// **Finding 3: a language page is its language, not a list position.** Two earlier tracks
-    /// leave while French's page is open and Dutch now starts where French used to; the page must
-    /// stay French (it must never show Dutch under a French stack).
-    #[test]
-    fn a_language_page_survives_earlier_tracks_leaving() {
-        let _g = plx_base::testlock::serial();
-        let before = vec![
-            stream(10, 0, "English", "eng", ""),
-            stream(11, 1, "German", "deu", ""),
-            stream(12, 2, "French", "fra", ""),
-            stream(13, 3, "French", "fra", "SDH"),
-            stream(14, 4, "Dutch", "nld", ""),
-            stream(15, 5, "Dutch", "nld", "SDH"),
-        ];
-        let (mut menu, ps, store) = open(before);
-        open_language_named(&mut menu, &store, "French");
-        assert_eq!(menu.form.table.title(), Some("French"));
-        let after = store_with(vec![
-            stream(12, 0, "French", "fra", ""),
-            stream(13, 1, "French", "fra", "SDH"),
-            stream(14, 2, "Dutch", "nld", ""),
-            stream(15, 3, "Dutch", "nld", "SDH"),
-        ]);
-        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, after.view());
-        if !menu.page_path().is_empty() {
-            assert_eq!(menu.form.table.title(), Some("French"), "a page stays its language");
-            assert_eq!(menu.ids(), [TrackRow::Sub(0), TrackRow::Sub(1)], "and lists its tracks");
-        }
-        teardown(&ps);
-    }
-
-    /// If the page's language is gone altogether the page pops to the root.
-    #[test]
-    fn a_language_page_pops_when_its_language_is_gone_whatever_the_indices() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open(subs());
-        open_language_named(&mut menu, &store, "French");
-        let after = store_with(vec![
-            stream(10, 0, "English", "eng", ""),
-            stream(14, 1, "German", "deu", ""),
-            pgs(stream(15, 2, "Dutch", "nld", "")),
-            stream(16, 3, "Dutch", "nld", "SDH"),
-        ]);
-        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, after.view());
-        assert!(menu.page_path().is_empty(), "French is gone: popped to the root");
-        teardown(&ps);
-    }
-
-    /// **Finding 4, shrink**: French drops to one offered track while its page is open. The page
-    /// stays (a language page lists whatever its language still offers), and a pop returns to the
-    /// Other languages page on French's now-direct row.
-    #[test]
-    fn a_language_page_that_drops_to_one_track_stays_and_pops_onto_the_single_row() {
-        let _g = plx_base::testlock::serial();
-        let store = store_with(sidecar_french(["/a.srt", "/b.srt", "/c.srt"]));
-        let _ = plx_media::player::sidecar::reset();
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
-        open_language_named(&mut menu, &store, "French");
-        let store2 = store_with(sidecar_french(["/a.srt", "", ""]));
-        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store2.view());
-        assert_eq!(menu.page_path().len(), 2, "the page stays open at one track");
-        assert_eq!(menu.form.table.title(), Some("French"));
-        assert_eq!(menu.ids(), [TrackRow::Sub(1)]);
-        assert!(menu.pop(&ps, store2.view()));
-        assert_eq!(menu.page_path(), [TrackPage::OtherLanguages]);
-        assert_eq!(menu.selected_id(), Some(TrackRow::Sub(1)), "French is a direct row now");
-        teardown(&ps);
-    }
-
-    /// **Finding 4, grow**: French is a single direct row on the Other languages page and gains
-    /// tracks while the viewer sits on it; focus follows it to its drill-in.
-    #[test]
-    fn a_single_track_language_that_grows_keeps_the_focus_on_its_new_row() {
-        let _g = plx_base::testlock::serial();
-        let store = store_with(sidecar_french(["/a.srt", "", ""]));
-        let _ = plx_media::player::sidecar::reset();
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
-        focus_id(&mut menu, TrackRow::OpenOther);
-        menu.on_ok(store.view());
-        focus_id(&mut menu, TrackRow::Sub(1));
-        let store2 = store_with(sidecar_french(["/a.srt", "/b.srt", "/c.srt"]));
-        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store2.view());
-        assert_eq!(menu.page_path(), [TrackPage::OtherLanguages]);
-        let french = menu.ids().into_iter().find(|id| matches!(id, TrackRow::OpenLang(_)));
-        assert!(french.is_some(), "French is a drill-in now");
-        assert_eq!(menu.selected_id(), french, "French, in its new shape");
-        teardown(&ps);
-    }
-
-    /// The canon tells the three new pages and their openers apart.
-    #[test]
-    fn the_canon_tells_the_language_pages_apart() {
-        let _g = plx_base::testlock::serial();
-        let hash = |menu: &TrackMenuState| {
-            let mut c = Canon::new();
-            menu.canon(&mut c);
-            c.finish()
-        };
-        let (mut menu, ps, store) = open(subs());
-        focus_id(&mut menu, TrackRow::OpenOther);
-        let root = hash(&menu);
-        menu.on_ok(store.view());
-        let other = hash(&menu);
-        focus_id(&mut menu, TrackRow::OpenLang(LangId { stream: 11, slot: 1 }));
-        let other_french = hash(&menu);
-        menu.on_ok(store.view());
-        let french = hash(&menu);
-        let all = [root, other, other_french, french];
-        for (i, a) in all.iter().enumerate() {
-            for b in &all[i + 1..] {
-                assert_ne!(a, b);
-            }
-        }
-        teardown(&ps);
-    }
-
-    /// **Every new page fits the panel in every shipped language**: the root with its Other
-    /// languages row (also while the active track lives behind it), the page, and a language page,
-    /// judged by the same gates as the rest of the menu.
-    #[test]
-    fn the_language_pages_fit_the_panel_in_every_language() {
-        use plx_platform::i18n::{language_on_this_thread_for_test};
-        let mut out = Vec::new();
-        for language in plx_platform::i18n::SHIPPED {
-            let _g = plx_base::testlock::serial();
-            let _guard = language_on_this_thread_for_test(language);
-            let (mut menu, ps, store) = open(subs_with_vobsub());
-            let judge = |menu: &TrackMenuState, out: &mut Vec<_>| {
-                out.extend(menu.form.table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
-                out.extend(menu.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
-                out.extend(menu.form.table.app_fit_failures_hugged(language.tag()));
-            };
-            judge(&menu, &mut out);
-            for active in [-1, 2] {
-                menu.active_sub = active;
-                menu.rebuild(&ps, store.view(), 1, false);
-                judge(&menu, &mut out);
-                menu.push(TrackPage::OtherLanguages);
-                judge(&menu, &mut out);
-                menu.push(TrackPage::Language(11));
-                judge(&menu, &mut out);
-                menu.pop(&ps, store.view());
-                menu.push(TrackPage::Language(16)); // the VobSub + SDH row
-                judge(&menu, &mut out);
-            }
-            teardown(&ps);
-        }
-        plx_ui::table::assert_no_fit_failures(&out);
-    }
-}
-
-/// **The panel's resize and page slide** (`ui::panel_motion`, `docs/player-submenus.md`,
-/// "Animation"): running vs resting, an interrupted transition, the layout the card lands on, and
-/// the Audio/Subtitles tab switch.
-#[cfg(test)]
-mod motion_tests {
-    use super::tests::{store_with, stream};
-    use super::*;
-    use plx_base::fontcov::advances::ShippedMeasure;
-    use plx_media::route::reset_player_control_for_test;
-
-    const DT: f32 = 1.0 / 60.0;
-
-    fn teardown(ps: &plx_media::route::PlaybackSession) {
-        reset_player_control_for_test(ps);
-        plx_plex::plex::reset_servers_for_test();
-    }
-
-    fn subs() -> Vec<metadata::Stream> {
-        vec![
-            stream(10, 0, "English", "eng", ""),
-            stream(11, 1, "French", "fra", ""),
-            stream(12, 2, "French", "fra", "SDH"),
-            stream(14, 4, "German", "deu", ""),
-        ]
-    }
-
-    fn open() -> (TrackMenuState, plx_media::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
-        let _ = plx_media::player::sidecar::reset();
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let store = store_with(subs());
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
-        // the first update places the card AT its layout: the open is the appear animation's
-        frame(&mut menu, &ps, &store);
-        assert!(!menu.transitioning(), "a freshly opened panel is at rest");
-        (menu, ps, store)
-    }
-
-    /// One loop frame, as the dispatcher runs it: forget last frame's motion, then update. Returns
-    /// whether a spring moved (what keeps the present gate awake).
-    fn frame(menu: &mut TrackMenuState, ps: &plx_media::route::PlaybackSession, store: &plx_data::stores::metadata::MetadataStore) -> bool {
-        plx_machine::idle::frame_begin(DT);
-        menu.update(DT, &ShippedMeasure, ps, store.view());
-        plx_machine::idle::present_moving()
-    }
-
-    fn run(menu: &mut TrackMenuState, ps: &plx_media::route::PlaybackSession, store: &plx_data::stores::metadata::MetadataStore, n: usize) {
-        for _ in 0..n {
-            frame(menu, ps, store);
-        }
-    }
-
-    fn shown(menu: &TrackMenuState) -> Rect {
-        menu.shown_rect(&ShippedMeasure)
-    }
-
-    fn natural(menu: &TrackMenuState) -> Rect {
-        menu.panel_rect(&ShippedMeasure)
-    }
-
-    fn push_style(menu: &mut TrackMenuState, store: &plx_data::stores::metadata::MetadataStore) {
-        let i = menu.form.index_of(&TrackRow::Style).expect("Style row");
-        menu.focus_row(i as c_int);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
-    }
-
-    /// **A push animates, reports motion each frame it runs and stops asking for frames at rest.**
-    #[test]
-    fn a_push_is_animating_then_asks_for_no_more_frames_at_rest() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open();
-        let root = natural(&menu);
-        push_style(&mut menu, &store);
-        assert!(menu.transitioning(), "the page slide is running the moment the page is pushed");
-        assert!(frame(&mut menu, &ps, &store), "a running transition keeps the present gate awake");
-        assert!(menu.motion.sliding());
-        assert_ne!(shown(&menu), natural(&menu), "the card is between the two layouts");
-        assert_ne!(natural(&menu), root, "the Style page has its own layout");
-
-        let mut frames_moving = 1;
-        while frame(&mut menu, &ps, &store) {
-            frames_moving += 1;
-            assert!(frames_moving < 240, "the transition never settles");
-        }
-        assert!((6..120).contains(&frames_moving), "a transition spans a handful of frames, not {frames_moving}");
-        assert!(!menu.transitioning());
-        assert!(!menu.motion.sliding());
-        assert_eq!(shown(&menu), natural(&menu), "the card lands EXACTLY on the layout");
-        // idle is truly idle: a settled panel steps without a single frame requested
-        for _ in 0..30 {
-            assert!(!frame(&mut menu, &ps, &store), "a settled panel must not ask for frames");
-        }
-        teardown(&ps);
-    }
-
-    /// **A push then a pop mid-slide reverses from where it is and settles on the root.** The
-    /// page that was arriving becomes the one returned to, carrying its own alpha, and the page
-    /// that was live leaves from its own: no layer's alpha steps at the swap.
-    #[test]
-    fn an_interrupted_push_then_pop_reverses_and_settles_at_the_root_rect() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open();
-        let root = natural(&menu);
-        let root_shown = shown(&menu);
-        assert_eq!(root_shown, root);
-        push_style(&mut menu, &store);
-        run(&mut menu, &ps, &store, 11);
-        let mid = shown(&menu);
-        assert_ne!(mid, root, "mid-slide the card is not at the root layout");
-        let before = menu.motion.live_dx();
-        assert!(before > 0.0, "a push arrives from the right: {before}");
-        let (leaving_before, live_before) = menu.motion.alphas();
-        assert!(live_before > 0.0 && live_before < 1.0, "caught mid-fade: {live_before}");
-
-        assert!(menu.pop(&ps, store.view()));
-        assert_eq!(shown(&menu), mid, "the reversal continues from the drawn rect, no jump");
-        assert!(menu.motion.sliding(), "the slide reverses rather than ending");
-        let (leaving_after, live_after) = menu.motion.alphas();
-        assert_eq!(leaving_after, vec![live_before], "the page that was live leaves from its own alpha");
-        let revived = leaving_before.last().copied().unwrap_or(0.0);
-        assert_eq!(live_after, revived, "the page returned to continues from its own alpha");
-        let after = menu.motion.live_dx();
-        assert!(after <= 0.0, "a pop returns the root from the left, not the right: {after}");
-        assert!(menu.transitioning());
-
-        let mut n = 0;
-        while frame(&mut menu, &ps, &store) {
-            n += 1;
-            assert!(n < 240, "the reversed transition never settles");
-        }
-        assert_eq!(shown(&menu), root, "settles on the root layout");
-        assert!(!menu.transitioning());
-        assert!(menu.pages.is_empty());
-        assert_eq!(menu.selected_id(), Some(TrackRow::Style), "the opener is focused again");
-        teardown(&ps);
-    }
-
-    /// **The two pages never read on top of each other**: on every frame of a push, a pop and an
-    /// interrupted one, at most one layer is above the gate alpha (`panel_motion::GATE`), and the leaving page draws no
-    /// focus pill (the arriving page owns the only one).
-    #[test]
-    fn the_two_pages_are_never_both_above_the_gate_and_only_one_draws_a_pill() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open();
-        let check = |menu: &TrackMenuState, what: &str| {
-            let (leaving, live) = menu.motion.alphas();
-            let loudest = leaving.iter().copied().fold(0.0_f32, f32::max);
-            assert!(loudest.min(live) <= plx_ui::panel_motion::GATE + 1e-4, "{what}: leaving {leaving:?} and live {live} overlap");
-            assert_eq!(menu.motion.leaving_pills(), 0, "{what}: a leaving page draws a focus pill");
-        };
-        push_style(&mut menu, &store);
-        let mut saw_leaving_only = false;
-        let mut saw_live_only = false;
-        for i in 0..90 {
-            frame(&mut menu, &ps, &store);
-            check(&menu, &format!("push frame {i}"));
-            let (leaving, live) = menu.motion.alphas();
-            saw_leaving_only |= !leaving.is_empty() && live == 0.0;
-            saw_live_only |= leaving.is_empty() && live > 0.0 && live < 1.0;
-        }
-        assert!(saw_leaving_only, "the outgoing page is alone on screen at first");
-        assert!(saw_live_only, "and the incoming page alone at the end of its fade");
-        assert!(menu.pop(&ps, store.view()));
-        for i in 0..90 {
-            frame(&mut menu, &ps, &store);
-            check(&menu, &format!("pop frame {i}"));
-        }
-        // interrupted at every depth of a push
-        for stop in [1, 3, 6, 9, 12, 20] {
-            push_style(&mut menu, &store);
-            run(&mut menu, &ps, &store, stop);
-            check(&menu, &format!("before the interrupt at {stop}"));
-            assert!(menu.pop(&ps, store.view()));
-            check(&menu, &format!("right after the interrupt at {stop}"));
-            for i in 0..90 {
-                frame(&mut menu, &ps, &store);
-                check(&menu, &format!("interrupted at {stop}, frame {i}"));
-            }
-        }
-        teardown(&ps);
-    }
-
-    /// **A push during a push is continuous too**: the page that was arriving leaves from the
-    /// alpha and offset it had, the older leaving page keeps fading, and the new page starts clear.
-    #[test]
-    fn a_push_during_a_push_steps_no_layer() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open();
-        push_style(&mut menu, &store);
-        run(&mut menu, &ps, &store, 12);
-        let (old_leaving, live) = menu.motion.alphas();
-        let dx = menu.motion.live_dx();
-        assert!(live > 0.0 && live < 1.0, "mid-fade: {live}");
-        let i = menu.form.index_of(&TrackRow::OpenField(StyleField::Size)).expect("Size row");
-        menu.focus_row(i as c_int);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
-        let (leaving, new_live) = menu.motion.alphas();
-        assert_eq!(new_live, 0.0, "the new page arrives from transparent");
-        assert_eq!(leaving.last().copied(), Some(live), "the page that was arriving leaves from its own alpha");
-        for (kept, was) in leaving.iter().zip(old_leaving.iter()) {
-            assert_eq!(kept, was, "an older leaving page is not touched by the swap");
-        }
-        assert_eq!(menu.motion.leaving_pills(), 0);
-        assert_ne!(dx, 0.0);
-        run(&mut menu, &ps, &store, 240);
-        assert!(!menu.motion.sliding());
-        assert_eq!(shown(&menu), natural(&menu));
-        teardown(&ps);
-    }
-
-    /// Rapid repeated pushes and pops (a held key, a double press) never stack layers or leave the
-    /// card off its layout.
-    #[test]
-    fn rapid_pushes_and_pops_leave_one_slide_and_land_on_the_logical_page() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open();
-        let root = natural(&menu);
-        for _ in 0..4 {
-            push_style(&mut menu, &store);
-            frame(&mut menu, &ps, &store);
-            assert!(menu.pop(&ps, store.view()));
-            frame(&mut menu, &ps, &store);
-        }
-        // and a push that goes deeper while the first is still sliding
-        push_style(&mut menu, &store);
-        run(&mut menu, &ps, &store, 2);
-        let i = menu.form.index_of(&TrackRow::OpenField(StyleField::Size)).expect("Size row");
-        menu.focus_row(i as c_int);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
-        assert_eq!(menu.pages.len(), 2);
-        run(&mut menu, &ps, &store, 240);
-        assert!(!menu.transitioning());
-        assert_eq!(shown(&menu), natural(&menu));
-        assert!(menu.pop(&ps, store.view()));
-        assert!(menu.pop(&ps, store.view()));
-        run(&mut menu, &ps, &store, 240);
-        assert_eq!(shown(&menu), root);
-        assert!(!menu.transitioning());
-        teardown(&ps);
-    }
-
-    /// An Audio/Subtitles tab switch resizes the card with the same spring, and the content
-    /// does not slide.
-    #[test]
-    fn a_tab_switch_animates_the_height() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open();
-        let tall = natural(&menu);
-        menu.focus_tab(&ps, store.view(), 0);
-        let short = natural(&menu);
-        assert!(short.h < tall.h, "the empty Audio tab is shorter than the Subtitles tab: {} < {}", short.h, tall.h);
-        assert_eq!(short.y + short.h, tall.y + tall.h, "the bottom edge is the anchor");
-        assert_eq!(short.x + short.w, tall.x + tall.w, "and so is the right edge");
-        assert!(frame(&mut menu, &ps, &store), "the resize is motion");
-        let first = shown(&menu);
-        assert!(first.h > short.h && first.h <= tall.h, "mid-resize the card is between the two heights: {first:?}");
-        assert!(!menu.motion.sliding(), "a tab switch swaps the content, it does not slide it");
-        assert_eq!(menu.motion.live_dx(), 0.0);
-        run(&mut menu, &ps, &store, 240);
-        assert_eq!(shown(&menu), short);
-        // and back
-        menu.focus_tab(&ps, store.view(), 1);
-        assert!(frame(&mut menu, &ps, &store));
-        run(&mut menu, &ps, &store, 240);
-        assert_eq!(shown(&menu), tall);
-        assert!(!frame(&mut menu, &ps, &store));
-        teardown(&ps);
-    }
-
-    /// The layout target is measured when the table changed and not otherwise.
-    #[test]
-    fn the_layout_is_cached_until_the_table_changes() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, ps, store) = open();
-        let rev = menu.form.table.layout_rev();
-        let a = natural(&menu);
-        run(&mut menu, &ps, &store, 3);
-        assert_eq!(menu.form.table.layout_rev(), rev, "update/draw/place do not touch the table's layout");
-        assert_eq!(natural(&menu), a);
-        push_style(&mut menu, &store);
-        assert_ne!(menu.form.table.layout_rev(), rev, "a page change moves the revision");
-        teardown(&ps);
-    }
-
-    // ---- the Search for subtitles pages ----------------------------------------------------------
-
-    use plx_data::subsearch::{DownloadPhase, SearchFailure, SearchStatus, SubHit, SubSearchCmd, SubSearchSnapshot};
-
-    fn hit(title: &str) -> SubHit {
-        SubHit { key: format!("/library/streams/{title}"), title: title.into(), provider: "OpenSubtitles".into(),
-            language: "Nederlands".into(), language_code: "nld".into(), codec: "srt".into(), score: 1,
-            hearing_impaired: false, forced: false }
-    }
-
-    fn snap(status: SearchStatus, failure: Option<SearchFailure>, hits: Vec<SubHit>, download: DownloadPhase) -> SubSearchSnapshot {
-        SubSearchSnapshot { status, failure, hits, lang: "nl".into(), download, gen: 7 }
-    }
-
-    /// A Subtitles-tab menu with one English track, offered a search in state `s`, on the Search page.
-    fn on_search_page(s: SubSearchSnapshot) -> (TrackMenuState, plx_data::stores::metadata::MetadataStore) {
-        on_search_page_with(Vec::new(), s)
-    }
-
-    /// [`on_search_page`], with `extra` subtitle streams on the playing item beside the English one.
-    fn on_search_page_with(
-        extra: Vec<metadata::Stream>,
-        s: SubSearchSnapshot,
-    ) -> (TrackMenuState, plx_data::stores::metadata::MetadataStore) {
-        plx_media::player::sidecar::reset();
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let mut subs = vec![metadata::Stream { id: 1, index: 0, lang: "English".into(),
-            lang_code: "eng".into(), codec: "srt".into(), ..Default::default() }];
-        subs.extend(extra);
-        let store = store_with(subs);
-        let mut menu = TrackMenuState::new_with(&ps, store.view(), 1, vec!["eng".into()], true);
-        menu.set_search(SubSearchSnapshot::idle(7));
-        menu.focus_key(TrackRow::OpenSearch.key().0);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
-        menu.set_search(s);
-        (menu, store)
-    }
-
-    /// The row exists only when the host offers a search, so a host without one â€” every test host
-    /// that predates this page â€” draws exactly the menu it always did.
-    #[test]
-    fn the_search_row_appears_only_when_the_host_offers_a_search() {
-        let _g = plx_base::testlock::serial();
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let store = store_with(vec![metadata::Stream { id: 1, index: 0, lang: "English".into(),
-            lang_code: "eng".into(), codec: "srt".into(), ..Default::default() }]);
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
-        assert!(!menu.ids().contains(&TrackRow::OpenSearch));
-        menu.set_search(SubSearchSnapshot::idle(3));
-        assert!(!menu.ids().contains(&TrackRow::OpenSearch), "a late publish never adds the offer");
-        let menu = TrackMenuState::new_with(&ps, store.view(), 1, vec!["eng".into()], true);
-        assert_eq!(menu.ids().last(), Some(&TrackRow::OpenSearch), "the offered root ends with the row");
-    }
-
-    /// Entering the page is what makes the screen open the search â€” never merely opening the menu.
-    #[test]
-    fn entering_the_search_page_asks_for_the_search_and_lands_on_the_language_row() {
-        let _g = plx_base::testlock::serial();
-        let (menu, _store) = on_search_page(snap(SearchStatus::Searching, None, vec![], DownloadPhase::None));
-        assert_eq!(menu.page_path(), [TrackPage::Search]);
-        assert!(menu.wants_search());
-        assert_eq!(menu.ids(), [TrackRow::SearchLang], "searching: nothing to list yet");
-        assert_eq!(menu.form.selected_id(), Some(&TrackRow::SearchLang));
-    }
-
-    /// Results land in place, and a press quotes the generation they were published under â€” the
-    /// keys are ephemeral, so the store refuses a press against a replaced set.
-    #[test]
-    fn a_result_press_asks_to_download_quoting_its_generation() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, store) =
-            on_search_page(snap(SearchStatus::Ready, None, vec![hit("a"), hit("b")], DownloadPhase::None));
-        assert_eq!(menu.ids(), [TrackRow::SearchLang, TrackRow::SearchHit(0), TrackRow::SearchHit(1)]);
-        assert_eq!(menu.page_path(), [TrackPage::Search], "a landing never pops the page");
-        menu.focus_key(TrackRow::SearchHit(1).key().0);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Search(SubSearchCmd::Download { gen: 7, hit: 1 }));
-    }
-
-    /// Only a transport failure is retryable; a refusal says why and offers nothing, because a 403
-    /// retried is a 403.
-    #[test]
-    fn a_transport_failure_offers_a_retry_and_a_denial_does_not() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, store) =
-            on_search_page(snap(SearchStatus::Failed, Some(SearchFailure::Transport), vec![], DownloadPhase::None));
-        assert!(menu.ids().contains(&TrackRow::SearchRetry));
-        menu.focus_key(TrackRow::SearchRetry.key().0);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Search(SubSearchCmd::Retry));
-
-        let (menu, _) =
-            on_search_page(snap(SearchStatus::Failed, Some(SearchFailure::Denied), vec![], DownloadPhase::None));
-        assert!(!menu.ids().contains(&TrackRow::SearchRetry));
-    }
-
-    /// One download at a time: while one is on the wire every result and the language row are inert.
-    #[test]
-    fn a_busy_download_makes_the_rows_inert() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, store) = on_search_page(snap(SearchStatus::Ready, None, vec![hit("a"), hit("b")],
-            DownloadPhase::Sending { hit: 0 }));
-        menu.focus_key(TrackRow::SearchHit(1).key().0);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Inert);
-        menu.focus_key(TrackRow::SearchLang.key().0);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Inert, "no language change mid-download");
-    }
-
-    /// Picking a language returns to the Search page and reads "searching" at once, so the old
-    /// language's results never sit under the new language's name.
-    #[test]
-    fn picking_a_language_returns_to_the_search_page_searching_in_it() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, store) =
-            on_search_page(snap(SearchStatus::Ready, None, vec![hit("a")], DownloadPhase::None));
-        menu.focus_key(TrackRow::SearchLang.key().0);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
-        assert_eq!(menu.page_path(), [TrackPage::Search, TrackPage::SearchLanguage]);
-        let langs = search_languages();
-        assert!(langs.iter().all(|l| l.code.len() == 2), "only codes the server accepts");
-        let fr = langs.iter().position(|l| l.code == "fr").expect("French is offered");
-        menu.focus_key(TrackRow::LangChoice(fr).key().0);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Search(SubSearchCmd::SetLanguage("fr".into())));
-        assert_eq!(menu.page_path(), [TrackPage::Search]);
-        assert_eq!(menu.search().map(|s| s.status), Some(SearchStatus::Searching));
-        assert_eq!(menu.ids(), [TrackRow::SearchLang], "the old results are gone");
-    }
-
-    /// The search rows join the one key alphabet without colliding with any other row.
-    #[test]
-    fn the_search_keys_are_distinct_from_every_other_row() {
-        let mut ids = vec![TrackRow::SubOff, TrackRow::Timing, TrackRow::Style, TrackRow::Boost,
-            TrackRow::Loudness, TrackRow::OpenOther, TrackRow::OpenSearch, TrackRow::SearchLang,
-            TrackRow::SearchRetry];
-        ids.extend((0..300).flat_map(|i| [TrackRow::Sub(i), TrackRow::Audio(i), TrackRow::SearchHit(i),
-            TrackRow::LangChoice(i)]));
-        let keys: Vec<u32> = ids.iter().map(|i| i.key().0).collect();
-        for (n, a) in keys.iter().enumerate() {
-            assert!(*a < BAND_BASE);
-            assert!(!keys[n + 1..].contains(a), "duplicate key {a:#x}");
-        }
-    }
-
-    /// The auto-select hands the installed stream over ONCE â€” the snapshot is republished every
-    /// frame â€” as the same sidecar commit a pick on its row makes.
-    #[test]
-    fn an_installed_download_commits_once_as_a_sidecar_pick() {
-        let _g = plx_base::testlock::serial();
-        let installed = DownloadPhase::Installed { hit: 0, stream: plx_data::subsearch::InstalledStream {
-            id: 1929519, key: "/library/streams/1929519".into(), codec: "srt".into(), language_code: "nld".into() } };
-        let waiting = DownloadPhase::Waiting { hit: 0, before: vec![1], attempts: 0 };
-        let (mut menu, _store) = on_search_page(snap(SearchStatus::Ready, None, vec![hit("rel")], waiting));
-        assert!(menu.take_search_commit().is_none(), "nothing installed yet");
-        menu.set_search(snap(SearchStatus::Ready, None, vec![hit("rel")], installed));
-        let (stream, commit) = menu.take_search_commit().expect("the install is handed over");
-        assert_eq!(commit, TrackCommit::Subtitle { render_ordinal: -1, stream_id: 1929519,
-            sidecar_key: Some("/library/streams/1929519".into()), sidecar_codec: "srt".into(),
-            // remembered by what it IS: the dutch sidecar's language, kind and title, as the hit
-            // read it (the `hit("rel")` helper's own badges are not forced and not SDH)
-            memo: Some(plx_plex::plex::session::prefs::SubtitleMemo::Track(
-                plx_plex::plex::session::prefs::SubtitleTrackMemo {
-                    lang: "nld".into(), kind: "text".into(), external: true, title: "rel".into(),
-                    ..Default::default()
-                })) });
-        assert!(stream.external && stream.sidecar_renderable(), "listed as a drawable sidecar");
-        assert_eq!((stream.lang.as_str(), stream.title.as_str()), ("Nederlands", "rel"));
-        assert!(menu.take_search_commit().is_none(), "never twice for one stream");
-    }
-
-    /// **Regression (device, 2026-10-04):** after a download, the Subtitles and Audio menus could
-    /// no longer be opened. The store keeps its Installed state for the playing item, and every
-    /// NEW panel saw it, re-committed and dismissed itself on its first tick. Only a panel that
-    /// watched the download in flight may auto-select it.
-    #[test]
-    fn a_panel_opened_after_the_install_never_auto_selects_it_again() {
-        let _g = plx_base::testlock::serial();
-        let installed = DownloadPhase::Installed { hit: 0, stream: plx_data::subsearch::InstalledStream {
-            id: 1929519, key: "/library/streams/1929519".into(), codec: "srt".into(), language_code: "nld".into() } };
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let store = store_with(vec![metadata::Stream { id: 1, index: 0, lang: "English".into(),
-            lang_code: "eng".into(), codec: "srt".into(), ..Default::default() }]);
-        for tab in [0, 1] {
-            let mut menu = TrackMenuState::new_with(&ps, store.view(), tab, vec!["eng".into()], true);
-            menu.set_search(snap(SearchStatus::Ready, None, vec![hit("rel")], installed.clone()));
-            assert!(menu.take_search_commit().is_none(), "tab {tab}: reopening must not re-commit");
-        }
-    }
-
-    /// **Regression (ultrareview, 2026-10-05):** a result badged SDH/Forced on the Search page lost
-    /// the badge once it landed in the Subtitles list â€” the listed stream was built with both flags
-    /// defaulted. It carries the hit's own flags, so the row reads the same in both places.
-    #[test]
-    fn an_installed_download_keeps_its_sdh_and_forced_flags() {
-        let _g = plx_base::testlock::serial();
-        let flagged = SubHit { hearing_impaired: true, forced: true, ..hit("rel") };
-        let waiting = DownloadPhase::Waiting { hit: 0, before: vec![1], attempts: 0 };
-        let installed = DownloadPhase::Installed { hit: 0, stream: plx_data::subsearch::InstalledStream {
-            id: 1929519, key: "/library/streams/1929519".into(), codec: "srt".into(), language_code: "nld".into() } };
-        let (mut menu, _store) = on_search_page(snap(SearchStatus::Ready, None, vec![flagged.clone()], waiting));
-        menu.set_search(snap(SearchStatus::Ready, None, vec![flagged], installed));
-        let (stream, _) = menu.take_search_commit().expect("the install is handed over");
-        assert!(stream.sdh && stream.forced, "sdh={} forced={}", stream.sdh, stream.forced);
-    }
-
-    /// A sidecar the server already carries, as the playing item lists it: the release name PMS
-    /// copied from the candidate it was downloaded from, under a NEW id.
-    fn sidecar(id: i64, title: &str, lang_code: &str) -> metadata::Stream {
-        metadata::Stream { id, lang_code: lang_code.into(), title: title.into(), external: true,
-            key: format!("/library/streams/{id}"), codec: "srt".into(), ..Default::default() }
-    }
-
-    /// **Regression (owner report):** a hit the item ALREADY carries as a sidecar (downloaded
-    /// earlier, or on another client) could be pressed and added a second time, and the track menu
-    /// then listed it twice until the film was reloaded. It reads "Added" like the row installed
-    /// this session and OK does nothing on it; its neighbours stay live.
-    #[test]
-    fn a_hit_the_item_already_carries_reads_added_and_cannot_be_added_again() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, store) = on_search_page_with(
-            vec![sidecar(5, "a", "nld")],
-            snap(SearchStatus::Ready, None, vec![hit("a"), hit("b")], DownloadPhase::None),
-        );
-        let (row_a, row_b) = (TrackRow::SearchHit(0), TrackRow::SearchHit(1));
-        let value_of = |menu: &TrackMenuState, id: TrackRow| {
-            let i = menu.form.index_of(&id).expect("on the page");
-            let row = menu.form.table.sections.iter().flat_map(|s| &s.rows).nth(i).unwrap();
-            row.value.clone().unwrap_or_default()
-        };
-        assert_eq!(value_of(&menu, row_a), plx_platform::i18n::msg::widgets_tracks_search_added());
-        assert_eq!(value_of(&menu, row_b), "", "a hit the item lacks is not marked");
-        menu.focus_key(row_a.key().0);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Inert);
-        menu.focus_key(row_b.key().0);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Search(SubSearchCmd::Download { gen: 7, hit: 1 }));
-    }
-
-    /// The identity is the release name AND the language: the same release in another language, or
-    /// an embedded track that merely shares the title, is not "already added".
-    #[test]
-    fn only_a_sidecar_of_the_same_release_and_language_marks_a_hit_added() {
-        let _g = plx_base::testlock::serial();
-        let embedded = metadata::Stream { external: false, key: String::new(), ..sidecar(6, "a", "nld") };
-        let (mut menu, store) = on_search_page_with(
-            vec![sidecar(5, "a", "fra"), embedded, sidecar(7, "", "nld")],
-            snap(SearchStatus::Ready, None, vec![hit("a"), SubHit { title: String::new(), ..hit("a") }],
-                DownloadPhase::None),
-        );
-        for i in 0..2 {
-            menu.focus_key(TrackRow::SearchHit(i).key().0);
-            assert_eq!(menu.on_ok(store.view()), TrackOk::Search(SubSearchCmd::Download { gen: 7, hit: i }),
-                "hit {i}");
-        }
-    }
-
-    /// The installed subtitle joins the PLAYING item's list, once, and only that item's.
-    #[test]
-    fn an_installed_subtitle_is_appended_to_the_playing_item_once_and_only_there() {
-        let _g = plx_base::testlock::serial();
-        let mut store = store_with(vec![metadata::Stream { id: 1, ..Default::default() }]);
-        let (sid, rk) = { let p = store.view().playing().expect("playing"); (p.sid, p.rk.clone()) };
-        let stream = || metadata::Stream { id: 9, external: true, key: "/library/streams/9".into(),
-            codec: "srt".into(), ..Default::default() };
-        let append = |rk: String| plx_data::stores::metadata::MetadataCmd::AppendPlayingSub { sid, rk, stream: stream() };
-        assert!(store.run(append(rk.clone())));
-        assert!(!store.run(append(rk.clone())), "a repeat is a no-op");
-        assert!(!store.run(append(format!("{rk}-other"))), "another item's landing is dropped");
-        let ids: Vec<i64> = store.view().playing().unwrap().subs.iter().map(|s| s.id).collect();
-        assert_eq!(ids, [1, 9]);
-    }
-
-    /// **Regression (owner report):** PMS gives a re-downloaded subtitle a NEW id, so the stale
-    /// entry for the same release and the new one both sat in the list (two rows, one subtitle)
-    /// until a reload. The new id takes the old entry's place.
-    #[test]
-    fn a_reinstalled_subtitle_replaces_its_stale_entry_instead_of_duplicating_it() {
-        let _g = plx_base::testlock::serial();
-        let mut store = store_with(vec![metadata::Stream { id: 1, ..Default::default() }, sidecar(5, "rel", "nld")]);
-        let (sid, rk) = { let p = store.view().playing().expect("playing"); (p.sid, p.rk.clone()) };
-        let append = |stream| plx_data::stores::metadata::MetadataCmd::AppendPlayingSub { sid, rk: rk.clone(), stream };
-        assert!(store.run(append(sidecar(9, "rel", "nld"))), "the list changed");
-        let ids = |store: &plx_data::stores::metadata::MetadataStore| -> Vec<i64> {
-            store.view().playing().unwrap().subs.iter().map(|s| s.id).collect()
-        };
-        assert_eq!(ids(&store), [1, 9], "one entry for the subtitle, under the new id, in place");
-        assert!(!store.run(append(sidecar(9, "rel", "nld"))), "the same id again is a no-op");
-        assert_eq!(ids(&store), [1, 9]);
-    }
-
-    /// A different release, a different language, or a nameless stream is a different subtitle:
-    /// it still appends beside what is there.
-    #[test]
-    fn a_different_subtitle_still_appends() {
-        let _g = plx_base::testlock::serial();
-        let mut store = store_with(vec![sidecar(5, "rel", "nld"), sidecar(6, "", "nld")]);
-        let (sid, rk) = { let p = store.view().playing().expect("playing"); (p.sid, p.rk.clone()) };
-        let append = |stream| plx_data::stores::metadata::MetadataCmd::AppendPlayingSub { sid, rk: rk.clone(), stream };
-        assert!(store.run(append(sidecar(9, "other", "nld"))), "another release");
-        assert!(store.run(append(sidecar(10, "rel", "fra"))), "the same release in another language");
-        assert!(store.run(append(sidecar(11, "", "nld"))), "an empty title names nothing, so matches nothing");
-        let ids: Vec<i64> = store.view().playing().unwrap().subs.iter().map(|s| s.id).collect();
-        assert_eq!(ids, [5, 6, 9, 10, 11]);
-    }
-}
-
-/// **Classic's settled Tracks panel does not move** when its placement comes from an anchor: the
-/// right edge is the control row's (`CTRL_RIGHT`), the bottom edge 764, the width the hug, and the
-/// height the measured one up to the room above the row.
-#[cfg(test)]
-mod classic_placement_tests {
-    use super::tests::stream;
-    use super::*;
-    use plx_base::fontcov::advances::ShippedMeasure;
-
-    fn item(audio: usize) -> plx_data::stores::metadata::MetadataStore {
-        let mut store = plx_data::stores::metadata::MetadataStore::default();
-        let mut item = metadata::PlayingItem::with_subs(vec![stream(10, 0, "English", "eng", ""), stream(11, 1, "French", "fra", "SDH")]);
-        item.audio = (0..audio).map(|i| stream(100 + i as i64, i as i64, &format!("Dub {i}"), "eng", "")).collect();
-        assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
-        store
-    }
-
-    /// (name, right edge, bottom edge, width, height) of each settled page.
-    fn settled(audio: usize) -> Vec<(String, [f32; 4])> {
-        let _g = plx_base::testlock::serial();
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let store = item(audio);
-        let mut out = Vec::new();
-        for (tab, name) in [(0, "audio root"), (1, "subtitles root")] {
-            let mut menu = TrackMenuState::new(&ps, store.view(), tab, vec!["eng".into()]);
-            let r = menu.panel_rect(&ShippedMeasure);
-            out.push((format!("{name} ({audio} dubs)"), [r.x + r.w, r.y + r.h, r.w, r.h]));
-            if let Some(i) = menu.form.index_of(&TrackRow::Style) {
-                menu.focus_row(i as c_int);
-                assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
-                let r = menu.panel_rect(&ShippedMeasure);
-                out.push((format!("style page ({audio} dubs)"), [r.x + r.w, r.y + r.h, r.w, r.h]));
-            }
-        }
-        plx_plex::plex::reset_servers_for_test();
-        out
-    }
-
-    /// Captured from the constants-placed panels (`CTRL_RIGHT - pw`, bottom 764) before the
-    /// placement came from an anchor: (right, bottom, width, height).
-    #[test]
-    fn classic_tracks_panels_settle_where_they_always_did() {
-        let got = settled(3);
-        assert_eq!(
-            got.iter().map(|(n, r)| (n.as_str(), *r)).collect::<Vec<_>>(),
-            [
-                ("audio root (3 dubs)", [1824.0, 764.0, 468.0, 356.0]),
-                ("subtitles root (3 dubs)", [1824.0, 764.0, 447.0, 488.0]),
-                ("style page (3 dubs)", [1824.0, 764.0, 440.0, 296.0]),
-            ],
-        );
-    }
-
-    /// A list taller than the room scrolls inside a panel that stops at the cap. The cap was 704
-    /// (`bottom - 60`) and is now the room above the row, 710: the one settled frame that differs,
-    /// and only for a list taller than the old cap.
-    #[test]
-    fn a_long_dub_list_stops_at_the_room_above_the_row() {
-        let got = settled(40);
-        let (name, [right, bottom, w, h]) = &got[0];
-        assert!(name.starts_with("audio root"));
-        assert_eq!((*right, *bottom, *w, *h), (1824.0, 764.0, 468.0, 710.0));
-        assert_eq!(*bottom - *h, plx_ui::consts::SAFE.y, "the room is what is left under SAFE's top");
-    }
-
-    /// Every opener of classic gets the same anchor from the player screen, and it is the control
-    /// row's, ending at the segment's edge: that is why the Audio, Subtitles and `â€¦` discs all open
-    /// a panel at `CTRL_RIGHT - pw`, bottom 764.
-    #[test]
-    fn the_classic_anchor_is_the_row_ending_at_the_segment_edge_above_the_gap() {
-        let a = crate::player_hud::classic::ctrl_row_hit_rect();
-        assert_eq!(a.x + a.w, crate::player_hud::classic::CTRL_RIGHT, "the segment's outer edge");
-        assert_eq!(a.y - theme::layout::PLAYER_MENU_GAP, 764.0, "PLAYER_MENU_GAP above the row is classic's bottom edge");
-        assert_eq!((a.y, a.h), (crate::player_hud::classic::CTRL_Y, crate::player_hud::classic::CTRL_H), "the discs' own band");
-    }
-
-    fn menu_at(anchor: Rect, tab: c_int) -> (TrackMenuState, plx_data::stores::metadata::MetadataStore) {
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let store = item(3);
-        (TrackMenuState::new(&ps, store.view(), tab, vec!["eng".into()]).with_anchor(anchor), store)
-    }
-
-    /// The panel opens beside the anchor it was handed, whichever side that is.
-    #[test]
-    fn the_panel_opens_beside_the_anchor_it_was_handed() {
-        let _g = plx_base::testlock::serial();
-        use plx_ui::popover::Side;
-        let gap = theme::layout::PLAYER_MENU_GAP;
-        // an opener high on the screen: the panel hangs BELOW it, from its right edge
-        let high = Rect::new(1500.0, 120.0, 324.0, 64.0);
-        let (menu, _store) = menu_at(high, 1);
-        let r = menu.panel_rect(&ShippedMeasure);
-        assert_eq!(menu.side.get(), Side::Below);
-        assert_eq!((r.y, r.x + r.w), (high.y + high.h + gap, high.x + high.w));
-        // an opener in the middle of the right edge with no room above or below for NEED_H: to its left
-        let mid = Rect::new(1700.0, 560.0, 64.0, 64.0);
-        let (menu, _store) = menu_at(mid, 1);
-        let r = menu.panel_rect(&ShippedMeasure);
-        assert_eq!(menu.side.get(), Side::Start);
-        assert_eq!(r.x + r.w, mid.x - gap);
-        assert!(plx_ui::consts::SAFE.contains(r.x, r.y) && r.y + r.h <= plx_ui::consts::SAFE.y + plx_ui::consts::SAFE.h);
-        plx_plex::plex::reset_servers_for_test();
-    }
-
-    /// **The anchor is latched**: the panel's side and its edge by the opener stay put as the page
-    /// changes under it (a push, the other tab: both change the width and height), because nothing
-    /// re-reads where the opener is.
-    #[test]
-    fn the_panel_does_not_move_off_its_anchor_while_it_is_open() {
-        let _g = plx_base::testlock::serial();
-        let (mut menu, store) = menu_at(Rect::new(1500.0, 300.0, 324.0, 64.0), 1);
-        let first = menu.panel_rect(&ShippedMeasure);
-        let side = menu.side.get();
-        assert_eq!(side, plx_ui::popover::Side::Below, "the opener is high: the panel hangs under it");
-        let i = menu.form.index_of(&TrackRow::Style).expect("Style row");
-        menu.focus_row(i as c_int);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
-        let pushed = menu.panel_rect(&ShippedMeasure);
-        assert_ne!((pushed.w, pushed.h), (first.w, first.h), "the page changed the panel's size");
-        assert_eq!(menu.side.get(), side);
-        assert_eq!(pushed.x + pushed.w, first.x + first.w, "the edge by the opener");
-        assert_eq!(pushed.y, first.y, "and the panel's start (below the opener: its top)");
-        plx_plex::plex::reset_servers_for_test();
-    }
-
-    /// `NEED_H` is what the side is decided on, so it has to cover the tallest page the menu shows
-    /// with app-owned rows, and has to fit classic's room above the row (710) or classic would flip.
-    #[test]
-    fn need_h_covers_the_app_owned_pages_and_fits_classics_room() {
-        let _g = plx_base::testlock::serial();
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let store = item(0);
-        let mut tallest = 0.0f32;
-        for tab in [0, 1] {
-            let mut menu = TrackMenuState::new_with(&ps, store.view(), tab, vec!["eng".into()], true);
-            tallest = tallest.max(menu.form.table.measured_height());
-            if let Some(i) = menu.form.index_of(&TrackRow::Style) {
-                menu.focus_row(i as c_int);
-                assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
-                tallest = tallest.max(menu.form.table.measured_height());
-            }
-        }
-        assert!(tallest > 200.0, "something was measured: {tallest}");
-        assert!(tallest <= NEED_H, "a page of {tallest} px is taller than NEED_H {NEED_H}");
-        assert!(NEED_H <= 764.0 - plx_ui::consts::SAFE.y, "classic's room above the row holds NEED_H");
-        plx_plex::plex::reset_servers_for_test();
-    }
-
-    /// The overscan audit's rect is the placer's, and sits inside SAFE.
-    #[test]
-    fn the_overscan_rect_comes_from_the_placer() {
-        let mut out = Vec::new();
-        overscan_rects(&mut out);
-        let r = out[0].1;
-        assert_eq!((r.x + r.w, r.y + r.h, r.w), (1824.0, 764.0, plx_ui::table::MENU_MAX_W));
-        assert_eq!(r.y, plx_ui::consts::SAFE.y, "the whole room");
-    }
-}
+YªçŠx-®éÜj×¢ëiºÚ+Š§j[h‘éÜ¢éí×}=Û¤èµ©hºÚn¶X§zÍKËÈH[‹\^Y\ˆ[Ù[˜XÚÈY[Nˆ]Y[È
+ÈÝX]HXÚÙ\œÈÝ™\ˆHšY[Ë™[™\™YÛˆH™]\ØX›B‹ËÈH[š[X]YX›UšY]Ø
+\KUˆœÙ][™ÜÈˆÛÚÈ8 %HÛY[™È[Ù[XÝ[Û‹ÙXÝ[ÛˆXY\ˆÚ]‹ËÈHHÛÙXÈXØÙ\ÜÛÜžK\‹\›ÝÈ˜YÙ\ËHXY[™ÈÚXÚÛX\šÈÛˆHXÝ]™H˜XÚÊKˆ\œœÈ›Ý]\Â‹ËÈH\YÓÒËÐPÒÈ\™HÚ[HHY[H\ÈÜ[ŽÈQ•Ô’QÒÝÚ]Ú™]ÙY[ˆH]Y[È[™ÝX]\Â‹ËÈH[™[ÈÛˆH›ÛÝ
+ÛˆHÝX]\ÈXˆQ•ÜÈHÝX‹\YÙH[™’QÒÛˆH˜]ˆ›ÝÈ[\œÈ]Â‹ËÈHPÒÈÜÈHÝX‹\YÙH™Y›Ü™H]\ÛZ\ÜÙ\ÊKˆHÙ[XÝ[ÛˆÛÛ[Z]
+˜]]™H]Y[ÈÝÚ]ÚÈÙ\™\ˆ˜[œØÛÙHÈ\›ŠH\È[˜Ú[™ÙY‹ËÈHœ›ÛHH™]š[Ý\È›ØÙY\˜[™\œÚ[Ûˆ8 %Û›HH™\Ù[][Ûˆ[Ý™YÛÈHX›K‚‹ËÈB‹ËÈH
+Š•HÝX]\È[™[\ÈÜ›Ý\Y›ÝÛ™H›]\Ý
+Šˆ
+[ˆÝX]K[Y[KXØ\Ý[X0©ÌË‹ËÈHÝ\ÙÜ^Y\‹Ü^Y\‹š[ŒLLLLMŒ˜
+NˆÙ™‹›Ü˜ÙYÛ›H[™]™\žHÚ[™ÛK]˜XÚÈž[Ý\œÈ‚‹ËÈH[™ÝXYÙHÚ][™\ˆÛ™H”ÝX]\ÈˆXY\ŽÈHž[Ý\œÈˆ[™ÝXYÙHÚ]Ù]™\˜[˜XÚÜÈÙ]È]ÈÝÛ‚‹ËÈHÙXÝ[Ûˆ
+XY\ˆH[™ÝXYÙKXØÙ\ÜÛÜžJ“ˆ˜XÚÜÈŠX
+K˜[šÙY[Ñ›Ü˜ÙYÛÛ[Y[\žNÂ‹ËÈH]™\ž][™È[ÙH\Â‹ËÈHÓ‘H“Ý\ˆ[™ÝXYÙ\Èˆ›ÝÈ
+Hš[Z[ˆÈØ˜XÚÔYÙNŽ“Ý\“[™ÝXYÙ\ØKÛ™H›ÝÈ\ˆ[™ÝXYÙB‹ËÈHKVŽÈH][K]˜XÚÈ[™ÝXYÙH\™Hš[È[ˆYØZ[ˆÈØ˜XÚÔYÙNŽ“[™ÝXYÙXK]È˜XÚÜÂ‹ËÈH˜[šÙY
+NÈ[™HXY\›\ÜÈÙXÝ[ÛˆÛÈ[Z[™È[™Ý[Kˆ]‹ËÈHÜ›Ý\[™È\ÈH\™HUH[Ù[Y]Y]NŽœÝX—Û^[Ý]
+ÜÝ]\ÝYÚ]Ý]B‹ËÈH^X˜XÚÔÙ\ÜÚ[Û˜ØY]Y]UšY]Øš^\™JNÈ\È[Ù[HÛ›H\›œÈ][ÈX›UšY]ØÙXÝ[ÛœÂ‹ËÈH
+ØX›WÙ›Ü›XJH[™[œÝÙ\œÈ›ØÝ\ËÓÒÈžHH›ØÝ\ÙY›ÝÉÜÈØ˜XÚÔ›ÝØHY[]Kˆ–[Ý\œÈˆ\Â‹ËÈHH™Yˆ[™ÝXYÙH
+YˆH^H™\ÛÛ™Y[™\ˆÛ™JKH^Z[™È]Y[ÉÜÈ[™ÝXYÙK[™B‹ËÈHÝ\œ™[ÝX]IÜÈÝÛˆ[™ÝXYÙK[ˆ]Ü™\ˆ
+›Ý]NŽ˜Ý\—ÜÝX—Ü™Y—Û[™ØØ\œšYY[ˆžB‹ËÈHØÜ™Y[œÎŽœ^Y\ŽŽ›Ý™\›^X
+K‚‹ËÈB‹ËÈH
+Š›ÝXœÈ\™HÙ^YYXÛ\˜]]™H›Ü›\ÊŠˆ
+ZNŽ™›Ü›XØÜËÜ^Y\‹\ÝX›Y[\Ë›Y
+NˆXXÚ›ÝÈ\Â‹ËÈHXÛ\™YÛ˜ÙHÚ]]ÈÙ[X[XÈØ˜XÚÔ›ÝØHY[]KHÝX›HØ›ÝÒÙ^XH
+H˜[Z[H˜\ÙH\Â‹ËÈHH˜XÚÉÜÈ[™^[ˆH^Z[™È][IÜÈ\ÝÚXÚ\Èš^Y›ÜˆH][IÜÈY™][YK™]™\ˆB‹ËÈH\ÝÜÚ][ÛŠK]ÈÚ[™[™]ÈØ›ÝØKˆH›ØÝ\È^Y\‰ÜÈ[[Y[\ÈH›ÝÉÜÈÙ^KÛÈH›ÝÂ‹ËÈHYYX›Ý™H[›Ý\ˆ
+HÝX]HÙ™™\™YZY\^KH[š[˜Ù[Y[Z\ˆ™]\›š[™ÊH[Ý™\È›ÈÙ^K‹ËÈH[™H™XZ[™\ÝÜ™\ÈHšY]Ù\‰ÜÈ›ÝÈžHY‚‹ËÈB‹ËÈH
+Š•[Z[™ÊŠˆ\ÈHÚ[™ÛH˜[YH›ÝÈ]™XYÈÝ]HÝ\œ™[Ù™œÙ]
+›ÈÚ]œ›ÛŽˆ]\ÈB‹ËÈH[™[Ù™‹›ÝHYÙJNÈÒÈÛˆ]Ù\È›ÝÝ\[ž][™È\™H8 %]™]\›œÂ‹ËÈHØ˜XÚÓÚÎŽ“Ü[•[Z[™ØKÚXÚØÜ™Y[œÎŽœ^Y\ŽŽ›Ý™\›^X	ÜÈXÝ]˜]X\›œÈ[ÈH[™[Ù™Žˆ]‹ËÈH\ÛZ\ÜÙ\È\È[™[[™™\Ù[ÈH[Z[™ÈØ\Ý[HÝ™\›^H
+Ý™\›^RÚ[™Ž•[Z[™Ø‹ËÈH\Ú]Ž[Z[™×ØØ\Ý[X
+H[ˆ]ÈXÙKˆH›ÝÈ\È[H[™[™\Ú[H›ÈÝX]H\È˜]Û‚‹ËÈH
+Ù™‹Üˆ›Ü˜ÙYÛ›HÚ]›È›Ü˜ÙY˜XÚÈÈÚÝÎÈÒÈ\™H™Z]\ˆÜ[œÈHØ\Ý[H›Ü‚‹ËÈHÛÜÙ\ÈH[™[
+K[™[Z[™ÈÙÙ]\ˆÚ]Ý[H\ÈÛZ]Y‹ËÈH\š[™È[ˆÜ™[˜\žH˜[œØÛÙKÚXÚ\›œÈØ\[ÛœÈ[ÈHXÝ\™HÚ\™H›ÈÛY[\ÚYHÙ™œÙ]‹ËÈHÜˆÝ[HØ[ˆ™XXÚˆ]ÛZ\ÜÚ[Ûˆ›ÝÈÛÈÛ›HÚ[H›ÈÝX]H\ÈÛŽˆÛ˜ÙHHÙ\™\ˆ˜]ÜÂ‹ËÈHHÙ[XÝYÝX]H
+ØÛYYXNŽœ›Ý]NŽœÝX]WÜ™\Ù[\˜HØ^\ÈÙ\™\\›˜ˆH™[]^]‹ËÈHØ[››ÝØ\œžH[ˆ[X™YY˜XÚË\È\	ÜÈÝÛˆ]Y[ËY[š[˜Ù[Y[\›‹H]X[]K[[Z]Y‹ËÈH™KY[˜ÛÙJK›Ý›ÝÜÈÝ^Hš\ÚX›H8 %[K[™\Ú]HÛ™K[[™H™X\ÛÛˆ
+›ÝÎŽ››ÝX
+HØ^Z[™Â‹ËÈHÚHHÙ\™\ˆ\È˜]Ú[™È]8 %˜]\ˆ[ˆ™Z[™È›Ý[™Ú[\HÛÛ™Kˆ[ˆ^\›˜[ÚYXØ\ˆÝ™\ˆB‹ËÈH™[]^\È˜]ÛˆžHH\
+ÛY[Ý™\”™[]^
+KÛÈ\™H›Ý›ÝÜÈ\™H]™HÚ]›È™X\ÛÛ‹‚‹ËÈB‹ËÈH
+Š‘›Ü˜ÙYÛ›H\ÈHSÑH›ÝË›ÝH˜XÚÊŠˆ
+“ËØÜËÜ^X˜XÚË\Ù][™ÜË›Y
+Kˆ]Ú]ÈšYÚY\ˆÙ™‚‹ËÈHÚ\™]™\ˆÙ™ˆ\ËÚ]\ˆÜˆ›ÝH][HØ\œšY\ÈH›Ü˜ÙY˜XÚË[™ÛÈ^XÝHÛ™HÚXÚÛX\šÂ‹ËÈHÚ]H˜XÚÜÈ[™Ù™ŽˆÚ[HH[ÙHÛËH›Ü˜ÙY˜XÚÈ]˜]ÜÈ\È“Õ[ÛÈÚXÚÙYÛ‚‹ËÈH]ÈÝÛˆ›ÝË[™Ù™ˆ\È›ÝÚXÚÙYˆ]È˜[YH\ÈH[™ÝXYÙHÙˆÚ]]˜]ÜÈ
+[ÙHH^Z[™Â‹ËÈH]Y[ÉÜÊK›Ý[™Y
+ÝX—Û^[Ý]Ž™›Ü˜ÙYÛÛ›WÜ™XYÝ]
+HÛÈHÛ™È˜[YH™]™\ˆÛ\ÈH›ÝÉÜÈÝÛ‚‹ËÈHÛÜ™ËˆÒÈÛÛ[Z]ÈØ˜XÚÐÛÛ[Z]Ž”ÝX]Q›Ü˜ÙYÛ›XNˆH›Ü˜ÙY˜XÚÈ›ÜˆH]Y[È]^\Â‹ËÈH
+ØÛYYXNŽœ›Ý]NŽ™›Ü˜ÙYÛÛ›WÜXÚØKÚ]HÛÛZ[™\‰ÜÈ˜XÚÈ˜[Y\ÊHÜˆ›Ý[™ÎÈ›Üˆ]Y[Â‹ËÈH]˜[Y\È›È[™ÝXYÙH]X]Ú\È[ˆH[™ÝXYÙHHÙ\ÜÚ[Ûˆ™[˜XÚÈÂ‹ËÈH
+ØÛYYXNŽœ›Ý]NŽ™›Ü˜ÙYÛÛ›WÛ[™ØJK\ÈH™\ÛÛ™HÙ\ËˆÒÈÛˆH›ÝÈ]\È[™XYHB‹ËÈH[ÙH™XÛÛ[Z]ÈÚ]\ÈÛˆØÜ™Y[ˆ[™Üš]\È›Ý[™Ë‚‹ËÈB‹ËÈH
+ŠHXÚÈ\ÈHÚÝÉÜÈY[[ÜžK[™HY[HØ^\ÈÚ[ˆH›Ý]HØ[››ÝÛ›Ý\ˆ]ŠŠˆ[ˆ^XÚ]‹ËÈHXÚÈ[ˆZ]\ˆXˆÛÛ[Z]È]È\ØÜš\ÜˆÚ]H˜XÚÈ
+Ø˜XÚÐÛÛ[Z]IÜÈY[[Ø
+KÚXÚB‹ËÈH\	ÜÈÛÛ[Z]Ý˜XÚØ[™ÈÈ›Ý]NŽ˜ÛÛ[Z]Ø]Y[×ÜXÚØ[™›ÜˆHÛÈÝX]H\›\ÈÂ‹ËÈH›Ý]NŽ˜ÛÛ[Z]ÜÝX]WØ[™ÜÚYXØ\˜ÈÛÛ[Z]Ù›Ü˜ÙYÛÛ›WØ[™ÜÚYXØ\˜
+HXÚÈÛÛ[Z]\È]Â‹ËÈHÚYXØ\ˆÙ[XÝÜˆ\Ù[XÝ
+NÈH
+—ÜXÚØÛÛ[Z]ÈÜš]H]Â‹ËÈHHÚÝÉÜÈ˜XÚÈY[[ÜžHÚ[ˆH›Ý]HXØÙ\YHXÚË[™H™^\\ÛÙIÜÈ[ˆ™XYÈ]‹ËÈH˜XÚËˆÚ[ˆHY[[ÜžHÚÜÙHHÝX]H›Üˆ\È^H[™H›Ý]HØ[ˆÚÝÈ›Û™HÙˆ]
+HÛÜB‹ËÈH™[]^H\Ø[››Ý˜]ÊKÙ™ˆ\ÈÛˆØÜ™Y[‹ÛÈHš\œÝÜ›Ý\ÛÜÙ\ÈÚ]Û™H[™\‹ËÈH™X\ÛÛˆ
+ØX›WÙ›Ü›XIÜÈY[[ÜžWÛ›ÝX›Ý]NŽ˜Ý\—ÛY[[ÜžWÛ›ÝX
+KXœÙ[]™\ž]Ú\™H[ÙK‚‹ËÈB‹ËÈH
+Š”Ý[H\ÈHš[Z[‹[™HÝX]\ÈXˆ\ÈHYÙHÝXÚÊŠˆ
+ØÜËÜ^Y\‹\ÝX›Y[\Ë›Y
+KˆB‹ËÈHÝ[H›ÝÈ\ÈHØ›ÝÒÚ[™Ž“˜]˜HÛÈØ˜XÚÔYÙNŽ”Ý[XKÚÜÙHÚ^™KÜÚ][Ûˆ[™ÛÛÜˆ›ÝÜÂ‹ËÈHXXÚ™XYÝ]Z\ˆÝ\œ™[˜[YH[™\ÚHXÚÙ\ˆYÙH
+Ø˜XÚÔYÙNŽ”XÚÙ\˜JHÙ‚‹ËÈHØ›ÝÒÚ[™ŽÚÚXÙXH›ÝÜÈÚ]HÝ\œ™[[™ÈÚXÚÙYˆH\Ú™[Y[X™\œÈHÜ[™\‰ÜÈY[™B‹ËÈHØÜ›Û
+ØYÙWÜÝXÚÎŽ”Ø]™YJNÈHÜ
+Ø˜XÚÓY[TÝ]NŽœÜKQ•ÜˆPÒËÜˆHÛXÚÈÛˆH]H˜[™‹ËÈHÚÜÙHÚ[\‹[Û›HÝÜ\ÈØUWÒÑVXJH™\ÝÜ™\È›ÝÛÈ›ØÝ\È™]\›œÈÈH›ÝÈ]Ü[™Y‹ËÈHHYÙHžHYˆÒÈÜˆ’QÒÛˆH˜]ˆ›ÝÈ\Ú\È
+Ø˜XÚÓY[TÝ]NŽ›Û—ÜšYÚJNÈQ•ÛˆH›ÛÝ‹ËÈH\ÈÝ[HXˆÝÚ]Ú[™PÒÈÛˆH›ÛÝ\ÛZ\ÜÙ\Ëˆ]™\žHYÙHÜ[œÈÛˆ[ˆ^XÚ]Y‹ËÈH
+Ø˜XÚÓY[TÝ]NŽœYÙWÚ[š]X[JKˆHXÚÙ\ˆXÚÈÛÛ[Z]È]™H[™X]™\ÈH[™[[™YÙB‹ËÈHÜ[ˆ
+Ø˜XÚÓÚÎŽÛÛ[Z]IÜÈÙY\ÛÜ[˜
+KÛÈH[ˆÙˆXÚÜÈ\È™[]Û˜ÙK‚‹ËÈB‹ËÈH
+Š•Ú]Ý[HØ[ˆ™XXÚ\[™ÈÛˆHXÝ]™H™[™\™\ŠŠˆ
+ØÝX”™[™\™\˜JNˆÛ›HHÛY[	ÜÂ‹ËÈHZ[‹]^Ø\[Ûˆ›ÛÝÜÈÚ^™H[™ÜÚ][Û‹ÛÈ[™\ˆ[ˆ[XYÙH
+ÔËÕ›Ø”ÝXŠHÜˆ˜]]™HTÔËÔÔÐB‹ËÈHÝX]HÜÙHÛÈ›ÝÜÈ\™H[K›ØÝ\ØX›H[™[™\Ú]HÙ\\˜]H›ÝHXXÚˆÛÛÜˆÝ^\Â‹ËÈH]™H[™\ˆ]™\žH™[™\™\ŽˆHÝX]H[šÈ[Èš]X\È[™TÔÈ[ZÙKˆÚ^™H[™ÜÚ][Ûˆ\™B‹ËÈH\œÚ\ÝYžH›Ý]NŽœÙ[XÝÜÝX]WÜÚ^™XÈÙ[XÝÜÝX]WÜÜÚ][Û˜[™ÛÛÜˆžB‹ËÈH^Y\ŽŽœÙ]ÜÝX]WÝÛ™Xˆ[™YH\™HÛ™HØ[[ÈHÛ™HÜš]HÛÜˆ
+›Ý]NŽ˜ÚÛÜÙX‹ËÈHÝÎŽ“Ü[Z\ÝXØˆ]™H˜[YHš\œÝH\˜X›HÜš]HÙXÛÛ™™]™\ˆ™\X›\ÚY
+K‚‹ËÈB‹ËÈH
+ŠHÝX‹\YÙH™]™\ˆÝ]]™\ÈH›ÛÝ]Ø\ÈZ[Û‹ŠŠˆH›ÛÝ	ÜÈØÝX”ÚYØH8 %ÝXœÂ‹ËÈHš[™Ù\œš[XÝ]™H[™^™[™\™\ˆÚ[™˜[œØÛÙ[™Ë™\Ù[\ˆ[™[š[˜Ù[Y[›Ý]H8 %\Â‹ËÈHÝÜ™YÚ[ˆH›ÛÝ\ÈZ[[™ÛÛ\\™YÛˆ]™\žH]™HÛÈHZ\ÛX]Ú™Yœ™\Ú\ÈH›ÛÝ[‚‹ËÈHXÙK[™HÝX‹\YÙH[ˆXÙHÛÈ8 %]ÜÈÝ˜ZYÚÈH›ÛÝÛ›HÚ[ˆ]È]˜Z[Xš[]H›Â‹ËÈHÛ™Ù\ˆÛÈ
+H™[™\™\‹ÜˆÚ]\ˆÝ[H\ÈÚÝÛˆÈØÚÙY
+KˆH™\^HØ[›Û‚‹ËÈH
+Ø˜XÚÓY[TÝ]NŽ˜Ø[›Û˜JHØ\œšY\ÈHX‹HYÙH]Ú]XXÚ™]\›ˆÙ^K[™B‹ËÈHÙ[XÝYÙ^K‚‹ËÈB‹ËÈH
+Š•HÝ\ˆ[™ÝXYÙ\È›ÝÊŠˆ\È]KYš]™[ˆžHØ˜XÚÓY[TÝ]NŽ›Ý\˜H
+Û™HÝ\“[™Ø\‚‹ËÈH[™ÝXYÙKœ›ÛHHØ[YHÝX—Û^[Ý][œÝÙ\ˆ\ÈH›ÛÝ
+KÛÈHYÙH\ÝÈ^XÝHÚ]]Â‹ËÈHÜ[™\ˆ›ÛZ\ÙYˆH[™ÝXYÙH\ÈY[YšYYžHH^Ý™X[HYÙˆ]Èš\œÝ˜XÚÈ[ˆH][IÜÂ‹ËÈH•S\Ý
+Ø[™ÒYKØ\œšYYžHØ˜XÚÔ›ÝÎŽ“Ü[“[™ØH[™Ø˜XÚÔYÙNŽ“[™ÝXYÙXJK™]™\ˆB‹ËÈH\ÝÜÚ][Û‹ÛÈ˜XÚÜÈX]š[™ÈÜˆ\œš]š[™ÈØ[››Ý™[X™[[ˆÜ[ˆYÙKˆH˜XÚÈXÚÈÛˆ[žB‹ËÈHYÙHÛÛ[Z]È[™\ÛZ\ÜÙ\ÈZÙHH›ÛÝXÚËˆHYÙHÚÜÙH\Ý[™È\ÈÛÛ™H
+H[™ÝXYÙHYB‹ËÈHÙ™™\™Y\Ý
+HÜÈÈH›ÛÝ
+Ø˜XÚÓY[TÝ]NŽœYÙ\×ÚÛJNÈH[™ÝXYÙHYÙH]›ÜÈÈB‹ËÈHÚ[™ÛH˜XÚÈÝ^\ÈÜ[‹[™Ü[™È][™ÈÛˆ]˜XÚÉÜÈ\™XÝ›ÝË‚\ÙHÙ]NŽ›Y]Y]NÂ\ÙHÙ]NŽ›Y]Y]NŽœÝX—Û^[Ý]ŽžÜÙ[‹[™ÒYÝ\“[™Ë›ÝÐ˜YÙK›ÝÕ\™Ù]ÝX’XY\‹ÝX“[Ù[ÝX”›ÝËÝX•˜XÚßNÂ\ÙHÙ]NŽ›Y]Y]NŽ˜XÚ×ÛX™[Â\ÙHÜ^Žœ^ŽœÙ\ÜÚ[ÛŽŽžÔÝX]TÜÚ][Û‹ÝX]TÚ^™KÝX]UÛ™_NÂ\ÙHÝZNŽ™œ˜[YNŽYÙ]Â\ÙHÝZNŽ™Ù[ÛNŽ’[™^[[NÂ\ÙHÛXXÚ[™NŽ›XXÚ[™NŽžÐØ[›Û‹Þ[žRY›ØÝ\ÒÙ^KÜ›Ý\YÜÝYX\Ý\™_NÂ\ÙHÝZNŽœÜÝ™\ŽŽ”ÜÝ™\ŽÂ\ÙHÝZNŽœØÜ™Y[ŽŽžÐ]\‹˜]Ñœ˜[YK›ØÝ\ØX›KÜ›Ý\ÜXË\XÙYÝ\NÂ\ÙHÝZNŽ™›Ü›NŽžÐXÝ]˜][Û‹›Ü›K›Ü›RY›Ü›TÙXÝ[Û‹›Ü›UX›K›ÝÒÙ^K›ÝÒÚ[™NÂ\ÙHÝZNŽœYÙWÜÝXÚÎŽžÂˆÙ[‹ÜÝ™\—ÙÜ›Ý\ÛÙ‹ÜÝ™\—ÙÜ›Ý\ËÜÝ™\—Û™ZYÚ›Ý\‹ÜÝ™\—ÜXÙKˆÜÝ™\—Ü™YÚ\Ý\—ÜÝÜËÜÝ™\—ÜÙX]YÙTÝXÚËÜÝ™\”[™[ŸNÂ\ÙHÝZNŽœ[™[Û[Ý[ÛŽŽ”[™[[Ý[ÛŽÂ\ÙHÝZNŽX›NŽžÐ˜YÙK›ÝËÙXÝ[Û‹X›UšY]ßNÂ\ÙHÝZNŽX›WÜØÜ™Y[ŽŽS‘ÐTÑNÂ\ÙHÝZNŽ[YNÂ\ÙHÝZNŽžÔZ[\‹™XÝNÂ\ÙHÝŽ›ÜÎŽœ˜]ÎŽ˜×Ú[Â‚‚‹ËËÈ
+Š•Ú]H›ØÝ\ØX›H›ÝÈÙˆZ]\ˆXˆTÊŠˆ8 %HY[]HHØ›Ü›UX›XH™\ÛÛ™\ÈH™\ÜËB‹ËËÈ›ØÝ\È[Ý™H[™H™XZ[	ÜÈ[™[™ÈžK™]™\ˆHÜÚ][Û‹ˆH]Y[ÈX‰ÜÈ˜XÚÈ›ÝÜËHÛÈ^‹ËËÈ\ÜÈÔÙÙÛ\È[™HÝX]\ÈX‰ÜÈ›ÝÜÈ
+›ÛÝÝ[HYÙH[™XÚÙ\œÊHÚ\™HÛ™H[X™]‹ËËÈÛÈÛ™HØ›Ü›UX›XHÙ\™\È]™\žHYÙKˆH›Û‹\Ù[XÝX›H›ÛÝ›Ý\È[™\ˆHÔZ\ˆ[™[™\‚‹ËËÈÝ[H\™H[™\ÛÝÈ
+Ø›Ü›TÙXÝ[ÛŽŽ››ÝXJH[™]™H›ÈY[]H][‚ˆÖÙ\š]™JÛÛ™KÛÜKXYË\X[\K\JWBœXˆ[[H˜XÚÔ›ÝÈÂˆËËÈ[ˆ]Y[Ë]Xˆ˜XÚÈ›ÝÈ8 %H[™^[ÈH^Z[™È][IÜÈ]Y[È\ÝˆËËÈ
+ØÙ]NŽ›Y]Y]NŽ”^Z[™Ò][NŽ˜]Y[ØJK‚ˆ]Y[Ê\Ú^™JKˆËËÈH›ÛÜÝX[ÙÈÙÙÛH›ÝÈ
+\ÜÝYHÌŠH8 %™\Ù[Ú[™]™\ˆØ˜XÚÓY[TÝ]NŽ™[š[˜ÙWÜÚÝÛ˜BˆËËÈ\ÈÛÛYX
+Ù™™\™Y
+HÔˆØ˜XÚÓY[TÝ]NŽ™[š[˜ÙWÙ\ØX›YH\È
+[KÚ]H™X\ÛÛŠKˆËËÈ[[YYX][HY\ˆH\ÝØÙ[ŽŽ]Y[ØK‚ˆ›ÛÜÝˆËËÈH›Ü›X[^™HÝY™\ÜÈÙÙÛH›ÝÈ
+\ÜÝYHÌŠK[[YYX][HY\ˆØÙ[ŽŽ›ÛÜÝK‚ˆÝY™\ÜËˆËËÈHÝX]\ÈX‰ÜÈÙ™ˆ›ÝË‚ˆÝX“Ù™‹ˆËËÈHÝX]\ÈX‰ÜÈ›Ü˜ÙYÛ›H›ÝË\™XÝHY\ˆÙ™ŽˆH\™™[Y[X™\™YÝ]BˆËËÈ
+Ù™‹H˜XÚËÜˆH›Ü˜ÙY˜XÚÈ[ˆH^Z[™È]Y[ÉÜÈ[™ÝXYÙJKˆ]\ÈÙ™™\™YÚ\™]™\‚ˆËËÈÙ™ˆ\ËÚ]ÜˆÚ]Ý]H›Ü˜ÙY˜XÚÈÛˆ\È][K‚ˆÝX‘›Ü˜ÙYÛ›KˆËËÈHÝX]\Ë]Xˆ˜XÚÈ›ÝÈ8 %H[™^[ÈH^Z[™È][IÜÈÝXœÈ\Ý‚ˆÝXŠ\Ú^™JKˆËËÈH[Z[™È›ÝÈ
+[™ÈÙ™ˆÈH[Z[™ÈØ\Ý[JK‚ˆ[Z[™ËˆËËÈHÝ[Hš[Z[ˆÛˆHÝX]\È›ÛÝ
+Ø˜XÚÔYÙNŽ”Ý[XJK‚ˆÝ[KˆËËÈHÝ\ˆ[™ÝXYÙ\Èš[Z[ˆÛˆHÝX]\È›ÛÝ
+Ø˜XÚÔYÙNŽ“Ý\“[™ÝXYÙ\ØJK‚ˆÜ[“Ý\‹ˆËËÈÝ\ˆ[™ÝXYÙ\ÈYÙNˆH][K]˜XÚÈ[™ÝXYÙIÜÈš[Z[ˆ
+Ø˜XÚÔYÙNŽ“[™ÝXYÙXJKˆØ\œšY\ÂˆËËÈH[™ÝXYÙIÜÈY[]H8 %HÝ™X[HYÙˆ]Èš\œÝ˜XÚÈ[ˆH][IÜÈ•S\ÝˆËËÈ
+Ø[™ÒYJH8 %ÛÈ]Ý^\È][™ÝXYÙHÚ[ˆ˜XÚÜÈX]™K\œš]™HÜˆHÙ™™\™YÝXœÙ]ˆËËÈÚ[™Ù\ÎÈHY	ÜÈÛÝÛ›HXÚÜÈH›ÝÉÜÈ›ØÝ\ÈÙ^K‚ˆÜ[“[™Ê[™ÒY
+KˆËËÈÝ[HYÙNˆHš[Z[ˆÈÛ™HšY[	ÜÈXÚÙ\ˆ
+Ø˜XÚÔYÙNŽ”XÚÙ\˜JNÈ™XYÈÝ]BˆËËÈšY[	ÜÈÝ\œ™[˜[YK‚ˆÜ[‘šY[
+Ý[QšY[
+KˆËËÈHXÚÙ\ˆYÙIÜÈÚÚXÙNˆHšY[[™H[™ÉÜÈ[™^Ûˆ]šY[	ÜÈY\‹‚ˆÚÚXÙJÝ[QšY[\Ú^™JKˆËËÈHÙX\˜Ú›ÜˆÝX]\Èš[Z[ˆÛˆHÝX]\È›ÛÝ
+Ø˜XÚÔYÙNŽ”ÙX\˜ÚJKˆ™\Ù[Û›BˆËËÈÚ[ˆHÜÝÙ™™\œÈHÙX\˜Ú
+Ø˜XÚÓY[TÝ]NŽœÙ]ÜÙX\˜ÚJK‚ˆÜ[”ÙX\˜ÚˆËËÈHÙX\˜ÚYÙIÜÈ[™ÝXYÙH›ÝÎˆ™XYÈÝ]H[™ÝXYÙHÙX\˜ÚYÜ[œÂˆËËÈØ˜XÚÔYÙNŽ”ÙX\˜Ú[™ÝXYÙXK‚ˆÙX\˜Ú[™ËˆËËÈHÙX\˜ÚYÙIÜÈ™]žH›ÝË™\Ù[Û›HY\ˆHS”ÔÔ•˜Z[\™H
+H™Y\Ø[\È›ÝˆËËÈ™]šYY8 %HÈ™]šYY\ÈHÊK‚ˆÙX\˜Ú™]žKˆËËÈH™\Ý[›ÝÎˆH[™^[ÈH]ÈÙˆHÙ[™\˜][ÛˆÛˆØÜ™Y[‹ˆ
+Š•HÛ™HXÙH\ÂˆËËÈ[X™]Ø\œšY\ÈHÜÚ][ÛŠŠŽˆH]\È›ÈY[]HÙˆ]ÈÝÛˆ™^[Û™]È[™^8 %]ÈÙ^H\ÂˆËËÈ\[Y\˜[Ù\™\ˆÝ]K™K[Z[Y\ˆÙX\˜Ú8 %[™HÚÛH\Ý\È™\XÙY]Û˜ÙHÚ[ˆBˆËËÈÙ[™\˜][Ûˆ[Ý™\Ë™]™\ˆ™[Ü™\™Y[™\ˆHÝ\œÛÜ‹‚ˆÙX\˜Ú]
+\Ú^™JKˆËËÈH[™ÝXYÙHÛˆHÙX\˜Ú	ÜÈ[™ÝXYÙHYÙNˆH[™^[ÈØÙX\˜ÚÛ[™ÝXYÙ\ØK‚ˆ[™ÐÚÚXÙJ\Ú^™JKŸB‚š[\œ›ÛO›ÝÕ\™Ù]ˆ›Üˆ˜XÚÔ›ÝÈÂˆ›ˆœ›ÛJˆ›ÝÕ\™Ù]
+HOˆÙ[ˆÂˆX]ÚÂˆ›ÝÕ\™Ù]Ž“Ù™ˆOˆ˜XÚÔ›ÝÎŽ”ÝX“Ù™‹ˆ›ÝÕ\™Ù]Ž‘›Ü˜ÙYÛ›HOˆ˜XÚÔ›ÝÎŽ”ÝX‘›Ü˜ÙYÛ›Kˆ›ÝÕ\™Ù]Ž”ÝXŠJHOˆ˜XÚÔ›ÝÎŽ”ÝXŠJKˆ›ÝÕ\™Ù]Ž•[Z[™ÈOˆ˜XÚÔ›ÝÎŽ•[Z[™Ëˆ›ÝÕ\™Ù]Ž”Ý[HOˆ˜XÚÔ›ÝÎŽ”Ý[Kˆ›ÝÕ\™Ù]Ž“Ý\ˆOˆ˜XÚÔ›ÝÎŽ“Ü[“Ý\‹ˆBˆBŸB‚‹ËËÈÛ™HØ\[ÛˆÝ[HšY[ˆHÝ[HYÙH\ÝÈÛ™Hš[Z[ˆ\ˆšY[[™XXÚÜ[œÈHXÚÙ\‚‹ËËÈYÙHÙˆ]šY[	ÜÈY\ˆÚ]HÝ\œ™[[™ÈÚXÚÙY‚ˆÖÙ\š]™JÛÛ™KÛÜKXYË\X[\K\JWBœXˆ[[HÝ[QšY[ÂˆÚ^™KˆÜÚ][Û‹ˆÛÛÜ‹ŸB‚š[\Ý[QšY[ÂˆXˆÛÛœÝSˆÔÝ[QšY[È×HHÔÝ[QšY[Ž”Ú^™KÝ[QšY[Ž”ÜÚ][Û‹Ý[QšY[ŽÛÛÜ—NÂ‚ˆ›ˆÜ™[˜[
+Ù[ŠHOˆLÌˆÂˆÙ[ˆ\ÈLÌ‚ˆB‚ˆ›ˆX™[
+Ù[ŠHOˆ	‰ÜÝ]XÈÝˆÂˆ\ÙHÜ]›Ü›NŽšLNŽŽ›\ÙÎÂˆX]ÚÙ[ˆÂˆÙ[ŽŽ”Ú^™HOˆ\ÙÎŽÚYÙ]×Ý˜XÚÜ×ÜÝ[WÜÚ^™J
+KˆÙ[ŽŽ”ÜÚ][ÛˆOˆ\ÙÎŽÚYÙ]×Ý˜XÚÜ×ÜÝ[WÜÜÚ][ÛŠ
+KˆÙ[ŽŽÛÛÜˆOˆ\ÙÎŽÚYÙ]×Ý˜XÚÜ×ØÛÛÜŠ
+KˆBˆB‚ˆËËÈÝÈX[žH[™ÜÈ\ÈšY[	ÜÈY\ˆ\Ë‚ˆ›ˆ[™ÜÊÙ[ŠHOˆ\Ú^™HÂˆX]ÚÙ[ˆÂˆÙ[ŽŽ”Ú^™HOˆÝX]TÚ^™NŽ“QT‹›[Š
+KˆÙ[ŽŽ”ÜÚ][ÛˆOˆÝX]TÜÚ][ÛŽŽ“QT‹›[Š
+KˆÙ[ŽŽÛÛÜˆOˆÝX]UÛ™NŽ“QT‹›[Š
+KˆBˆB‚ˆËËÈHØØ[^™Y˜[YHÙˆ[™ÈXÙˆ\ÈšY[	ÜÈY\‹‚ˆ›ˆ[™×ÛX™[
+Ù[‹Nˆ\Ú^™JHOˆ	‰ÜÝ]XÈÝˆÂˆX]ÚÙ[ˆÂˆÙ[ŽŽ”Ú^™HOˆÝX]WÜÚ^™WÛX™[
+ÝX]TÚ^™NŽ™œ›ÛWÚ[™^
+H\ÈN
+JKˆÙ[ŽŽ”ÜÚ][ÛˆOˆÝX]WÜÜÚ][Û—ÛX™[
+ÝX]TÜÚ][ÛŽŽ™œ›ÛWÚ[™^
+H\ÈN
+JKˆÙ[ŽŽÛÛÜˆOˆÛ™WÛX™[
+ÝX]UÛ™NŽ™œ›ÛWÚ[™^
+H\ÈN
+JKˆBˆBŸB‚‹ËËÈ
+ŠHš[Z[ˆYÙHÙˆHÝX]\ÈXŠŠˆ8 %H›Ü›IÜÈ\ÝˆHÝX]\È›ÛÝ\ÈH[\B‹ËËÈYÙHÝXÚË›ÝH˜[YHÙˆ\È\H
+ØÜËÜ^Y\‹\ÝX›Y[\Ë›Y
+K‚ˆÖÙ\š]™JÛÛ™KÛÜKXYË\X[\K\JWBœXˆ[[H˜XÚÔYÙHÂˆËËÈÚ^™KÜÚ][Ûˆ[™ÛÛÜ‹XXÚHš[Z[ˆÚÝÚ[™È]ÈÝ\œ™[˜[YK‚ˆÝ[KˆËËÈÛ™HšY[	ÜÈXÚÙ\ŽˆHÚXÚÙYØ˜XÚÔ›ÝÎŽÚÚXÙXH\ˆ[™Ë‚ˆXÚÙ\ŠÝ[QšY[
+KˆËËÈÛ™H›ÝÈ\ˆ[™ÝXYÙHHšY]Ù\ˆ\È›ÝX\šÙY\ÈZ\œËKVŽˆHÚ[™ÛK]˜XÚÈ[™ÝXYÙH\ÈBˆËËÈ\™XÝXÚÈ›ÝËH][K]˜XÚÈÛ™HHš[Z[ˆÈ]ÈØÙ[ŽŽ“[™ÝXYÙXHYÙK‚ˆÝ\“[™ÝXYÙ\ËˆËËÈÛ™H][K]˜XÚÈ[™ÝXYÙIÜÈ˜XÚÜÈ
+˜[šÙY
+KHXÚÈ›ÝÈXXÚÈH^[ØY\ÈH[™ÝXYÙIÜÂˆËËÈØ[™ÒYŽœÝ™X[XK‚ˆ[™ÝXYÙJM
+KˆËËÈÙX\˜Ú›ÜˆÝX]\ÎˆH[™ÝXYÙHÙX\˜ÚY[ˆÚ]HÙ\™\‰ÜÈYÙ[›Ý[™‚ˆÙX\˜ÚˆËËÈH[™ÝXYÙH\ÝHÙX\˜ÚØ[ˆ\ÙH
+ØÙX\˜ÚÛ[™ÝXYÙ\ØJKHÝ\œ™[Û™HÚXÚÙY‚ˆÙX\˜Ú[™ÝXYÙKŸB‚š[\˜XÚÔYÙHÂˆËËÈH]H˜[™	ÜÈ^ÈH[™ÝXYÙHYÙH\È]YžH]È[™ÝXYÙH
+Ý\˜\ÈHYÙBˆËËÈ[Ù[Ø˜XÚÓY[TÝ]NŽ›Ý\˜JK‚ˆ›ˆ]JÙ[‹Ý\Žˆ	–ÓÝ\“[™×JHOˆÝš[™ÈÂˆX]ÚÙ[ˆÂˆÙ[ŽŽ”Ý[HOˆÜ]›Ü›NŽšLNŽŽ›\ÙÎŽÚYÙ]×Ý˜XÚÜ×ÜÝ[J
+K×ÜÝš[™Ê
+KˆÙ[ŽŽ”XÚÙ\ŠšY[
+HOˆšY[›X™[
+
+K×ÜÝš[™Ê
+KˆÙ[ŽŽ“Ý\“[™ÝXYÙ\ÈOˆÜ]›Ü›NŽšLNŽŽ›\ÙÎŽÚYÙ]×Ý˜XÚÜ×ÛÝ\—Û[™ÝXYÙ\Ê
+K×ÜÝš[™Ê
+KˆÙ[ŽŽ“[™ÝXYÙJÝ™X[JHOˆÂˆÝ\‹š]\Š
+K™š[™
+ßËšYœÝ™X[HOHÝ™X[JK›X\
+ßË›˜[YK˜ÛÛ™J
+JK[Ü˜\ÛÜ—ÙY˜][
+
+BˆBˆÙ[ŽŽ”ÙX\˜ÚOˆÜ]›Ü›NŽšLNŽŽ›\ÙÎŽÚYÙ]×Ý˜XÚÜ×ÜÙX\˜ÚÛÜ[Š
+K×ÜÝš[™Ê
+KˆÙ[ŽŽ”ÙX\˜Ú[™ÝXYÙHOˆÜ]›Ü›NŽšLNŽŽ›\ÙÎŽÚYÙ]×Ý˜XÚÜ×ÜÙX\˜ÚÛ[™ÝXYÙJ
+K×ÜÝš[™Ê
+KˆBˆB‚ˆËËÈHÝX›HÛX[[X™\ˆ›ÜˆH™\^HØ[›Û‹ˆ™]™\ˆ™[Ü™\™Yˆ™XÛÜ™[™ÜÈ\Ú]‚ˆ›ˆÛÙJÙ[ŠHOˆLÌˆÂˆX]ÚÙ[ˆÂˆÙ[ŽŽ”Ý[HOˆKˆÙ[ŽŽ”XÚÙ\ŠšY[
+HOˆL
+ÈšY[›Ü™[˜[
+
+KˆÙ[ŽŽ“Ý\“[™ÝXYÙ\ÈOˆŒˆÙ[ŽŽ“[™ÝXYÙJÝ™X[JHOˆŒÌ
+Ý™X[H\ÈLÌˆ	ˆ‘—Ñ‘‘‘ŠKˆÙ[ŽŽ”ÙX\˜ÚOˆÌˆÙ[ŽŽ”ÙX\˜Ú[™ÝXYÙHOˆÌKˆBˆBŸB‚‹ËËÈH[™X\ÜÚYÛ™Y›ØÝ\ÈÙ^HÙˆXXÚ›ÝÎˆH˜[Z[H˜\ÙH\ˆÚ[™Ùˆ›ÝÈ\ÈH˜XÚÉÜÈÝÛ‚‹ËËÈ[™^[˜\ˆ™[ÝÈH˜[™ˆ›Û™HÙˆ\ÙH\ÈHÜÚ][Û‹ÛÈHY[HÚÜÙH›ÝÜÈ™[Ü™\ˆ
+B‹ËËÈ˜XÚÈ\Ý]ÛÜÈY™™\™[KHÔZ\ˆ\X\š[™ÊH[Ý™\È›ÈÙ^Kˆœ™YH˜[Z[Y\È›ÜˆB‹ËËÈ[™ÝXYÙHYÙ\ÎˆÌHÝ\ˆ[™ÝXYÙ\Èš[Z[‹WÌ
+ØHÛÝH[™ÝXYÙB‹ËËÈÛÈÛˆ]YÙKˆÙX\˜ÚˆWÌ]Èš[Z[‹—ÌH[™ÝXYÙH[™™]žH›ÝÜË‹ËËÈ×Ì
+ØH™\Ý[Ì
+ØH[™ÝXYÙHÚÚXÙK‚š[\›Ü›RY›Üˆ˜XÚÔ›ÝÈÂˆ›ˆÙ^J	œÙ[ŠHOˆ›ÝÒÙ^HÂˆËÈHXÚÙ\‰ÜÈ[™ÜÎˆÛ™HM‹]ÚYH›ØÚÈ\ˆšY[
+HY\ˆ\ÈH[™[Ùˆ[™ÜÊBˆ][™ÈHŽˆÝ[QšY[Nˆ\Ú^™_×Ì
+È‹›Ü™[˜[
+
+H
+ˆL
+È
+H\ÈLÌŠK›Z[Š‘ŠNÂˆ›ÝÒÙ^JX]Ú
+œÙ[ˆÂˆ˜XÚÔ›ÝÎŽ]Y[ÊJHOˆWÌ
+ÈH\ÈLÌ‹ˆ˜XÚÔ›ÝÎŽ›ÛÜÝOˆ—Ìˆ˜XÚÔ›ÝÎŽ“ÝY™\ÜÈOˆ—ÌKˆ˜XÚÔ›ÝÎŽ”ÝX“Ù™ˆOˆ×Ìˆ˜XÚÔ›ÝÎŽ”ÝX‘›Ü˜ÙYÛ›HOˆ×ÌKˆ˜XÚÔ›ÝÎŽ”ÝXŠJHOˆÌ
+ÈH\ÈLÌ‹ˆ˜XÚÔ›ÝÎŽ•[Z[™ÈOˆWÌˆ˜XÚÔ›ÝÎŽ”Ý[HOˆWÌKˆ˜XÚÔ›ÝÎŽ“Ü[‘šY[
+ŠHOˆ—Ì
+È‹›Ü™[˜[
+
+Kˆ˜XÚÔ›ÝÎŽÚÚXÙJ‹JHOˆ[™Ê‹JKˆ˜XÚÔ›ÝÎŽ“Ü[“Ý\ˆOˆÌˆ˜XÚÔ›ÝÎŽ“Ü[“[™Ê[™ÊHOˆWÌ
+È
+[™ËœÛÝ\ÈLÌŠK›Z[Š‘‘‘ŠKˆ˜XÚÔ›ÝÎŽ“Ü[”ÙX\˜ÚOˆWÌˆ˜XÚÔ›ÝÎŽ”ÙX\˜Ú[™ÈOˆ—Ìˆ˜XÚÔ›ÝÎŽ”ÙX\˜Ú™]žHOˆ—ÌKˆ˜XÚÔ›ÝÎŽ”ÙX\˜Ú]
+JHOˆ×Ì
+È
+H\ÈLÌŠK›Z[Š‘‘‘ŠKˆ˜XÚÔ›ÝÎŽ“[™ÐÚÚXÙJJHOˆÌ
+È
+H\ÈLÌŠK›Z[Š‘‘‘ŠKˆJBˆBŸB‚‹ËËÈ›ÝXœÉÈ›Ü›NˆHXÝ[Ûˆ\H\È
+
+X
+HYØ^\ÈÚ]H›ÝÈÙ\ÊNÈ\Ý\ÈHYÙHB‹ËËÈ˜]ˆ›ÝÈÜ[œË‚\H˜XÚÑ›Ü›HH›Ü›O˜XÚÔ›ÝË
+
+K˜XÚÔYÙOŽÂ\H˜XÚÕX›HH›Ü›UX›O˜XÚÔ›ÝË
+
+K˜XÚÔYÙOŽÂ‚‹ËËÈØ˜XÚÓY[TÝ]NŽ™[šÜÝ]XIÜÈ[œÝÙ\ŽˆH]Y[ÈX‰ÜÈ›ÛÜÝÓÝY™\ÜÈÙ™™\ˆ\È\Ü^YYB‹ËËÈ›Ý]H]šY\ËH™X\ÛÛˆ]\È\ØX›Y[™H]™HÝX]HY™™XÝ]È›ÝH˜[Y\Ë‚\H[šÝ]HH
+ˆÜ[ÛÜ^Žœ^Ž]Y[Ñ[š[˜Ù[Y[Ï‹ˆÜ[ÛÛYYXNŽœ›Ý]NŽ‘[š[˜Ù[Y[›Ý]O‹ˆÜ[ÛÛYYXNŽœ›Ý]NŽ‘\ØX›Y™X\ÛÛ‹ˆÛYYXNŽœ›Ý]NŽ”ÝX]QY™™XÝŠNÂ‚‹ËËÈ
+Š•H[\ÝYÙH\ÈY[HÚÝÜÈÚ]\[ÝÛ™Y›ÝÜÊŠˆ8 %Ú]XÚY\ÈÚXÚÒQHÙˆ]ÈÜ[™\‚‹ËËÈH[™[Ü[œÈÛˆ
+ÝZNŽœÜÝ™\ŽŽ˜[˜ÚÜ—Ü[™[	ÜÈ™YYÚ
+KÛÈHÚYH\ÈHØ[YHÛ‚‹ËËÈ]™\žHYÙH[™™]™\ˆ›\È[™\ˆHšY]Ù\ˆÚÈ\Ú\ÈÛ™KˆHÙ\™\‹[[™Ý\Ý
+]Y[ÈXœË‹ËËÈÝX]H˜XÚÜÊHX^H™H[\ˆ[™ØÜ›ÛÈ[œÚYHH[™[ˆÛ\ÜÚXÉÜÈ›ÛÛHX›Ý™H]È›ÝÈ\Â‹ËËÈÌLÚXÚ\ÈÝ^\È[™\‹ÛÈÛ\ÜÚXÈ[Ø^\ÈÜ[œÈ\Ø\™ˆXŠÜ˜]JX™XØ]\ÙHHQ[‹ËËÈXÙ\È\ÈY[HÚ]]
+YÙ›Ü›X]Ž›[ÛY[\ØLŠK›ÝYÚØXÙWÜ[™[K‚œXŠÜ˜]JHÛÛœÝ‘QQÒˆŒÌˆHŒŒÂ‚‹ËËÈ
+Š•HÛ™HØ[ÙˆHÚ\™YXÙ\ˆ›Üˆ\ÈY[JŠŽˆH[™[ÙˆÚ^™X™\ÚYH[˜ÚÜ˜ÛˆHÚYB‹ËËÈØ‘QQÒHXÚY\ËVQT—ÓQS•WÑÐT]Ø^K[œÚYHÐQ‘XˆH]™H[™[
+ØX›WÛ˜]\˜[JKB‹ËËÈÝ™\œØØ[ˆ]Y]
+ØÝ™\œØØ[—Ü™XÝØJH[™HQ[
+YÙ›Ü›X]Ž›[ÛY[\Ø
+H[XÙH›ÝYÚ‹ËËÈ]ÛÈ›Û™HØ[ˆšYœ›ÛH[›Ý\‹‚œXŠÜ˜]JH›ˆXÙWÜ[™[
+[˜ÚÜŽˆ™XÝÚ^™Nˆ
+ŒÌ‹ŒÌŠJHOˆÝZNŽœÜÝ™\ŽŽ[˜ÚÜ™YÂˆÝZNŽœÜÝ™\ŽŽ˜[˜ÚÜ—Ü[™[
+ˆ[˜ÚÜ‹ˆÚ^™Kˆ‘QQÒˆ[YNŽ›^[Ý]Ž”VQT—ÓQS•WÑÐTˆÝZNŽœÜÝ™\ŽŽ”XÙ[Y[Ž”VQT—ÓQS•Kˆ
+BŸB‚‹ËËÈ
+ŠHXˆ›ÛÝ	ÜÈ˜]\˜[[™[
+Š‹XÙY™\ÚYH[˜ÚÜ˜8 %H^[Ý]ÙˆX›X\ÈH[™[ÛÝ[‹ËËÈYÈ]ˆXXÚXˆYÜÈ]ÈÝÛˆ›ÝÜÈ
+Ú\™YY[H[JNÈHYÙHHÜ[™\‰ÜÈÙYÛY[[™È]\Â‹ËËÈš^YÛÈÝÚ]Ú[™ÈXœÈ[Ý™\ÈÛ›HH˜\ˆYÙK‚‹ËËÂ‹ËËÈH[™[Ü›ÝÜÈ]Ø^Hœ›ÛHHÜ[™\ˆ[™]ÈZYÚ\ÈØ\Y]H›ÛÛHÛˆ]ÚYKÛÈB‹ËËÈÛ™È\Ý
+[ˆ][HÚ]X[žH]Y[ÈXœÊHÐÔ“ÓÈ[œÚYHH[™[[œÝXYÙˆH[™[]Ù[‚‹ËËÈÜ[[™ÈÝ™\ˆHÜ[™\ˆÜˆ\ÝHØY™Hœ˜[YK‚™›ˆX›WÛ˜]\˜[
+ˆX›Nˆ	•X›UšY]Ëˆ[˜ÚÜŽˆ™XÝˆYX\Ý\™Nˆ	™[ˆÛXXÚ[™NŽ›XXÚ[™NŽ“YX\Ý\™KŠHOˆÝZNŽœÜÝ™\ŽŽ[˜ÚÜ™YÂˆ]ÈHX›K›Y[WÜ[™[ÝÚY
+YX\Ý\™JNÂˆËÈH›ÝH›ÝÈÜ˜\ËÛÈ]È[™HÛÝ[\[™ÈÛˆHÚYˆ]\È™\ÛÛ™YT‘KYØZ[œÝBˆËÈØ[YHYX\Ý\™X[™ØH[™[\ÈÚ^™YÚ]ÛÈ›ÈØ[\ˆ
+\]X]]\Ý[™ËˆËÈ˜]Ø
+HØ[ˆ™XYHÛÝ[H™XZ[YÝ[KˆY[\Ý[[™H™]ÈÚÜÝš[™ÜË‚ˆX›K™š]Û›Ý\ÊËYX\Ý\™JNÂˆ]HX›K›YX\Ý\™YÚZYÚ
+
+K›X^
+MŒŒ
+NÂˆXÙWÜ[™[
+[˜ÚÜ‹
+Ë
+JBŸB‚‹ËËÈH™[™\™\ˆHPÕU‘HÝX]H\È˜]ÛˆžH8 %Ú]XÚY\ÈÚ]\ˆHØ\[Û‰ÜÈÚ^™H[™‹ËËÈÜÚ][ÛˆØ[ˆ™XXÚ]ˆÛ›HHÛY[	ÜÈZ[‹]^Ø\[Ûˆ˜]È›ÛÝÜÈ[B‹ËËÈ
+\Ú]Žœ^Y\—ÚYŽ™˜]×ÜÝX]WÛY\ÜØYÙX
+NÈ[ˆ[XYÙHÝX]HÙY\È]ÈÝÛˆš]X\Ù[ÛY]žH[™‹ËËÈ˜]]™HTÔËÔÔÐH]È]]Ü™Y^[Ý]ˆHÝX]HS’È[È[™YKÛÈÛÛÜˆ\È[Ø^\È]™K‚ˆÖÙ\š]™JÛÛ™KÛÜKXYË\X[\K\JWBœXˆ[[HÝX”™[™\™\ˆÂˆ^ˆ[XYÙKˆÝ[YŸB‚š[\ÝX”™[™\™\ˆÂˆ›ˆÙ—ØÛÙXÊÛÙXÎˆ	œÝŠHOˆÙ[ˆÂˆYˆÝX—Û^[Ý]Žš\×Ú[XYÙWÜÝX—ØÛÙXÊÛÙXÊHÂˆÙ[ŽŽ’[XYÙBˆH[ÙHYˆÛÙXË™\WÚYÛ›Ü™WØ\ØÚZWØØ\ÙJ˜\ÜÈŠHÛÙXË™\WÚYÛ›Ü™WØ\ØÚZWØØ\ÙJœÜØHŠHÂˆÙ[ŽŽ”Ý[YˆH[ÙHÂˆÙ[ŽŽ•^ˆBˆB‚ˆËËÈH›ÝH[™\ˆHÝ[H›ÝÜËÚ[ˆÚ^™H[™ÜÚ][ÛˆØ[››Ý™XXÚ\È™[™\™\‹‚ˆ›ˆ›ÝJÙ[ŠHOˆÜ[Û	‰ÜÝ]XÈÝˆÂˆX]ÚÙ[ˆÂˆÙ[ŽŽ•^Oˆ›Û™KˆÙ[ŽŽ’[XYÙHOˆÛÛYJÜ]›Ü›NŽšLNŽŽ›\ÙÎŽÚYÙ]×Ý˜XÚÜ×ÜÝ[WÚ[XYÙWÛ›ÝJ
+JKˆÙ[ŽŽ”Ý[YOˆÛÛYJÜ]›Ü›NŽšLNŽŽ›\ÙÎŽÚYÙ]×Ý˜XÚÜ×ÜÝ[WÜÝ[YÛ›ÝJ
+JKˆBˆBŸB‚‹ËËÈ
+Š•Ú]HÝX]\È›ÛÝ	ÜÈ›ÝÜÈ[™ØÚÜÈÙ\™HZ[œ›ÛJŠˆ8 %H™XZ[ÚYÛ˜]\™KˆH]™B‹ËËÈÛÛÛ\\™\È]ÈHÝ\œ™[[œÝÙ\œÈ[™™XZ[ÈÚ[ˆ[žH[œ]Ú[™ÙYˆHÝXœÈ\Ý‹ËËÈ
+Ý™X[HYÈ[™Ú]\ˆXXÚ\ÈÙ™™\™YÛˆ\È›Ý]JKHXÝ]™H[™^H™[™\™\ˆÚ[™‹ËËÈÚ]\ˆH›Ý]H\È˜[œØÛÙ[™ËH[š[˜Ù[Y[›Ý]H[™ÝX]HY™™XÝ
+Ú]HÝ[B‹ËËÈØÚÈ[™[Z[™ÉÜÈÛZ\ÜÚ[Ûˆ™XY
+K[™Ú]\ˆH[™[™ÈYH™[Y[X™\™YÝX]H[œÚÝÛ‚‹ËËÈ
+H›ÝH[™\ˆHš\œÝÜ›Ý\
+K‚ˆÖÙ\š]™JÛÛ™KXYË\X[\JWBœÝXÝÝX”ÚYÈÂˆÝXœÎˆ™XÏ
+M›ÛÛ
+O‹ˆXÝ]™Nˆ×Ú[ˆ™[™\™\ŽˆÝX”™[™\™\‹ˆ˜[œØÛÙ[™Îˆ›ÛÛˆËËÈÚÈ˜]ÜÈHÝX]NˆÚ][Z[™È[™Ý[H\™HØ]Y[™^Z[™YžBˆ™\Ù[\ŽˆÛYYXNŽœ›Ý]NŽ”ÝX]T™\Ù[\‹ˆ[š[˜Ù[Y[ˆÜ[ÛÛYYXNŽœ›Ý]NŽ‘[š[˜Ù[Y[›Ý]O‹ˆY™™XÝˆÛYYXNŽœ›Ý]NŽ”ÝX]QY™™XÝˆËËÈHÚÝÉÜÈ™[Y[X™\™YÝX]HØ\ÈÚÜÙ[ˆ›Üˆ\È^H[™H›Ý]HÚÝÜÈ›Û™HÙˆ]ˆËËÈ
+ØÛYYXNŽœ›Ý]NŽ˜Ý\—ÛY[[ÜžWÛ›ÝXJNˆH›ÛÝØ^\ÈÚBˆY[[ÜžWÛ›ÝNˆ›ÛÛˆËËÈ›Ü˜ÙYÛ›H\ÈH[ÙKÚ]H[™ÝXYÙH]È›ÝÈ™XYÈÝ]ˆËËÈ
+ØÝX—Û^[Ý]Ž™›Ü˜ÙYÛÛ›WÜ™XYÝ]JNÈ›Û™XÙ™ˆH[ÙKˆH›ÝÉÜÈÚXÚËHÚ[™ÛBˆËËÈÚXÚÛX\šÈ[™H™XY[Ý][›ÛÝÈ][™H[™ÝXYÙH[Ý™\ÈÚ]H^Z[™È]Y[Ë‚ˆ›Ü˜ÙYÛÛ›NˆÜ[ÛÝš[™Ï‹ŸB‚š[\ÝX”ÚYÈÂˆËËÈÚ]H\ÚYÝ[HYÙIÜÈ]˜Z[Xš[]HØ\ÈZ[œ›ÛNˆH™[™\™\ˆ
+Ú^™HÈÜÚ][Ûˆ™XXÚˆËËÈÛ›H^
+KÚ]\ˆHÙ\™\ˆ˜]ÜÈHÝX]H
+Ý[H\ÈÚÝÛˆ]ØÚÙY
+K[™Ú]\‚ˆËËÈH˜[œØÛÙHÚ]›ÈÝX]HÛˆÛZ]È]
+HØ]HØ˜XÚÓY[TÝ]NŽ›^[Ý]HÚÝÜÈÝ[BˆËËÈžJKˆHYÙH\ÈÜYÚ[ˆ\ÈÚ[™Ù\È[™™Yœ™\ÚY[ˆXÙHÝ\Ú\ÙK‚ˆ›ˆYÙWØ]˜Z[Xš[]J	œÙ[ŠHOˆ
+ÝX”™[™\™\‹›ÛÛ›ÛÛ
+HÂˆ
+Ù[‹œ™[™\™\‹Ù[‹œÙ\™\—Ø\›Š
+Kš\×ÜÛÛYJ
+KÙ[‹˜[œØÛÙ[™È	‰ˆÙ[‹œÙ\™\—Ø\›Š
+Kš\×Û›Û™J
+JBˆB‚ˆËËÈÚHHÙ\™\ˆ˜]ÜÈHÝX]KÚ[ˆ]Ù\Ë‚ˆ›ˆÙ\™\—Ø\›Š	œÙ[ŠHOˆÜ[ÛÛYYXNŽœ›Ý]NŽ\›”™X\ÛÛˆÂˆX]ÚÙ[‹œ™\Ù[\ˆÂˆÛYYXNŽœ›Ý]NŽ”ÝX]T™\Ù[\ŽŽ”Ù\™\\›ŠÚJHOˆÛÛYJÚJKˆÈOˆ›Û™KˆBˆBŸB‚‹ËËÈHY[IÜÈÚÛHÝ]KÝÛ™YžHHÛÛZ[™\ˆ][Ý[È\È[™[8 %H[Ù[TÑH[™B‹ËËÈ\X\ˆÜš[™È™[Û™ÈÈZNŽ˜ÛÛZ[™\œÎŽ›[Ù[Ž“[Ù[ÝXÚØ›ÝË›ÝÈ\ÈÝXÝÈ˜]ØZÙ\Â‹ËËÈH\X\ˆœ˜XÝ[Ûˆ\ÈH\˜[Y]\ˆ[œÝXYÙˆÝ\[™È]ÈÝÛˆØÜÝ™\˜K‚œXˆÝXÝ˜XÚÓY[TÝ]HÂˆXŽˆ×Ú[ËÈP]Y[ËOTÝX]\ÂˆXÝ]™WØ]Y[Îˆ×Ú[ËÈ[™^[ÈH^Z[™È][IÜÈ]Y[È\ÝˆXÝ]™WÜÝXŽˆ×Ú[ËÈLHHÙ™‹[ÙH[™^[ÈH^Z[™È][IÜÈÝXœÈ\ÝˆËËÈ›Ü˜ÙYÛ›H\ÈH[ÙH
+ØÛYYXNŽœ›Ý]NŽ˜Ý\—ÜÝX—Û[ÙXJKˆXÝ]™WÜÝX˜\È[ˆBˆËËÈ›Ü˜ÙY˜XÚÈ]™]È
+ÜˆLHÚ[ˆ›Û™HX]ÚY
+H[™\È“ÕÚ]H›ÛÝÚXÚÜÎˆBˆËËÈÚXÚÛX\šÈÚ]ÈÛˆH›Ü˜ÙYÛ›H›ÝÈ[Û™H
+ØÙ[ŽŽ˜ÚXÚÙYÜÝX˜JK‚ˆ›Ü˜ÙYÛÛ›Nˆ›ÛÛˆËËÈH[™ÝXYÙH›Ü˜ÙYÛ›H˜[È˜XÚÈÈÚ[ˆH]Y[È˜[Y\È›Û™BˆËËÈ
+ØÛYYXNŽœ›Ý]NŽ™›Ü˜ÙYÛÛ›WÛ[™ØJH\ÈÙˆH\ÝÜ[ˆÜˆÛˆÛ—ÛÚØ\È›ÂˆËËÈÙ\ÜÚ[Û‹ÛÈHXÚÈX]Ú\È[™™[Y[X™\œÈžH\ÈÛÜNÈ]ÈÝÛˆ›Ü˜ÙYÛ›HXÚÈ[Ý™\È]‚ˆ›Ü˜ÙYÛ[™ÎˆÝš[™ËˆËËÈ›ÝXœÉÈ›ÝÜËXÛ\™YÛ˜ÙHXXÚ\ÈHØ˜XÚÑ›Ü›XH[™™\ÛÛ™YžHØ˜XÚÔ›ÝØBˆËËÈY[]H8 %ØÙ[ŽŽ›Û—ÛÚØH™XYÈ˜XÚÈÚ]H›ØÝ\ÙY›ÝÈTÈœ›ÛH]ÈY˜]\ˆ[ˆœ›ÛHBˆËËÈÜÚ][Ûˆ
+[™ÛÈØ[››Ý\ØYÜ™YHÚ]Ú]Ø\È˜]Û‹HØ^HHœ™\ÚØ[ÂˆËËÈØš\ÚX›WÜÝXœØHÛÝ[Û˜ÙHH˜[œØÛÙHÝ\ÊKˆÚXÚ]™\ˆXˆ\ÈZ[ÝÛœÈHX›NÈBˆËËÈXˆÝÚ]Ú™\XÙ\È]ÚÛH
+ØÙ[ŽŽœ™XZ[JK‚ˆ›Ü›Nˆ˜XÚÕX›KˆËËÈH[Z[™ÈÙ™œÙ]
+\ÊHH[Z[™È›ÝÈ™XYÈÝ]8 %ÙYYYœ›ÛHH^Y\ˆÛˆÜ[‹ˆÙ\ˆËËÈØØ[H
+˜]\ˆ[ˆ™K\™XY[™ÈH^Y\‰ÜÈ]ÛZXÈÛˆ]™\žH˜]ÊHÛÈH[Z[™ÈØ\Ý[IÜÂˆËËÈ]™[X[[™[Ù™ˆÝ\Èœ›ÛHÚ]TÈ[™[ÚÝÙY›Ýœ›ÛHHÛÛ[Z]HÛÜ\È›ÝˆËËÈY]\™›Ü›YY‚ˆÙ™œÙ]Û\ÎˆMˆËËÈHØ\[ÛˆÛ™HHÛÛÜˆ›ÝÜÈ™XYÝ][™ÚXÚÈ8 %ÙYYYœ›ÛHH^Y\ˆÛˆÜ[‹Ø[YBˆËËÈ™X\ÛÛš[™È\ÈØÙ[ŽŽ›Ù™œÙ]Û\ØNˆÚ]\È[™[\Ý™]È]\Ý›Ý\[™ÛˆHÛØ˜[ˆËËÈHÛÜ\È›ÝY]Üš][ˆ
+˜XÚÐÛÛ[Z]Ž”ÝX]UÛ™X\È\Ü]ÚYÈHÛÜ›ÝˆËËÈ\YY[›[™HžHÛ—ÛÚØ
+KˆHÚ^™H[™ÜÚ][Ûˆ™[ÝÈ›ÛÝÈHØ[YH[K‚ˆÛ™NˆÝX]UÛ™KˆËËÈHØ\[ÛˆÚ^™HHÚ^™H›ÝÜÈ™XYÝ][™ÚXÚË‚ˆÚ^™NˆÝX]TÚ^™KˆËËÈHØ\[ÛˆÜÚ][ÛˆHÜÚ][Ûˆ›ÝÜÈ™XYÝ][™ÚXÚË‚ˆÜÚ][ÛŽˆÝX]TÜÚ][Û‹ˆËËÈHYÙ\È\ÚYX›Ý™HHÝX]\È›ÛÝÝ]\›[ÜÝš\œÝ
+[\HHH›ÛÝ
+KˆXXÚ[žBˆËËÈØ\œšY\ÈHÜ[™\ˆ[™ØÜ›ÛÙˆHYÙH™[™X]]‚ˆYÙ\ÎˆYÙTÝXÚÏ˜XÚÔYÙK˜XÚÔ›ÝÏ‹ˆËËÈH™[™\™\ˆÙˆHPÕU‘HÝX]KØ\\™YÚ[ˆH›ÛÝ\È
+™JXZ[8 %Ú]HÝ[BˆËËÈYÙIÜÈÚ^™H[™ÜÚ][ÛˆØÚÈ™XYË‚ˆ™[™\™\ŽˆÝX”™[™\™\‹ˆËËÈÚ]HÝX]\È›ÛÝØ\È\ÝZ[œ›ÛNÈH]™HÛ™XZ[ÈÚ[ˆ][Ý™\Ë‚ˆÝX—ÜÚYÎˆÜ[ÛÝX”ÚYÏ‹ˆËËÈHÝ\ˆ[™ÝXYÙ\ÈYÙIÜÈ[Ù[8 %Û™H[žH\ˆ[™ÝXYÙK\ÈÙˆH\Ý›ÛÝZ[Ü‚ˆËËÈ]™HÛˆHÝ\ˆ[™ÝXYÙ\È[™[™ÝXYÙHYÙ\È˜]Èœ›ÛH]ÛÈÚ]HYÙH\ÝÈ[™ˆËËÈÚ]]ÈÜ[™\ˆ›ÛZ\ÙYØ[››Ý\ØYÜ™YK[™H[™ÝXYÙHÚÜÙH[žH\ÈÛÛ™HÜÈ]ÈYÙK‚ˆÝ\Žˆ™XÏÝ\“[™Ï‹ˆËËÈHÝX]H[™XÙ\ÈHÝX]\È“ÓÕ\ÝÈ\È˜XÚÈ›ÝÜË[ˆ\Ü^HÜ™\ˆ8 %Ú]BˆËËÈ\›™\ÜÉÜÈ˜XÚÎ“˜ÛÝ[Èš\œÝ
+ØÙ[ŽŽœÝX—Ý˜XÚ×Ù›Ü—Ý\™Ù]JK‚ˆ›ÛÝÝ˜XÚÜÎˆ™XÏ\Ú^™O‹ˆËËÈ–[Ý\ˆ[™ÝXYÙ\Èˆ\È^H™\ÛÛ™Y[™\‹[ˆ‘Q‘T‘SÑHÜ™\ˆ8 %H™Y‰ÜÈÔMÈÛÙH
+Y‚ˆËËÈH^H™\ÛÛ™Y[™\ˆÛ™JKH^Z[™È]Y[ÉÜÈ[™ÝXYÙK[™HÝ\œ™[ÝX]IÜÈÝÛ‹ˆËËÈ^XÝH\ÈY]Y]NŽœÝX—Û^[Ý]ŽœÝX—ÜÙXÝ[ÛœØ	È[Ý\œØ\˜[Y]\ˆ™XYÈ[H
+ÛÛ\\™YžBˆËËÈY]Y]NŽ›[™×ÚÙ^X™]™\ˆžH]\˜[Ýš[™È\]X[]JKˆÝÛ™Y˜]\ˆ[ˆ›Üœ›ÝÙYÛÂˆËËÈH™XZ[
+XˆÝÚ]Ú
+H™YYÈ›Ý[™Èœ›ÛHHØ[\ˆ™^[Û™ØØY]X‚ˆ[Ý\œÎˆ™XÏÝš[™Ï‹ˆËËÈH]Y[ÈX‰ÜÈ^\ÜÈÔÙÙÛH›ÝÜÈ
+\ÜÝYHÌŠH8 %›Û™XÚ[ˆ^H\™H›ÝÙ™™\™YˆËËÈ][
+Y[ˆÜˆ\ØX›Y
+K[ÙHÚ]^HÝ\œ™[H™XYÝ]ˆ™\Ú\™YÚ[H[™[™ËˆËËÈ\YYÝ\Ú\ÙHˆ
+›Ý]NŽ™\Ü^YYØ]Y[×Ù[š[˜Ù[Y[Ø
+KØ[YH™X\ÛÛš[™È\ÂˆËËÈØÙ[ŽŽ›Ù™œÙ]Û\ØKÖØÙ[ŽŽÛ™XH8 %H[ˆÙˆÙÙÛH™\ÜÙ\È[œÚYHÛ™HÜ[ˆÛÝ[Èœ›ÛBˆËËÈÚ]TÈ[™[\Ý™]Ë[™ØÙ[ŽŽœ™XZ[H\ÈHÛ›HÜš]\‹Ûˆ]™\žH
+™JXZ[Ù‚ˆËËÈH]Y[ÈXˆ
+™]ØØ›ØÝ\×ÝX˜
+K‚ˆ[š[˜ÙWÜÚÝÛŽˆÜ[ÛÜ^Žœ^Ž]Y[Ñ[š[˜Ù[Y[Ï‹ˆËËÈH›Ý]HØÙ[ŽŽ™[š[˜ÙWÜÚÝÛ˜HÛÝ[ZÙKÙ\[Û™ÜÚYH]
+ÛÛYXY™ˆ[š[˜ÙWÜÚÝÛ˜ˆËËÈ\ÈÛÛYX
+H8 %H]Y[ÈX‰ÜÈÛÛœÙ\]Y[˜ÙH›ÝH
+MÎˆH\›™YÝX]KH›ÜYÛžHš\Ú[Û‚ˆËËÈXÛ\˜][ÛŠH™XYÈH›]›Ý\‹›Ý\ÝÚ]\ˆHÙÙÛH\ÈÛ‹‚ˆ[š[˜ÙWÜ›Ý]NˆÜ[ÛÛYYXNŽœ›Ý]NŽ‘[š[˜Ù[Y[›Ý]O‹ˆËËÈÚHHÙÙÛH\È˜]Ûˆ[HÚ]H™X\ÛÛˆ[œÝXYÙˆÙ™™\™Y8 %ÛÛYXÛ›HÚ[ˆHÝÛ™\‰ÜÂˆËËÈšY[ˆÝ^\ÈÓ“H›Üˆ›È^\ÜÈˆ\™XÝ[Ûˆ
+Œ‹LKLŽJH\Y\ÈHZ[‹[[™ÝXYÙH™X\ÛÛ‚ˆËËÈ[œÝXYÙˆHÛ\ˆÚ[[XœÙ[˜ÙH
+LKÒLˆ›ÝÈÛÝ™\œÈH^T\ÜÈØ]H[Û™JK‚ˆËËÈ›Û™XÙÙ]\ˆÚ]ØÙ[ŽŽ™[š[˜ÙWÜÚÝÛ˜IÜÈ›Û™XYX[œÈH›ÝÜÈ\™HQSˆ[\™[K‚ˆ[š[˜ÙWÙ\ØX›YˆÜ[ÛÛYYXNŽœ›Ý]NŽ‘\ØX›Y™X\ÛÛ‹ˆËËÈÚ]\ÈÛˆØÜ™Y[ˆšYÚ›ÝÈ
+MÊH8 %™XY[Û™ÜÚYHØÙ[ŽŽ™[š[˜ÙWÜ›Ý]XH\™[H›ÜˆBˆËËÈ]Y[ÈX‰ÜÈÛÛœÙ\]Y[˜ÙH“ÕKÚXÚ™YYÈÈ[››ÈÝX]Hˆ\\œ›ÛH˜[ˆ[˜Y™™XÝYˆËËÈÚYXØ\ˆˆ]™[ˆÝYÚØ[š[˜Ù[Y[Ø]˜Z[Xš[]XJÛYYXNŽœ›Ý]NŽ‘[š[˜Ù[Y[]˜Z[Xš[]JBˆËËÈ›ÛÈ›Ý[ÈHØ[YHØÛYYXNŽœ›Ý]NŽ‘[š[˜Ù[Y[›Ý]NŽ”™[]^K‚ˆ[š[˜ÙWÜÝX]WÙY™™XÝˆÛYYXNŽœ›Ý]NŽ”ÝX]QY™™XÝˆËËÈH]Y[ÈX‰ÜÈ›ØÝ\ÙY›ÝÈY[]K˜[šÙYXÜ›ÜÜÈH]™H›ÝÜËUS’TÒˆH[š[˜Ù[Y[ˆËËÈÙ™™\ˆØ[ˆ›Ü›ÜˆHÛÜˆÛÈÛˆH›Ý]HÚ[™ÙH\ÈY[H™]™\ˆ\ÚÙY›Üˆ
+HÝX]BˆËËÈÝÚ]ÚYÛˆZY\^KH[ÛY[\žH™Y\Ø[
+H[™™]\›ˆ™Y›Ü™HHšY]Ù\ˆ™\ÜÙ\È[ž][™Ë‚ˆËËÈØÙ[ŽŽœ™XZ[Ø]Y[ØHÝ\Ú\ÈH›ØÝ\ÙYØ˜XÚÔ›ÝÎŽ›ÛÜÝKÖØ˜XÚÔ›ÝÎŽ“ÝY™\ÜØBˆËËÈ\™HH[ÛY[ÜÙH›ÝÜÈ\™HX›Ý]È\Ø\X\‹[™™\ÝÜ™\È]8 %[ˆ™Y™\™[˜ÙHÂˆËËÈ™XY[™ÈX›KœÙ[˜XÚÈ8 %H[ÛY[^H™X\X\‹ˆ™XY[™ÈX›KœÙ[]]Ú[ˆËËÈ[œÝXYÛÝ[™HÜ›Û™ÎˆÚ[HH›ÝÜÈ\™HÛÛ™HX›KœÙ[Ú]ÈÛˆÚ]]™\ˆH˜[˜XÚÂˆËËÈ
+ÜˆHS‘ÒS‘IÜÈÝÛˆ˜]È[™^Û[\Ú[HH›ÝÈÛÝ[Ø\ÈÛX[\ˆ8 %ÙYBˆËËÈØ˜XÚÓY[T\Žœ™XÛÛ˜Ú[XJH[™YÛ‹ÚXÚ˜[Y\È[ˆ[œ™[]Y˜XÚÈÛ˜ÙHH[š[˜Ù[Y[ˆËËÈ›ÝÜÈ\™H˜XÚËˆ›Û™XÛ˜ÙHÛÛœÝ[YYÜˆÚ[ˆ›Ý[™È™YYÈ™[Y[X™\š[™Ë‚ˆÝXÚÞWØ]Y[×Ý\™Ù]ˆÜ[Û˜XÚÔ›ÝÏ‹ˆËËÈHØ\™	ÜÈ™\Ú^™H[™HYÙHÛYH
+ØÝZNŽœ[™[Û[Ý[Û˜JNˆH^[Ý]\™Ù]\ÂˆËËÈØXÚY\™KHÜÛYYÙ\ÈÜš[™ÈÈ][™H\ÚÜˆÜÛY\ÈHÛÈYÙ\Ë‚ˆ[Ý[ÛŽˆ[™[[Ý[Û‹ˆËËÈHÝÛ™\ˆÚÙ[ˆÙˆH˜XÚÙÜ›Ý[™]Y]YH\ÈY[H\šÙY
+ØÙÙžŽ^Žœ\š×Ü™]Ø\›WØ\×Ø˜XÚÙÜ›Ý[™JK‚ˆËËÈØ›ÜHÛX\œÈH]Y]YHÛ›HÚ[H]\ÈÝ[\ÈY[IÜÎˆH\ÛZ\ÜÙYY[H]™\ÈÛ‚ˆËËÈ›ÝYÚ]È˜YK[Ý]
+[Ù[ÝXÚØ	ÜÈÛÜÚ[™Ø
+K[™H˜XÚÜÈY[H™[Ü[™Y[œÚYH]ˆËËÈ˜YH\È\šÙY]ÈÝÛˆ]Y]YHžHH[YHHÛÛ™H›ÜË‚ˆ˜XÚÙÜ›Ý[™ÛÝÛ™\ŽˆÜ[ÛM‹ˆËËÈHÝX]HÙX\˜Ú›ÜˆH^Z[™È][K\ÈHÜÝ\ÝX›\ÚY]ˆËËÈ
+ØÙ[ŽŽœÙ]ÜÙX\˜ÚJNÈ›Û™XÚ[ˆHÜÝÙ™™\œÈ›ÈÙX\˜ÚÚXÚ[ÛÈY\ÈH›ÛÝ	ÜÂˆËËÈÙX\˜Ú›ÝËˆH[™[™]™\ˆ\™›Ü›\ÈHÙX\˜Úˆ]™XYÈ\È[™[œÝÙ\œÂˆËËÈØ˜XÚÓÚÎŽ”ÙX\˜ÚH›ÜˆHØÜ™Y[ˆÈÙ[™‚ˆÙX\˜ÚˆÜ[ÛÙ]NŽœÝXœÙX\˜ÚŽ”ÝX”ÙX\˜ÚÛ˜\ÚÝ‹ˆËËÈTÈ[™[Ø]ÚYHÝÛ›ØY[ˆ›YÚ
+Ù[™[™ËÕØZ][™ÊKÛÈ[ˆ[œÝ[Y[™[™È\È]ÂˆËËÈÝÛˆÈ]]Ë\Ù[XÝˆÛX\™YÚ[ˆ[™YÝ™\ˆ
+ØÙ[ŽŽZÙWÜÙX\˜ÚØÛÛ[Z]JKÛÈH[™[™ÂˆËËÈ™\X›\ÚY]™\žHœ˜[YHÛÛ[Z]ÈÛ˜ÙKˆHÝÜ™HÙY\È[œÝ[YY\ˆH[™[ÛÜÙ\ÎÂˆËËÈH[™[Ü[™YÛÈ]™]™\ˆØ]ÈH›YÚ[™]\Ý›ÝÛÛ[Z]]YØZ[ˆ8 %Ú[™ÈÛÂˆËËÈ\ÛZ\ÜÙY]™\žH]\ˆÝX]\ËÐ]Y[ÈY[HÛˆ]Èš\œÝXÚÈ
+]šXÙKŒ‹LLL
+K‚ˆÙX\˜ÚÝØ]Ú[™Îˆ›ÛÛˆËËÈH^Z[™È][IÜÈ^\›˜[ÝX]\È\ÈÙˆH\ÝÜ[ˆÜˆØÝX”ÚYØHÚ[™ÙH8 %Ú]BˆËËÈÙX\˜ÚYÙHÚXÚÜÈH]YØZ[œÝ
+ØÙ[ŽŽš]ÛÛ—Ú][XJK™XØ]\ÙH]YÙH\ÈZ[ˆËËÈÚ]Ý]H][H[ˆ[™ˆHÛÜK™Yœ™\ÚYÚ\™]™\ˆHÝXœÈ\Ý\È™K\™XYÛÈBˆËËÈÝX]H][™È
+Üˆ\È™\XÙY
+HÚ[HHYÙH\È\X\šÜÈ]È]]Û˜ÙK‚ˆ][WÜÚYXØ\œÎˆ™XÏY]Y]NŽ”Ý™X[O‹ˆËËÈHÜ[™\‰ÜÈ™XÝ[™Y[ˆÚ[ˆHY[HÜ[™Y
+ØÙ[ŽŽÚ]Ø[˜ÚÜ˜JH[™™]™\ˆ™XYˆËËÈœ›ÛH[ž]Ú\™HYØZ[ŽˆHÝ[™Z[ˆZÚ[™ÈHQ›ÝËÜˆH[™ÝXYÙHÚ[™ÙKØ[››Ý[Ý™H[‚ˆËËÈÜ[ˆ[™[‚ˆ[˜ÚÜŽˆ™XÝˆËËÈHÚYHÙˆØÙ[ŽŽ˜[˜ÚÜ˜HH[™[ÛÚË\ÈÙˆH\ÝXÙ[Y[ˆÚ\™H]Èš\ÙBˆËËÈÛÛY\Èœ›ÛK‚ˆÚYNˆÝŽ˜Ù[ŽÙ[ÝZNŽœÜÝ™\ŽŽ”ÚYO‹ŸB‚‹ËËÈ
+Š•Ú]H˜XÚÈY[HPÒQQ
+Š‹›ÜˆHÛÜÈ\™›Ü›H
+ÜXÈ0©Ì‹ŒŠK‚‹ËËÂ‹ËËÈH[™[ÝÛœÈ]È›ÝÜÈ[™]ÈÝ\œÛÜŽÈ]Ù\È›ÝÝÛˆH^X˜XÚËÛÈ]X^H›ÝØ[‹ËËÈ›Ý]NŽ˜ÛÛ[Z]Ø]Y[×ÜXÚØÈÛÛ[Z]ÜÝX]WÜXÚØ]Ù[ˆ8 %ÜÙHZÙHHÙ\ÜÚ[Û‰ÜÂ‹ËËÈ	›]][™HØÜ™Y[ˆ\ÈÛ›H]™\ˆÚÝÛˆHœ˜[YIÜÈX›XØ][Û‹ˆ›Û™XYX[œÈHXÚÈÚ[™ÙY‹ËËÈ›Ý[™È
+]Y[ÈÛ›NˆHÝX]HÒÈ[Ø^\ÈÛÛ[Z]ËÛÈH›Ý]H™\X›\Ú\ËÝYÚH[™[‹ËËÈÛ›ÝÜÈœ›ÛHXÝ]™WÜÝX˜Ú]\ˆHXÚÈÒS‘ÑQHÚÝÛˆÝX]K[™Û›HHÚ[™ÙYXÚÂ‹ËËÈØ\œšY\ÈHY[[Ø
+K‚‹ËËÂ‹ËËÈ
+ŠH˜XÚÈXÚÈ[ÛÈØ^\ÈÚ]È‘SQSP‘T‹ŠŠˆY[[Ø\ÈH\ØÜš\ÜˆÙˆH›ÝÈHšY]Ù\‚‹ËËÈXÚÙYZ[\™Hœ›ÛHH^XÝY]Y]NŽ”Ý™X[XH›ÝÈØ\È˜]Ûˆœ›ÛB‹ËËÈ
+›Ý]NŽ›Y[[×ÛÙ—Ø]Y[ØÈY[[×ÛÙ—ÜÝX]XHX]Ú\œÉÈÝÛˆ™YXØ]\ÊKÛÈHÛÜØ[‚‹ËËÈÜš]HHÚÝÉÜÈ˜XÚÈY[[ÜžHÚ]Ý]]™\ˆÙYZ[™ÈH][IÜÈÝ™X[\Ëˆ›Û™X\ÈHÛÛ[Z]]‹ËËÈ\È›ÝHšY]Ù\‰ÜÈÚÚXÙH
+H\›™\ÜÈÙ]\ÜˆHÝX]HÒÈÛˆH›ÝÈ[™XYHÚXÚÙY
+H[™‹ËËÈ™[Y[X™\œÈ›Ý[™ÎÈHXÚÈÛÛ[Z]ÈÜš]HÛ›HÚ[ˆH›Ý]HXØÙ\Y]‚ˆÖÙ\š]™JÛÛ™KXYË\X[\JWBœXˆ[[H˜XÚÐÛÛ[Z]ÂˆËËÈHœ›Þ™[ˆØ\œšYY]Y[ØÛ˜\ÚÝ›ÜˆHXÚÙY›ÝÈ
+\ÜÝYHÌŠKZ[šXBˆËËÈØ\œšYY]Y[ÎŽ™œ›ÛWÜÝ™X[Xœ›ÛHH^XÝY]Y]NŽ”Ý™X[XH›ÝÈØ\È˜]Ûˆœ›ÛK‚ˆ]Y[ÈÈØ\œšYYˆÛYYXNŽœ›Ý]NŽØ\œšYY]Y[ËY[[ÎˆÜ[ÛÜ^Žœ^ŽœÙ\ÜÚ[ÛŽŽœ™YœÎŽ]Y[ÓY[[ÏˆKˆËËÈH]Y[ÈX‰ÜÈ›ÛÜÝX[ÙÈÈ›Ü›X[^™HÝY™\ÜÈÙÙÛH›ÝÜÈ
+\ÜÝYHÌŠNˆH[ˆËËÈ™Y™\™[˜ÙHY\ˆH›\ÛÈHÛÜ	ÜÈ^Y\ŽŽœ™\]Y\ÝØ]Y[×Ù[š[˜Ù[Y[\È›ÝˆËËÈš]È™YØ\™\ÜÈÙˆÚXÚ›ÝÈØ\È™\ÜÙYˆZ[œ›ÛHØ˜XÚÓY[TÝ]NŽ™[š[˜ÙWÜÚÝÛ˜KˆËËÈ™]™\ˆ™KY\š]™Yœ›ÛHØ\™H8 %H[™[ÝÛœÈ]ÈÝÛˆ›ÝÜË›ÝH^X˜XÚÈ
+ÙYH\ÂˆËËÈ[[IÜÈÝÛˆØÊK‚ˆ]Y[Ñ[š[˜Ù[Y[
+Ü^Žœ^Ž]Y[Ñ[š[˜Ù[Y[ÊKˆËËÈÚYXØ\—ÚÙ^X\ÈÛÛYXÚ[ˆHXÚÈ\È[ˆVT“S^ÝX]HHÛY[Ø[ˆ˜]ÂˆËËÈÛˆ\™XÝ^H
+Y]Y]NŽ”Ý™X[NŽœÚYXØ\—Ü™[™\˜X›X
+Nˆ]\È›È[]^\ˆÜ™[˜[ˆËËÈ
+™[™\—ÛÜ™[˜[\ÈLJKÛÈ›Ý]NŽ˜ÛÛ[Z]ÜÝX]WØ[™ÜÚYXØ\˜[™È]È^Y\ŽŽœÚYXØ\˜ˆËËÈ™\ÚYHH[˜Ú[™ÙY›Ý]HÛÛ[Z]ˆÚYXØ\—ØÛÙXØ™\Ù\™\ÈTÔËÔÔÐHÛˆÝÛ›ØYÈHÙ^H™YY›Ý]™H[‚ˆËËÈ^[œÚ[Û‹ˆ›Û™X8 %Ù™‹Üˆ[ˆ[X™YY˜XÚÈ8 %\Ù[XÝÈ[žHÚYXØ\‹ˆY[[Ø\ÂˆËËÈÝX]SY[[ÎŽ“Ù™˜›ÜˆÙ™ˆ[™˜XÚÊ‹ŠX›Üˆ]™\žH˜XÚË[ˆ[X™YYÛ™KHÚYXØ\ˆÜ‚ˆËËÈHœ™\ÚÝÛ›ØY[ZÙNÈ›Û™X›Üˆ[ˆÒÈÛˆH›ÝÈ]\È[™XYHÚXÚÙY
+H›ÝÈ]\ÂˆËËÈÚXÚÙY™XØ]\ÙHH[ÙH\È›Ü˜ÙYÛ›H\È“ÕˆX]š[™È›Ü˜ÙYÛ›H\ÈHÚ[™ÙKÛÈBˆËËÈ˜XÚÈ]™]È\ÈHY[[ÈÙˆ]ÈÝÛˆÚ[ˆXÚÙYÛˆ]È›ÝÊK‚ˆÝX]HÂˆ™[™\—ÛÜ™[˜[ˆ×Ú[ˆÝ™X[WÚYˆMˆÚYXØ\—ÚÙ^NˆÜ[ÛÝš[™Ï‹ˆÚYXØ\—ØÛÙXÎˆÝš[™ËˆY[[ÎˆÜ[ÛÜ^Žœ^ŽœÙ\ÜÚ[ÛŽŽœ™YœÎŽ”ÝX]SY[[Ï‹ˆKˆËËÈ
+Š‘›Ü˜ÙYÛ›JŠˆ
+“ÊNˆH[™[X]ÚYH›Ü˜ÙY˜XÚÈ[ˆBˆËËÈ^Z[™È]Y[ÉÜÈ[™ÝXYÙH
+™[™\—ÛÜ™[˜[ØÝ™X[WÚYLXØÚ[ˆH][H\È›Û™JKˆËËÈ[™HÛÜÛÛ[Z]È]ÛÈH[ÙH[™™[Y[X™\œÈÝX]SY[[ÎŽ‘›Ü˜ÙYÛ›HÈ[™ÈXˆËËÈ
+H˜]Ûˆ˜XÚÉÜÈ[™ÝXYÙK[ÙHH]Y[ÉÜË[ÙHH[™ÝXYÙHHÙ\ÜÚ[Ûˆ™[˜XÚÈÊK‚ˆËËÈÚ[™ÙY\È˜[ÙH›ÜˆÒÈÛˆH›ÝÈ]\È[™XYHH[ÙNˆHY[HÛÜÙ\ËHÛÛ[Z]ˆËËÈØ\œšY\ÈÚ]\ÈÛˆØÜ™Y[ˆ[˜Ú[™ÙY
+]Ý™X[KÜˆLXØ›Üˆ›Ý[™ÊH[™›Ý[™È\ÂˆËËÈÜš][‹ˆ[Ø^\È[ˆ[X™YY˜XÚË™]™\ˆHÚYXØ\ŽˆH›Ü˜ÙY˜XÚÈHÛY[Ø[››Ý[]^\ÂˆËËÈ›ÝX]ÚY‚ˆÝX]Q›Ü˜ÙYÛ›HÈ™[™\—ÛÜ™[˜[ˆ×Ú[Ý™X[WÚYˆM[™ÎˆÝš[™ËÚ[™ÙYˆ›ÛÛKˆËËÈHØ\[Û‰ÜÈÛ™Kˆ›ÝH˜XÚÈ][]]\ÈXÚÙY[ˆ\È[™[[™]\ÈBˆËËÈÛÜ]\™›Ü›\È]
+^Y\ŽŽœÙ]ÜÝX]WÝÛ™XØ]™\È›ÝYÚHÛ™HÜš]HÛÜ‹›Ý]NŽ˜ÚÛÜÙX
+KˆËËÈZÙHHÛÈX›Ý™K‚ˆÝX]UÛ™JÝX]UÛ™JKˆËËÈHØ\[Û‰ÜÈÚ^™KXÚÙYÛˆHÝ[HˆÚ^™HYÙNˆHÛÜX›\Ú\È]]™H[™ˆËËÈ\œÚ\ÝÈ]
+›Ý]NŽœÙ[XÝÜÝX]WÜÚ^™X
+K‚ˆÝX]TÚ^™JÝX]TÚ^™JKˆËËÈHØ\[Û‰ÜÈ™\XØ[ÜÚ][Û‹XÚÙYÛˆHÝ[HˆÜÚ][ÛˆYÙBˆËËÈ
+›Ý]NŽœÙ[XÝÜÝX]WÜÜÚ][Û˜
+K‚ˆÝX]TÜÚ][ÛŠÝX]TÜÚ][ÛŠKˆËËÈHØ\[Û‰ÜÈ[Z[™ÈÙ™œÙ][ˆ\È
+^Y\ŽŽœÙ]ÜÝX]WÛÙ™œÙ]
+H8 %›ÙXÙYžHH[Z[™ÂˆËËÈØ\Ý[HÝ™\›^H
+[ˆ0©Í
+K›ÝžH\È[™[ˆH[Z[™È“ÕÈ\™HÛ›HÜ[œÈ]Ø\Ý[BˆËËÈ
+Ø˜XÚÓÚÎŽ“Ü[•[Z[™ØJKˆH˜\šX[Ý^\È\™H™XØ]\ÙH˜XÚÐÛÛ[Z]\ÈHÛ™BˆËËÈ^Y\‹\Ý]KXÛÛ[Z]\H]™\žHÝX]HÛÛ›Û›ÙXÙ\ËØ\Ý[H[˜ÛYY‚ˆÝX]SÙ™œÙ]
+M
+KŸB‚‹ËËÈ
+Š•HÚÛHÝ]ÛÛYHÙˆÒÈÛˆH›ØÝ\ÙY›ÝÊŠ‹Û™H]™[\œ›ÛHØ˜XÚÐÛÛ[Z]H8 %Ú]Â‹ËËÈ\™›Ü›HS‘Ú]\ˆH[™[Ý^\ËÛÈHØ[\ˆ™XYÈÛ™H˜[YH˜]\ˆ[ˆ\ÚÚ[™ÈÚXÙB‹ËËÈ
+Û˜ÙH™Y›Ü™HÛ—ÛÚØ™XZ[H›ÝÜÈ[™\ˆHÝ\œÛÜŠKˆH[Z[™È›ÝÈ[™ÈÙ™ˆÈB‹ËËÈY™™\™[Ý™\›^H
+ØÜ™Y[œÎŽœ^Y\ŽŽ›Ý™\›^X	ÜÈ˜XÚÜø¡¤•[Z[™È˜[œÚ][Û‹[ˆ0©Í
+H8 %B‹ËËÈXÚ\Ú[Ûˆ\È[™[Ø[ˆÝ]H]›Ý\™›Ü›KÚ[˜ÙH]Ù\È›ÝÝÛˆHÝ™\›^HÝXÚË‚ˆÖÙ\š]™JÛÛ™KXYË\X[\JWBœXˆ[[H˜XÚÓÚÈÂˆËËÈ\™›Ü›HÛÛ[Z]ˆÙY\ÛÜ[˜\ÈYH›ÜˆHÝ[HXÚÈ
+HšY]Ù\ˆ\ÈØ]Ú[™ÈHØ\[Û‚ˆËËÈÚ[™ÙKÛÈH[ˆÙˆXÚÜÈ™YYÈ›È™[Ü[‹X[™\™]Ø[È™]ÙY[ˆ[JH[™›ÜˆH]Y[ÂˆËËÈÙÙÛ\ÎÈ]™\žH˜XÚÈXÚÈÛÜÙ\ÈH[™[‚ˆÛÛ[Z]ÈÛÛ[Z]ˆ˜XÚÐÛÛ[Z]ÙY\ÛÜ[Žˆ›ÛÛKˆËËÈH˜]ˆ›ÝÈÜ[™YHYÙH
+Ø˜XÚÓY[TÝ]NŽœ\ÚJNˆH[™[Ý^\Ë]È›ÝÜÈ™\XÙY‚ˆ˜]šYØ]YˆËËÈ›Ý[™ÈÚ[™ÙY
+H[™XYK\^Z[™È]Y[È˜XÚÊNˆÛÜÙHH[™[‚ˆ\ÛZ\ÜËˆËËÈÜ[ˆH[Z[™ÈØ\Ý[HÝ™\›^NˆØÜ™Y[œÎŽœ^Y\ŽŽ›Ý™\›^X	ÜÈXÝ]˜]X\ÛZ\ÜÙ\ÈBˆËËÈ˜XÚÜÈ[™[[™\ÚÜÈ›ÜˆÝ™\›^RÚ[™Ž•[Z[™Ø[ˆ]ÈXÙK‚ˆÜ[•[Z[™ËˆËËÈÜ[ˆHÝ\ÝÛHÝX]KY\Ý[˜ÙHØ\Ý[HY\ˆX›\Ú[™È\È[˜ÚÜˆÚÚXÙK‚ˆÜ[Ý\ÝÛQ\Ý[˜ÙJÝX]TÜÚ][ÛŠKˆËËÈÒÈÙ\È›Ý[™È[™]\Ý›ÝÛÜÙHH[™[Z]\ŽˆH[H[Z[™È›ÝÈÚ[HÝX]\È\™BˆËËÈÙ™‹HØÚÙY[Z[™ÈÈÝ[H›ÝËH\ØX›YÚ^™HÈÜÚ][Ûˆ›ÝË[™H™K\XÚÈÙˆBˆËËÈ[™È]\È[™XYHÚXÚÙY‚ˆ[™\ˆËËÈHÝX]K\ÙX\˜ÚÛÛ[X[™›ÜˆHØÜ™Y[ˆÈÙ[™ÈHÝÜ™KˆH[™[Ý^\ÈÜ[ŽˆBˆËËÈÙX\˜ÚÜˆHÝÛ›ØY\ÈØ]ÚY›Ýš\™Y[™›Ü™ÛÝ[‹‚ˆÙX\˜Ú
+Ù]NŽœÝXœÙX\˜ÚŽ”ÝX”ÙX\˜ÚÛY
+KŸB‚š[\›Ü›Üˆ˜XÚÓY[TÝ]HÂˆËËÈHÛÜÙYY[HØ[››ÝÝÚ]ÚXœËÛÈ]ÈÝ\ˆX‰ÜÈØ\›H
+ØÙ[ŽŽØ\›WÛÝ\—ÝX˜JH\ÂˆËËÈÛÜšÈ›Üˆ›Ø›ÙK‚ˆ›ˆ›Ü
+	›]]Ù[ŠHÂˆYˆ]ÛÛYJÝÛ™\ŠHHÙ[‹˜˜XÚÙÜ›Ý[™ÛÝÛ™\ˆÂˆÙÙžŽ^Ž˜ÛX\—Ø˜XÚÙÜ›Ý[™Ü™]Ø\›WÛÝÛ™Y
+ÝÛ™\ŠNÂˆBˆBŸB‚š[\˜XÚÓY[TÝ]HÂˆËËÈZ[HY[H›ØÝ\ÙYÛˆX˜
+P]Y[ËOTÝX]\ÊH8 %HÛ‹\ØÜ™Y[ˆ]Y[ËÜÝXœÈXÛÛœÂˆËËÈXÚÈHÜXÚYšXÈXˆ\ÈØ^NÈHZ[ˆÜ[ˆ]\ÜÙ\Èˆ[Ý\œØ\Èž[Ý\ˆ[™ÝXYÙ\Èˆ[‚ˆËËÈ™Y™\™[˜ÙHÜ™\ˆ
+™Y‹^Z[™È]Y[ËÝ\œ™[ÝX]JH8 %ÙYHØÙ[ŽŽž[Ý\œØK‚ˆXˆ›ˆ™]ÊˆÎˆ	œÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[Û‹ˆY]NˆY]Y]NŽ“Y]Y]UšY]Ï	×Ï‹ˆXŽˆ×Ú[ˆ[Ý\œÎˆ™XÏÝš[™Ï‹ˆ
+HOˆÙ[ˆÂˆÙ[ŽŽ›™]×ÝÚ]
+ËY]KX‹[Ý\œË˜[ÙJBˆB‚ˆËËÈØÙ[ŽŽ›™]ØKÚ]HÝX]\È›ÛÝÙ™™\š[™È
+”ÙX\˜ÚÝX]\Êˆœ›ÛH]È’T”ÕZ[Ú[‚ˆËËÈÙ™™\—ÜÙX\˜Ú8 %HÜÝØ[ˆ[ˆHÙX\˜ÚˆÙ™™\š[™È]]\‹œ›ÛHHXÚËÛÝ[™XZ[ˆËËÈH›ÛÝ[™\ˆH]™H[™[ÈHÛÜÚ[™È[™[	ÜÈ™Yœ™\Ú\ÈÚ]Ù\H˜Y[™È˜XÚÜÈÝ\™˜XÙBˆËËÈ[]™H\Ý]È[™[Ù™ˆ
+˜XÚÜ×Ý×Ý[Z[™×Ú[™×ÛÙ™—ÝÚ]Ý]ÜÝXÚÚ[™×ØWÜÙXÛÛ™ÜÝ\™˜XÙX
+K‚ˆXˆ›ˆ™]×ÝÚ]
+ˆÎˆ	œÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[Û‹ˆY]NˆY]Y]NŽ“Y]Y]UšY]Ï	×Ï‹ˆXŽˆ×Ú[ˆ[Ý\œÎˆ™XÏÝš[™Ï‹ˆÙ™™\—ÜÙX\˜Úˆ›ÛÛˆ
+HOˆÙ[ˆÂˆ]]]ÈH˜XÚÓY[TÝ]HÂˆX‹ˆXÝ]™WØ]Y[ÎˆˆXÝ]™WÜÝXŽˆLKˆ›Ü˜ÙYÛÛ›Nˆ˜[ÙKˆ›Ü˜ÙYÛ[™ÎˆÝš[™ÎŽ›™]Ê
+Kˆ›Ü›Nˆ˜XÚÕX›NŽ›™]ÊS‘ÐTÑJKˆÙ™œÙ]Û\ÎˆÛYYXNŽœ^Y\ŽŽœÝX]WÛÙ™œÙ]Û\Ê
+KˆÛ™NˆÛYYXNŽœ^Y\ŽŽœÝX]WÝÛ™J
+KˆÚ^™NˆÛYYXNŽœ›Ý]NŽœÝX]WÜÚ^™J
+KˆÜÚ][ÛŽˆÛYYXNŽœ›Ý]NŽœÝX]WÜÜÚ][ÛŠ
+KˆYÙ\ÎˆYÙTÝXÚÎŽ›™]Ê
+Kˆ™[™\™\ŽˆÝX”™[™\™\ŽŽ•^ˆÝX—ÜÚYÎˆ›Û™KˆÝ\Žˆ™XÎŽ›™]Ê
+Kˆ›ÛÝÝ˜XÚÜÎˆ™XÎŽ›™]Ê
+Kˆ[Ý\œËˆ[š[˜ÙWÜÚÝÛŽˆ›Û™Kˆ[š[˜ÙWÜ›Ý]Nˆ›Û™Kˆ[š[˜ÙWÙ\ØX›Yˆ›Û™Kˆ[š[˜ÙWÜÝX]WÙY™™XÝˆÛYYXNŽœ›Ý]NŽ”ÝX]QY™™XÝŽ“›Û™KˆÝXÚÞWØ]Y[×Ý\™Ù]ˆ›Û™Kˆ[Ý[ÛŽˆ[™[[Ý[ÛŽŽ›™]Ê
+Kˆ˜XÚÙÜ›Ý[™ÛÝÛ™\Žˆ›Û™KˆÙX\˜ÚˆÙ™™\—ÜÙX\˜Ú[ŠÙ]NŽœÝXœÙX\˜ÚŽ”ÝX”ÙX\˜ÚÛ˜\ÚÝŽšYJ
+JKˆÙX\˜ÚÝØ]Ú[™Îˆ˜[ÙKˆ][WÜÚYXØ\œÎˆ™XÎŽ›™]Ê
+Kˆ[˜ÚÜŽˆÜ˜]NŽœ^Y\—ÚYŽ˜Û\ÜÚXÎŽ˜Ý›Ü›Ý×Ú]Ü™XÝ
+
+KˆÚYNˆÝŽ˜Ù[ŽÙ[Ž›™]ÊÝZNŽœÜÝ™\ŽŽ”ÚYNŽX›Ý™JKˆNÂˆË™›Ü›KX›K›Z[—Ü[™[ÝÈH[YNŽ›^[Ý]Ž”VQT—ÓQS•WÓRS—ÕÎÂˆËœÞ[˜×Ú][JËY]JNÂˆËœ™XZ[
+ËY]KX‹˜[ÙJNÂˆÂˆB‚ˆËËÈÜ[ˆ™\ÚYH[˜ÚÜ˜H™XÝÙˆHÛÛ›Û
+ÚY[™YÈH[™Ùˆ]ÈÙYÛY[
+H]ˆËËÈÜ[™YHY[K\ÈH^Y\ˆØÜ™Y[ˆ[™È]Ý™\‹ˆÚ]Ý]]HY[HÜ[œÈÚ\™HÛ\ÜÚXÂˆËËÈÙ\ÎˆHÛÛ›Û›ÝÉÜÈ™XÝÚÜÙHšYÚYÙH\ÈÕ“Ô’QÒˆØ[YÛ˜ÙKÛˆBˆËËÈœ™\ÚHZ[Y[H[™™Y›Ü™H]Èš\œÝœ˜[YNˆHXÙ[Y[\ÈØXÚYYØZ[œÝHX›IÜÂˆËËÈ^[Ý][™H[˜ÚÜˆ\È]ÚY›ÜˆHY[IÜÈÚÛHY™K‚ˆXˆ›ˆÚ]Ø[˜ÚÜŠ]]Ù[‹[˜ÚÜŽˆ™XÝ
+HOˆÙ[ˆÂˆÙ[‹˜[˜ÚÜˆH[˜ÚÜŽÂˆÙ[‚ˆB‚ˆËËÈH[˜ÚÜˆHY[HØ\ÈÜ[™YÚ]
+ØÙ[ŽŽÚ]Ø[˜ÚÜ˜JK‚ˆXˆ›ˆ[˜ÚÜŠ	œÙ[ŠHOˆ™XÝÂˆÙ[‹˜[˜ÚÜ‚ˆB‚ˆËËÈHYÚYÚY›ÝË›ÜˆH›ØÝ\È›Ø™H
+Ü˜]NŽ™›ØÝ\Ü›Ø™X
+H8 %H‘PQÙˆHÝ\œÛÜˆBˆËËÈÙ^HY\ˆ[Ý™\Ë[™H™X\ÛÛˆ]^\ÝÎˆ\œœØ	ÜÈTÑÕÓˆ\›H›Üˆ\È[™[Ú[™Ù\ÂˆËËÈ›Ý[™È[ÙKÛÈÚ]Ý]\ÈHš[™Ù\œš[™XÛÜ™ÈH[™[Ü[š[™È[™ÛÜÚ[™È[™ˆËËÈ›Ý[™È™]ÙY[‹‚ˆXˆ›ˆÙ[
+	œÙ[ŠHOˆLÌˆÂˆÙ[‹™›Ü›KX›KœÙ[ˆB‚ˆËËÈ
+Š•H™\^HØ[›ÛŠŠˆÙˆ\È[™[ˆHX‹HYÙH]
+XXÚ\ÚYYÙH[™H›ÝÂˆËËÈ]Ü[™Y]
+H[™HÙ[XÝY›ÝÉÜÈØ›ÝÒÙ^XH8 %›Ý]È[™^ÚXÚ[Ý™\ÈÚ[ˆH›ÝÂˆËËÈ\ÈYYX›Ý™H]ˆØÜ™Y[œÎŽœ^Y\ŽŽ›Ý™\›^XÜš]\È\È[ˆXÙHÙˆH˜\™H›ÝÈ[™^ÛÂˆËËÈH™\^H[ÈÝX]\Èœ›ÛH]Y[ËH›ÛÝœ›ÛHHÝ[HYÙK[™ÛÈ™]\›ˆÝXÚÜÂˆËËÈ\\‚ˆXˆ›ˆØ[›ÛŠ	œÙ[‹Îˆ	›]]Ø[›ÛŠHÂˆËLÌŠÙ[‹Xˆ\ÈLÌŠNÂˆÙ[‹œYÙ\Ë˜Ø[›ÛŠË˜XÚÔYÙNŽ˜ÛÙKŸ‹šÙ^J
+KŒ
+NÂˆËLÌŠÙ[‹™›Ü›KšÙ^WØ]
+Ù[‹™›Ü›KX›KœÙ[›X^
+
+H\È\Ú^™JK›X\ÛÜŠLÌŽŽ“PVßËŒ
+JNÂˆB‚ˆËËÈÚ]HÝX›Y[[ÜØØšYÙÙ\ˆ™YYÈÈÚÛÜÙH]È™^Ù^NˆHXˆ
+]Y[ËHÝX]\ÊKˆËËÈÝÈX[žHYÙ\È\™H\ÚYX›Ý™HH›ÛÝ[™Ú]\ˆH›ÛÝÙ™™\œÈÝ\ˆ[™ÝXYÙ\Ë‚ˆXˆ›ˆÜØ×Ü›Ø™J	œÙ[ŠHOˆ
+×Ú[\Ú^™K›ÛÛ
+HÂˆ
+Ù[‹X‹Ù[‹œYÙ\Ë›[Š
+KÙ[‹™›Ü›Kš[™^ÛÙŠ	•˜XÚÔ›ÝÎŽ“Ü[“Ý\ŠKš\×ÜÛÛYJ
+JBˆB‚ˆËËÈHYÙ\È\ÚYX›Ý™HHÝX]\È›ÛÝÝ]\›[ÜÝš\œÝ›Üˆ\ÝÈ[™›Ø™\Ë‚ˆÖØÙ™Ê[žJ\Ý™X]\™HH\Ý\Ý\ÜŠJWBˆXˆ›ˆYÙWÜ]
+	œÙ[ŠHOˆ™XÏ˜XÚÔYÙOˆÂˆÙ[‹œYÙ\Ëš]\Š
+K›X\
+ßËœYÙJK˜ÛÛXÝ
+
+BˆB‚ˆËËÈØ\ÈHÝX]\È›ÛÝ\ÝZ[Ú]HÙ\™\ˆ˜]Ú[™ÈHÝX]H
+Ú]ØÚÜÈ[Z[™È[™Ý[JOÂˆÖØÙ™Ê[žJ\Ý™X]\™HH\Ý\Ý\ÜŠJWBˆXˆ›ˆÙ\™\—Ø\›—ØZ[
+	œÙ[ŠHOˆ›ÛÛÂˆÙ[‹œÝX—ÜÚYË˜\×Ü™YŠ
+Kš\×ÜÛÛYWØ[™
+ÚYßÚYËœÙ\™\—Ø\›Š
+Kš\×ÜÛÛYJ
+JBˆB‚ˆËËÈHYÚYÚY›ÝÉÜÈY
+›Û™XÛˆH›ÝHÜˆ[ˆ[\H\Ý
+K‚ˆÖØÙ™Ê[žJ\Ý™X]\™HH\Ý\Ý\ÜŠJWBˆXˆ›ˆÙ[XÝYÚY
+	œÙ[ŠHOˆÜ[Û˜XÚÔ›ÝÏˆÂˆÙ[‹™›Ü›KœÙ[XÝYÚY
+
+K˜ÛÜYY
+
+BˆB‚ˆËËÈH›ØÝ\ØX›H›ÝÜÈ]HÝ\œ™[X‹[ˆ˜]ÛˆÜ™\‹žHY[]H8 %›ÜˆH\Ý]™YYÂˆËËÈÈ˜[YHH›ÝÈÚ]Ý]\XØ][™È\È^[Ý]žH[™
+ØÜ™Y[œÎŽœ^Y\ŽŽ›Ý™\›^WÝ\ÝØ	ÜÂˆËËÈ[Z[™È[™[Ù™ˆ\Ý
+K‚ˆÖØÙ™Ê[žJ\Ý™X]\™HH\Ý\Ý\ÜŠJWBˆXˆ›ˆYÊ	œÙ[ŠHOˆ™XÏ˜XÚÔ›ÝÏˆÂˆ
+‹œÙ[‹™›Ü›KX›K›—Ü›ÝÜÊ
+H\È\Ú^™JK™š[\—ÛX\
+_Ù[‹™›Ü›KšYØ]
+JK˜ÛÜYY
+
+JK˜ÛÛXÝ
+
+BˆB‚ˆËËÈ]™\žH›ØÝ\ØX›H›ÝÉÜÈ›ØÝ\È[[Y[[ˆ˜]ÛˆÜ™\‹‚ˆÖØÙ™Ê[žJ\Ý™X]\™HH\Ý\Ý\ÜŠJWBˆXˆ›ˆÙ^\Ê	œÙ[ŠHOˆ™XÏLÌˆÂˆÙ[‹šYÊ
+Kš]\Š
+K›X\
+YYšÙ^J
+KŒ
+K˜ÛÛXÝ
+
+BˆB‚ˆËËÈH›ØÝ\È[[Y[
+H›ÝÉÜÈØ›ÝÒÙ^XH[X™\ŠHÙˆH›ÝÈY˜[Y\ËYˆ\ÈXˆ\È]‚ˆÖØÙ™Ê[žJ\Ý™X]\™HH\Ý\Ý\ÜŠJWBˆXˆ›ˆÙ^WÛÙŠ	œÙ[‹Yˆ˜XÚÔ›ÝÊHOˆÜ[ÛLÌˆÂˆÙ[‹™›Ü›Kš[™^ÛÙŠ	šY
+K›X\
+ßYšÙ^J
+KŒ
+BˆB‚ˆËËÈ[Ý™H›ØÝ\ÈÛÈH›ÝÈY˜[Y\È
+H\Ý	ÜËÜˆHÝX›Y[[ÜØØšYÙÙ\‰ÜËØ^HÙ‚ˆËËÈ™\ÜÚ[™ÈÕÓˆÈ]
+NÈ˜[ÙXÚ[ˆ\ÈXˆ\È›ÈÝXÚ›ÝË‚ˆXˆ›ˆ›ØÝ\×ÚY
+	›]]Ù[‹Yˆ˜XÚÔ›ÝÊHOˆ›ÛÛÂˆÙ[‹™›ØÝ\×ÚÙ^JYšÙ^J
+KŒ
+NÂˆÙ[‹™›Ü›KœÙ[XÝYÚY
+
+HOHÛÛYJ	šY
+BˆB‚ˆËËÈ
+Š•Üš]H˜XÚÈH[™Ú[™IÜÈÝÛˆ›ØÝ\ÈÝ\œÛÜŠŠˆ
+™\ÝXÝ\™H\ÙHLŠNˆHÛÛ[[ˆÜ›Ý\ˆËËÈØ˜XÚÓY[T\H[œÝÙ\œÈ\ÈHÛÝ\˜ÙHÙˆÙ[ÛY]žK]HS‘ÒS‘HÝÛœÈHÝ\œ™[ˆËËÈ[[Y[
+0©ÍËŒÈÝ\JH8 %HÝÛ™\‰ÜÈÝ\\ÈHÛ›HXÙH]]]]\È[ˆ™\ÜÛœÙHÈBˆËËÈ›ØÝ\Ó[Ý™Y[™\È\ÈØÜ™Y[œÎŽœ^Y\ŽŽ›Ý™\›^NŽ”^Y\“Ý™\›^TØÜ™Y[ŽŽœÝ\	ÜÈÜš]K‚ˆËËÈH[[Y[\ÈH›ÝÉÜÈØ›ÝÒÙ^XH[X™\ŽÈHÙ^H\ÈXˆÙ\È›ÝÛ›ÝÈ[Ý™\È›Ý[™Ë‚ˆXˆ›ˆ›ØÝ\×ÚÙ^J	›]]Ù[‹[[NˆLÌŠHÂˆYˆ]ÛÛYJJHHÙ[‹™›Ü›Kš[™^ÛÙ—ÚÙ^J›ÝÒÙ^J[[JJHÂˆÙ[‹™›Ü›KX›KœÙ[HH\ÈLÌŽÂˆBˆB‚ˆËËÈ[™^[ÈH^Z[™È][IÜÈ]Y[È\ÝÙˆHÚÜÙ[ˆ]Y[È˜XÚÂˆXˆ›ˆXÝ]™WØ]Y[Ê	œÙ[ŠHOˆ×Ú[ÂˆÙ[‹˜XÝ]™WØ]Y[ÂˆBˆËËÈLHHÝX]\ÈÙ™‹[ÙH[™^[ÈH^Z[™È][IÜÈÝXœÈ\Ýˆ[™\ˆ›Ü˜ÙYÛ›KBˆËËÈ›Ü˜ÙY˜XÚÈ]™]È
+LHÚ[ˆ›Û™HX]ÚY
+NÈØÙ[ŽŽ™›Ü˜ÙYÛÛ›XHØ^\ÈÚXÚ[ÙH]\Ë‚ˆXˆ›ˆXÝ]™WÜÝXŠ	œÙ[ŠHOˆ×Ú[ÂˆÙ[‹˜XÝ]™WÜÝX‚ˆBˆËËÈ\È›Ü˜ÙYÛ›HHÝX]H[ÙH
+HÚXÚÛX\šÈ\ÈÛˆ]È›ÝÊOÂˆXˆ›ˆ›Ü˜ÙYÛÛ›J	œÙ[ŠHOˆ›ÛÛÂˆÙ[‹™›Ü˜ÙYÛÛ›BˆBˆËËÈH˜XÚÈH˜XÚÈ›ÝÜÈÚXÚÎˆHXÝ]™HÛ™KÜˆ›Û™HÚ[H›Ü˜ÙYÛ›HÛÈBˆËËÈÚXÚÛX\šËˆ]™\žH›ÝÈ]ÚXÚÜÈH˜XÚÈ™XYÈ\Ë™]™\ˆXÝ]™WÜÝX˜\™XÝK‚ˆ›ˆÚXÚÙYÜÝXŠ	œÙ[ŠHOˆ×Ú[ÂˆYˆÙ[‹™›Ü˜ÙYÛÛ›HÈLHH[ÙHÈÙ[‹˜XÝ]™WÜÝXˆBˆBˆËËÈ^Ý™X[HYÙˆHÚÜÙ[ˆ]Y[È˜XÚÈ
+›Üˆ	˜]Y[ÔÝ™X[RQ
+KÜˆˆXˆ›ˆ]Y[×ÜÝ™X[WÚY
+	œÙ[‹Y]NˆY]Y]NŽ“Y]Y]UšY]Ï	×ÏŠHOˆMÂˆ]HHÙ[‹˜XÝ]™WØ]Y[Ê
+NÂˆ˜XÚÜÊY]JBˆ˜[™Ý[Š˜]Y[Ë™Ù]
+K›X^
+
+H\È\Ú^™JJBˆ›X\
+ßËšY
+Bˆ[Ü˜\ÛÜŠ
+BˆBˆËËÈ^Ý™X[HYÙˆHÚÜÙ[ˆÝX]H˜XÚÈ
+›Üˆ	œÝX]TÝ™X[RQ
+KÜˆYˆÙ™‚ˆXˆ›ˆÝX—ÜÝ™X[WÚY
+	œÙ[‹Y]NˆY]Y]NŽ“Y]Y]UšY]Ï	×ÏŠHOˆMÂˆ]HHÙ[‹˜XÝ]™WÜÝXŠ
+NÂˆYˆHÂˆ™]\›ˆÂˆBˆ˜XÚÜÊY]JBˆ˜[™Ý[ŠœÝXœË™Ù]
+H\È\Ú^™JJBˆ›X\
+ßËšY
+Bˆ[Ü˜\ÛÜŠ
+BˆB‚ˆËËÈ\š]™HHÚXÚÙY˜XÚÜÈœ›ÛHHVPPÒÈÝ]H8 %H›Ý]HÝÛœÈH]ˆËËÈ
+ÕT—ÐUQS×ÔÒQÐÕT—ÔÕP—ÔÒQÙ]žHHÝ\[Ù‹\^HXÚÈ[™]™\žHÛÛ[Z]
+NˆH]]Ë\XÚÙYˆËËÈY˜][ÜÛX\Q˜XÚÈ\ÈÚXÚÙYÛˆš\œÝÜ[‹H™\^YY][H™\Ù]ÈÚ]H^X˜XÚËˆËËÈ[™Hš[ÜˆXÚÈ›Ý[™]š\ÈžHYˆÚ[ˆ›ÈY\È™XÛÜ™Y
+ÛÙXËYY˜][^JKHš[IÜÂˆËËÈ›YÙÙYY˜][\ÈÚXÚÙYˆœ™YH[˜Ý[Ûˆ
+›È	œÙ[˜
+HÛÈ›ÝØÙ[ŽŽœÞ[˜×Ú][XH
+Û‚ˆËËÈ]™\žHÜ[ŠH[™H]™HÛ™[ÝÈ
+ˆÌÌHšY[™\Ü
+H\š]™HHÐSQHZ\ˆHØ[YBˆËËÈØ^H8 %H\Þ[˜È]™\ÜØ]YÚØ\È^XÝHÛÈ™XY\œÈÙˆ\È[œÝÙ\ˆšY[™È\\‚ˆ›ˆ\š]™WØXÝ]™JÎˆ	œÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[Û‹Y]NˆY]Y]NŽ“Y]Y]UšY]Ï	×ÏŠHOˆ
+×Ú[×Ú[
+HÂˆ
+Ù[ŽŽ™\š]™WØXÝ]™WØ]Y[ÊËY]JKÙ[ŽŽ™\š]™WØXÝ]™WÜÝXŠËY]JJBˆB‚ˆËËÈH]Y[ÈX‰ÜÈ[ˆÙˆØÙ[ŽŽ™\š]™WØXÝ]™XK‚ˆ›ˆ\š]™WØXÝ]™WØ]Y[ÊÎˆ	œÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[Û‹Y]NˆY]Y]NŽ“Y]Y]UšY]Ï	×ÏŠHOˆ×Ú[Âˆ]ÛÛYJ
+HH˜XÚÜÊY]JH[ÙHÈ™]\›ˆNÂˆ]\ÚYHÛYYXNŽœ›Ý]NŽ˜Ý\—Ø]Y[×ÜÚY
+ÊNÂˆ
+\ÚYˆ
+Bˆ[Š˜]Y[Ëš]\Š
+KœÜÚ][ÛŠßËšYOH\ÚY
+JBˆ™›][Š
+Bˆ›Ü—Ù[ÙJ˜]Y[Ëš]\Š
+KœÜÚ][ÛŠßË™Y˜][
+JBˆ[Ü˜\ÛÜŠ
+H\È×Ú[ˆB‚ˆËËÈHÝX]\ÈX‰ÜÈ[ˆÙˆØÙ[ŽŽ™\š]™WØXÝ]™XH8 %Ú]H]™HÛØØ[œÈ[Û™KBˆËËÈ]Y[È[ˆ™Z[™È\ØØ\™Y\™K‚ˆ›ˆ\š]™WØXÝ]™WÜÝXŠÎˆ	œÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[Û‹Y]NˆY]Y]NŽ“Y]Y]UšY]Ï	×ÏŠHOˆ×Ú[Âˆ]ÛÛYJ
+HH˜XÚÜÊY]JH[ÙHÈ™]\›ˆLHNÂˆ]ÜÚYHÛYYXNŽœ›Ý]NŽ˜Ý\—ÜÝX—ÜÚY
+ÊNÂˆ
+ÜÚYˆ
+Bˆ[ŠœÝXœËš]\Š
+KœÜÚ][ÛŠßËšYOHÜÚY
+JBˆ™›][Š
+Bˆ›X\
+_H\È×Ú[
+Bˆ[Ü˜\ÛÜŠLJBˆB‚ˆËËÈØÙ[ŽŽ™\š]™WØXÝ]™XHÛˆ]™\žHÜ[ˆ8 %HY[HØ[ˆ™]™\ˆÚÝÈHÝ[HÜˆ\Þ[˜ÙYˆËËÈÚXÚÛX\šÈ]H[ÛY[]\X\œËˆ[X™\˜][HÙ\È“ÕÝXÚX˜‚ˆËËÈØ˜XÚÓY[TÝ]NŽ›™]ØHÙ]È]\™XÝK‚ˆ›ˆÞ[˜×Ú][J	›]]Ù[‹Îˆ	œÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[Û‹Y]NˆY]Y]NŽ“Y]Y]UšY]Ï	×ÏŠHÂˆ]
+]Y[ËÝXŠHHÙ[ŽŽ™\š]™WØXÝ]™JËY]JNÂˆÙ[‹˜XÝ]™WØ]Y[ÈH]Y[ÎÂˆÙ[‹˜XÝ]™WÜÝXˆHÝXŽÂˆÙ[‹™›Ü˜ÙYÛÛ›HHÙ[ŽŽ™\š]™WÙ›Ü˜ÙYÛÛ›JÊNÂˆÙ[‹™›Ü˜ÙYÛ[™ÈHÛYYXNŽœ›Ý]NŽ™›Ü˜ÙYÛÛ›WÛ[™ÊÊK×ÜÝš[™Ê
+NÂˆÙ[‹œ™XYÚ][WÜÚYXØ\œÊY]JNÂˆB‚ˆËËÈ\ÈH^X˜XÚÈ[ˆ›Ü˜ÙYÛ›OÈH›Ý]HÝÛœÈ]˜XÝ
+Ý\—ÜÝX—Û[ÙX
+NˆH˜]Ûˆ›Ü˜ÙYˆËËÈ˜XÚÉÜÈÝ™X[HY[Û™HØ[››Ý[]œ›ÛHHXÚÈÙˆ]Ø[YH˜XÚË‚ˆ›ˆ\š]™WÙ›Ü˜ÙYÛÛ›JÎˆ	œÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[ÛŠHOˆ›ÛÛÂˆÛYYXNŽœ›Ý]NŽ˜Ý\—ÜÝX—Û[ÙJÊHOHÛYYXNŽœ›Ý]NŽ”ÝX“[ÙNŽ‘›Ü˜ÙYÛ›BˆB‚ˆËËÈH[™ÝXYÙHH›Ü˜ÙYÛ›H›ÝÈ™XYÈÝ]Ú[H]\ÈH[ÙNˆH˜]Ûˆ˜XÚÉÜË[ÙHBˆËËÈ^Z[™È]Y[ÉÜÈ
+ØÝX—Û^[Ý]Ž™›Ü˜ÙYÛÛ›WÜ™XYÝ]JNÈ›Üˆ]Y[È]˜[Y\È›È[™ÝXYÙKBˆËËÈÛ™HH[ÙH™[˜XÚÈË˜[YYžHH˜XÚÈÙˆH][H]Ø\œšY\È]ˆ›Û™XÙ™ˆH[ÙK‚ˆ›ˆ›Ü˜ÙYÜ™XYÝ]
+ˆÎˆ	œÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[Û‹ˆY]NˆY]Y]NŽ“Y]Y]UšY]Ï	×Ï‹ˆXÝ]™Nˆ×Ú[ˆ›Ü˜ÙYˆ›ÛÛˆ
+HOˆÜ[ÛÝš[™ÏˆÂˆ›Ü˜ÙY[ŠÂˆ]][HH˜XÚÜÊY]JNÂˆ]˜]ÛˆH][K˜[™Ý[ŠœÝXœË™Ù]
+\Ú^™NŽžWÙœ›ÛJXÝ]™JK›ÚÊ
+OÊJNÂˆ]]Y[ÈH][K˜[™Ý[Š˜]Y[Ë™Ù]
+\Ú^™NŽžWÙœ›ÛJÙ[ŽŽ™\š]™WØXÝ]™WØ]Y[ÊËY]JJK›ÚÊ
+OÊJNÂˆ]]Y[×Û[™ÈH]Y[Ë›X\ÛÜŠˆ‹_K›[™×ØÛÙK˜\×ÜÝŠ
+JNÂˆ][™ÝXYÙHHÛYYXNŽœ›Ý]NŽ™›Ü˜ÙYÛÛ›WÛ[™ÝXYÙJ]Y[×Û[™ËÛYYXNŽœ›Ý]NŽ™›Ü˜ÙYÛÛ›WÛ[™ÊÊJNÂˆËÈH˜[˜XÚÈÝÛÙ[ˆ›Üˆ]Y[È]˜[Y\È›Û™Nˆ›ÈÝ™X[HÙˆ][™ÝXYÙH™YY™BˆËÈ˜]Û‹ÛÈ]\È˜[YYžH[žH˜XÚÈÙˆH][H]Ø\œšY\È]ˆ]Ý[™Ú[ˆH
+˜]Û‹š\×Û›Û™J
+H	‰ˆ[™ÝXYÙHOH]Y[×Û[™ÊBˆ[Š][K˜[™Ý[ŠœÝXœËš]\Š
+K˜ÚZ[Š	˜]Y[ÊK™š[™
+ßY]Y]NŽ›[™×ÛX]Ú\Ê[™ÝXYÙK	œË›[™×ØÛÙJJJJBˆ™›][Š
+NÂˆÝX—Û^[Ý]Ž™›Ü˜ÙYÛÛ›WÜ™XYÝ]
+˜]Û‹Ý[™Ú[‹›ÜŠ]Y[ÊJBˆJBˆB‚ˆËËÈ™K\™XYH^Z[™È][IÜÈ^\›˜[ÝX]\È›ÜˆHÙX\˜ÚYÙH
+ØÙ[ŽŽš][WÜÚYXØ\œØJK‚ˆ›ˆ™XYÚ][WÜÚYXØ\œÊ	›]]Ù[‹Y]NˆY]Y]NŽ“Y]Y]UšY]Ï	×ÏŠHÂˆÙ[‹š][WÜÚYXØ\œÈBˆ˜XÚÜÊY]JK›X\
+œÝXœËš]\Š
+K™š[\ŠßË™^\›˜[
+K˜ÛÛ™Y
+
+K˜ÛÛXÝ
+
+JK[Ü˜\ÛÜ—ÙY˜][
+
+NÂˆB‚ˆËËÈHÝX]\ÈX‰ÜÈ[ˆÙˆH]™HÛÙ[ŽŽ\]X[œÈ]™\žHXÚËZ\œ›Üš[™ÈBˆËËÈ]Y[ÈX‰ÜÈÝÛˆ[šÜÝ]XÛ\ÝX›Ý™H]ˆ\ÜÝYHÌÌIÜÈšY[™\ÜˆHÝX]HXÚÂˆËËÈ]™\›Ý]\ÈH^HÈ
+Üˆ]Ø^Hœ›ÛJHH[š[˜Ù[Y[	ÜÈÝÛˆ\›ˆ[™ÈXÝ]™WÜÝX˜ˆËËÈ]Û˜ÙH
+Ù[ŽŽ›Û—ÛÚØ	ÜÈÝÛˆÜ[Z\ÝXÈÜš]JK]HÙ\™\‹X\›ˆØÚÈ
+Ù\™\—Ø\›—ØZ[
+HØ[ˆÛ›H™XÛÛYHYBˆËËÈÛ˜ÙHH\›‰ÜÈÙXÚ\Ú[Û˜›Ý[™š\XÝX[H[œÝÙ\œÈ
+›Ý]NŽ™XÚ\Ú[ÛŽŽœ™\]Y\ÝÜ™]˜[œØÛÙXˆËËÈÛˆH›Ý]NŽ™›YÚÛÜšÙ\‹H™X[™]ÛÜšÈØ[
+H8 %ÙXÛÛ™È]\‹ˆH[™[]Ý^\ÈÜ[ˆXÜ›ÜÜÈ]Ú[™ÝÈ
+BˆËËÈXYÛ›ÜÝXÈØÜ™Y[œÎŽœ^Y\ŽŽ›Ý™\›^NŽœXÚ×Ý˜XÚ×Ü›ÝØšYÙÙ\ˆ[X™\˜][HÙ\ËœÛÈBˆËËÈØ\\™HØ[ˆÚÝÈHXÚÙY˜XÚÈŠHØ\ÈZ[[™™]™\ˆÝXÚYYØZ[‹ÛÈ]È˜]Û‚ˆËËÈÚXÚÛX\šÈ[™]ÈÝ[KÕ[Z[™È[HÝ]H›ÝÙ\Ú]]™\ˆÙ[ŽŽ›^[Ý]˜ZÙY]Ü[‹ˆËËÈ\ØYÜ™YZ[™ÈÚ]H›Ý]HžHH[YHHØ\\™HXÝX[HÛÚÙY]]ˆ™XZ[	ÜÈÝÛ‚ˆËËÈÝX]H\›H[Ø^\È™KZÛY\ÈHÝ\œÛÜˆÛÈHÚXÚÙY›ÝÈ8 %ÛÜœ™XÝ›Üˆ[ˆÜ[ˆÜˆHX‚ˆËËÈÝÚ]ÚÜ›Û™È›ÜˆH˜XÚÙÜ›Ý[™Û]]\Ý›ÝÝX[›ØÝ\Èœ›ÛHÚ\™]™\ˆHšY]Ù\‰ÜÂˆËËÈÝ\œÛÜˆXÝX[H\È
+H^XÝ›ØÝ\ËY\Þ[˜ÈÛ\ÜÈ™Yœ™\ÚØ]Y[Ø	ÜÈØÈ˜[Y\ÊBˆËËÈ8 %ÛÈ\È™Yœ™\Ú\ÈH›Ü›KÚXÚ™\ÝÜ™\ÈHÝ\œ™[›ÝÈžHØ˜XÚÔ›ÝØH[ˆBˆËËÈœ™\ÚHZ[\Ý[œÝXYÙˆÛ˜\[™ÈÈHXÝ]™H˜XÚËHØ[YHš^™Yœ™\ÚØ]Y[Ø\Y\È›ÜˆH]Y[ÂˆËËÈX‰ÜÈÝÛˆÛ‚ˆËËÂˆËËÈ
+Š’]™XZ[ÈÛˆHØÝX”ÚYØHÚ[™ÙJŠ‹›ÝÛˆHÛÈ˜[Y\È]Û˜ÙHÛÛ\\™YˆHÝXœÂˆËËÈ\ÝHXÝ]™H[™^H™[™\™\ˆÚ[™˜[œØÛÙ[™Ë[™H[š[˜Ù[Y[›Ý]H[™ˆËËÈÝX]HY™™XÝˆÛˆH›ÛÝ]\ÈH™Yœ™\Ú[ˆXÙKˆÓˆHÕP‹TQÑHHYÙH\È™Yœ™\ÚY[‚ˆËËÈXÙHÛÈ
+›ØÝ\ÈÙ\žHY
+H[™ÜYÈH›ÛÝÛ›HÚ[ˆ]È]˜Z[Xš[]H›ÈÛ™Ù\‚ˆËËÈÛÈ
+ØÝX”ÚYÎŽœYÙWØ]˜Z[Xš[]XNˆH™[™\™\‹ÜˆÚ]\ˆÝ[H\ÈÚÝÛˆÈØÚÙY
+KÛÈBˆËËÈÝ[HYÙH™]™\ˆÝ]]™\ÈH™[™\™\ˆÜˆHØÚÈ]ÈÚ^™H[™ÜÚ][Ûˆ›ÝÜÈÙ\™HZ[›Ü‚ˆËËÈÚ[HH˜XÚÈ\ÝÜˆ[š[˜Ù[Y[Ú[™ÙH]Ù\È›Ý™XYX]™\È][Û™K‚ˆ›ˆÛÜÝX]WÜÝ]J	›]]Ù[‹Îˆ	œÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[Û‹Y]NˆY]Y]NŽ“Y]Y]UšY]Ï	×ÏŠHÂˆ]]™WÜÝXˆHÙ[ŽŽ™\š]™WØXÝ]™WÜÝXŠËY]JNÂˆ]]™WÙ›Ü˜ÙYHÙ[ŽŽ™\š]™WÙ›Ü˜ÙYÛÛ›JÊNÂˆ]]™WÛ[™ÈHÛYYXNŽœ›Ý]NŽ™›Ü˜ÙYÛÛ›WÛ[™ÊÊNÂˆYˆÙ[‹™›Ü˜ÙYÛ[™ÈOH]™WÛ[™ÈÂˆÙ[‹™›Ü˜ÙYÛ[™ÈH]™WÛ[™Ë×ÜÝš[™Ê
+NÂˆBˆ]ÚYÈHÙ[‹œÝX—ÜÚY×Ù›ÜŠËY]K]™WÜÝX‹Ù[ŽŽ™›Ü˜ÙYÜ™XYÝ]
+ËY]K]™WÜÝX‹]™WÙ›Ü˜ÙY
+JNÂˆYˆÙ[‹œÝX—ÜÚYË˜\×Ü™YŠ
+HOHÛÛYJ	œÚYÊHÂˆ™]\›ŽÂˆBˆÙ[‹˜XÝ]™WÜÝXˆH]™WÜÝXŽÂˆÙ[‹™›Ü˜ÙYÛÛ›HH]™WÙ›Ü˜ÙYÂˆÙ[‹œ™XYÚ][WÜÚYXØ\œÊY]JNÂˆ]ÛÛYJš\œÝ
+HHÙ[‹œYÙ\Ë™š\œÝ
+
+K˜ÛÜYY
+
+H[ÙHÂˆ]›Ü›HHÙ[‹›^[Ý]
+ËY]JNÂˆËÈ›ÝHšY]Ù\‰ÜÈ›ÝÈ[žH[Ü™H
+]È˜XÚÈYHÙ™™\™Y\Ý
+NˆHÚXÚÙY›ÝÂˆÙ[‹™›Ü›Kœ™Yœ™\ÚÝÚ]
+›Ü›K›Û™KÛÛYJ	œÙ[‹˜XÝ]™WÜÝX—ÚY
+
+JJNÂˆ™]\›ŽÂˆNÂˆËÈHYÙ\ÉÈÝÛˆ]H\È™XY‘Q“Ô‘HYÚ[™È[NˆH[™ÝXYÙHÚÜÙH[žH\ÈÛÛ™H\È\ÂˆËÈ[˜]˜Z[X›H\ÈHÚ[™ÙY™[™\™\‚ˆÙ[‹›Ý\ˆHÙ[‹œÝX—Û[Ù[
+ËY]KYJK›Ý\ŽÂˆ]]˜Z[Xš[]WÛ[Ý™YBˆÙ[‹œÝX—ÜÚYË˜\×Ü™YŠ
+Kš\×ÜÛÛYWØ[™
+Z[Z[œYÙWØ]˜Z[Xš[]J
+HOHÚYËœYÙWØ]˜Z[Xš[]J
+JNÂˆYˆ]˜Z[Xš[]WÛ[Ý™Y\Ù[‹œYÙ\×ÚÛ
+
+HÂˆËÈHYÙHØ\ÈÜ[™YÛˆH›ÛÝ]›ÈÛ™Ù\ˆÛÈ
+H™[™\™\ˆÚ[™ÙY[™\‚ˆËÈÚ^™KÔÜÚ][Û‹H\›ˆ[™YÜˆYH[™ÝXYÙH]\ÝÈYHÙ™™\™Y\Ý
+N‚ˆËÈÜÈH›ÛÝ™\ÝÜš[™ÈHÜ[™\ˆ[™ØÜ›ÛHÝXÚÈØ]™Y]]Èš\œÝ\Ú‚ˆÙ[‹œYÙ\Ë˜ÛX\Š
+NÂˆ]›Ü›HHÙ[‹›^[Ý]
+ËY]JNÂˆÙ[‹™›Ü›Kœ™\ÝÜ™J›Ü›KÛÛYJ	™š\œÝœ™]\›—ÚY
+Kš\œÝœØÜ›Û
+NÂˆÙ[‹™›Ü›KX›KœÙ]Ý]J›Û™JNÂˆÙ[‹›[Ý[Û‹˜Ø[˜Ù[ÜÛYJ
+NÂˆH[ÙHÂˆËÈHYÙHÝ[ÛÎˆ™[Y[X™\ˆÚ]H›ÛÝ\È›ÝÈZ[œ›ÛH
+HÜ˜XÚÂˆËÈ™XZ[È]
+H[™™Yœ™\Ú\ÈYÙH[ˆXÙK›ØÝ\ÈÙ\žHY‚ˆÙ[‹œÝX—ÜÚYÈHÛÛYJÚYÊNÂˆYˆ]ÛÛYJYÙJHHÙ[‹œYÙ\ËÜ
+
+HÂˆ]›Ü›HHÙ[‹œYÙWÙ›Ü›JYÙJNÂˆËÈH[™ÝXYÙHØ[ˆÚ[™ÙHÚ\H[™\ˆHšY]Ù\ˆ
+Û™H˜XÚÈOˆÙ]™\˜[
+NˆH›ÝÂˆËÈ^HÙ\™HÛˆ›ÛÝÜÈ]È]È™]ÈÛ™Bˆ]™Y™\ˆH
+YÙHOH˜XÚÔYÙNŽ“Ý\“[™ÝXYÙ\ÊBˆ[ŠÙ[‹™›Ü›KœÙ[XÝYÚY
+
+K›X\
+YÙ[‹›Ý\—Ü›Ý×Ù›ÜŠ
+šY
+JJBˆ™›][Š
+NÂˆÙ[‹™›Ü›Kœ™Yœ™\ÚÝÚ]
+›Ü›K™Y™\‹˜\×Ü™YŠ
+K›Û™JNÂˆBˆBˆB‚ˆËËÈÙ\È]™\žH\ÚYYÙHÝ[]™HÚ]]\ÝÏÈ[ˆÝ\ˆ[™ÝXYÙ\ÈYÙH™YYÈH[™ÝXYÙBˆËËÈÈ\ÝÈH[™ÝXYÙHYÙH™YYÈUÈ[™ÝXYÙH
+HØ[YHØ[™ÒYKÚ]]™\ˆ]È˜XÚÜÉÂˆËËÈÜÚ][ÛœÈ\™H›ÝÊHÝ[Ù™™\™YÚ]ÝÙ]™\ˆX[žH˜XÚÜÈ]\ÈY‚ˆ›ˆYÙ\×ÚÛ
+	œÙ[ŠHOˆ›ÛÛÂˆÙ[‹œYÙ\Ëš]\Š
+K˜[
+Ø]™YX]ÚØ]™YœYÙHÂˆ˜XÚÔYÙNŽ“Ý\“[™ÝXYÙ\ÈOˆ\Ù[‹›Ý\‹š\×Ù[\J
+Kˆ˜XÚÔYÙNŽ“[™ÝXYÙJÝ™X[JHOˆÙ[‹›Ý\—Û[™ÊÝ™X[JKš\×ÜÛÛYJ
+Kˆ˜XÚÔYÙNŽ”Ý[H˜XÚÔYÙNŽ”XÚÙ\ŠÊHOˆYKˆËÈ]È\Ý[™È\ÈHÙX\˜Ú	ÜË›ÝH][IÜÎˆHÝÛ›ØY	ÜÈÝÛˆÝ™X[H[™[™È]\ÝˆËÈ›ÝÜHYÙHHšY]Ù\ˆ\ÈØ]Ú[™È]Û‚ˆ˜XÚÔYÙNŽ”ÙX\˜Ú˜XÚÔYÙNŽ”ÙX\˜Ú[™ÝXYÙHOˆÙ[‹œÙX\˜Úš\×ÜÛÛYJ
+KˆJBˆB‚ˆËËÈHÝX]\È›ÛÝ	ÜÈ™XZ[ÚYÛ˜]\™H›ÜˆXÝ]™X™XYœ™\ÚÙ™ˆH›Ý]H[™BˆËËÈ][KˆØÙ[ŽŽ›^[Ý]HÝÜ™\ÈHØ[YH˜[YH]Z[Èœ›ÛK‚ˆ›ˆÝX—ÜÚY×Ù›ÜŠˆ	œÙ[‹ˆÎˆ	œÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[Û‹ˆY]NˆY]Y]NŽ“Y]Y]UšY]Ï	×Ï‹ˆXÝ]™Nˆ×Ú[ˆ›Ü˜ÙYÛÛ›NˆÜ[ÛÝš[™Ï‹ˆ
+HOˆÝX”ÚYÈÂˆ]][HH˜XÚÜÊY]JNÂˆ]Ù™™\™YHš\ÚX›WÜÝXœÊËY]JNÂˆ]ÝXœÈH][Bˆ›X\
+œÝXœËš]\Š
+K™[[Y\˜]J
+K›X\
+
+KÊ_
+ËšYÙ™™\™Y˜ÛÛZ[œÊ	šJJJK˜ÛÛXÝ
+
+JBˆ[Ü˜\ÛÜ—ÙY˜][
+
+NÂˆ]™[™\™\ˆH][Bˆ˜[™Ý[ŠœÝXœË™Ù]
+\Ú^™NŽžWÙœ›ÛJXÝ]™JK›ÚÊ
+OÊJBˆ›X\ÛÜŠÝX”™[™\™\ŽŽ•^ßÝX”™[™\™\ŽŽ›Ù—ØÛÙXÊ	œË˜ÛÙXÊJNÂˆ]
+Ë[š[˜Ù[Y[ËY™™XÝ
+HHÙ[ŽŽ™[šÜÝ]JÊNÂˆÝX”ÚYÈÂˆÝXœËˆXÝ]™Kˆ™[™\™\‹ˆ˜[œØÛÙ[™ÎˆÛYYXNŽœ›Ý]NŽš\×Ý˜[œØÛÙ[™ÊÊKˆ™\Ù[\ŽˆÛYYXNŽœ›Ý]NŽœÝX]WÜ™\Ù[\ŠÊKˆ[š[˜Ù[Y[ˆY™™XÝˆY[[ÜžWÛ›ÝNˆÛYYXNŽœ›Ý]NŽ˜Ý\—ÛY[[ÜžWÛ›ÝJÊKˆ›Ü˜ÙYÛÛ›KˆBˆB‚ˆËËÈH[™ÝXYÙH[žHÙˆHÝ\ˆ[™ÝXYÙ\È[Ù[]Ø[™ÒYŽœÝ™X[XH˜[Y\Ë‚ˆ›ˆÝ\—Û[™Ê	œÙ[‹Ý™X[NˆM
+HOˆÜ[Û	“Ý\“[™ÏˆÂˆÙ[‹›Ý\‹š]\Š
+K™š[™
+ßËšYœÝ™X[HOHÝ™X[JBˆB‚ˆËËÈH›ÝÈ]Ý[™È›ÜˆH[™ÝXYÙHÛˆHÝ\ˆ[™ÝXYÙ\ÈYÙH“ÕÎˆ]È\™XÝXÚÈ›ÝÂˆËËÈÚ[H]Ù™™\œÈÛ™H˜XÚË]Èš[Z[ˆÚ[H]Ù™™\œÈÙ]™\˜[ˆH[™ÝXYÙHÚ[™Ù\ÈÚ\BˆËËÈ[™\ˆHšY]Ù\ˆ
+HÚYXØ\ˆ™XÛÛY\ÈÙ™™\™YÜˆX]™\ÊK[™H›ÝÈ^HÙ\™HÛˆ]\Ý›ÛÝÂˆËËÈ]›Ý™HÛÚÙY\[ˆHÚ\H]›ÈÛ™Ù\ˆ^\ÝËˆ[žHÝ\ˆY\È™]\›™Y[˜Ú[™ÙY‚ˆ›ˆÝ\—Ü›Ý×Ù›ÜŠ	œÙ[‹Yˆ˜XÚÔ›ÝÊHOˆ˜XÚÔ›ÝÈÂˆ][™ÈHX]ÚYÂˆ˜XÚÔ›ÝÎŽ“Ü[“[™Ê
+HOˆÙ[‹›Ý\—Û[™ÊœÝ™X[JKˆ˜XÚÔ›ÝÎŽ”ÝXŠJHOˆÙ[‹›Ý\‹š]\Š
+K™š[™
+ßË˜XÚÜËš]\Š
+K˜[žJšHOHJJKˆÈOˆ›Û™KˆNÂˆ[™Ë›X\ÛÜŠYÙ[ŽŽ›Ý\—Û[™×Ü›ÝÊBˆB‚ˆËËÈH[™ÝXYÙIÜÈ›ÝÈÛˆHÝ\ˆ[™ÝXYÙ\ÈYÙNˆHXÚÈ›ÝÈÙˆ]ÈÛ›H˜XÚËÜˆ]ÂˆËËÈš[Z[‹‚ˆ›ˆÝ\—Û[™×Ü›ÝÊÎˆ	“Ý\“[™ÊHOˆ˜XÚÔ›ÝÈÂˆX]ÚË˜XÚÜË˜\×ÜÛXÙJ
+HÂˆÝHOˆ˜XÚÔ›ÝÎŽ”ÝXŠšJKˆÈOˆ˜XÚÔ›ÝÎŽ“Ü[“[™ÊËšY
+KˆBˆB‚ˆËËÈHÝX]\È“ÓÕ	ÜÈ›ÝÈØ\œžZ[™ÈHÚXÚÛX\šÎˆ›Ü˜ÙYÛ›HÚ[H]\ÈH[ÙK[ÙHBˆËËÈXÝ]™H˜XÚËÜˆÙ™ˆ8 %Ü‹Ú[ˆHXÝ]™H˜XÚÈ\È›Ý\ÝYÛˆH›ÛÝ][
+]ÂˆËËÈ[™ÝXYÙH\È›Ýž[Ý\œÈŽˆHÛÙ[\ÜÈÜˆ[œ™XÛÙÛš\ÙY[[™ÝXYÙH˜XÚËÜˆÛ™HH]™HÚ[™ÙBˆËËÈ[Ý™Y
+KHÝ\ˆ[™ÝXYÙ\È›ÝÈ]Ý[™È›Üˆ]‚ˆ›ˆXÝ]™WÜÝX—ÚY
+	œÙ[ŠHOˆ˜XÚÔ›ÝÈÂˆYˆÙ[‹™›Ü˜ÙYÛÛ›HÂˆ™]\›ˆ˜XÚÔ›ÝÎŽ”ÝX‘›Ü˜ÙYÛ›NÂˆBˆX]ÚÙ[‹˜XÝ]™WÜÝXˆÂˆHYˆHH	‰ˆÙ[‹›Ý\‹š]\Š
+K˜[žJßË˜XÚÜËš]\Š
+K˜[žJšHOHH\È\Ú^™JJHOˆ˜XÚÔ›ÝÎŽ“Ü[“Ý\‹ˆHYˆHHOˆ˜XÚÔ›ÝÎŽ”ÝXŠH\È\Ú^™JKˆÈOˆ˜XÚÔ›ÝÎŽ”ÝX“Ù™‹ˆBˆB‚ˆËËÈ›ØÝ\È[ˆP”ÓÓUHX›H›ÝÈ8 %HÝ\Ü˜]]™K[Y[\XÚÈšYÙÙ\‰ÜÈÛÛ˜XÝ
+œ›ÝÈˆŠKBˆËËÈÛ™H]‹[Û›H[žH]ÜXZÜÈÜÚ][ÛœÈ
+H˜[YY\™Ù]È™[ÝÈÈ›Ý
+KˆH[\˜XÝ]™BˆËËÈ][Ø^\È[Ý™\È™[]]™[NÈ\È^\ÝÈ™XØ]\ÙHH[š]X[›ØÝ\È\ÈHPÕU‘H›ÝÂˆËËÈ
+\š]™Yœ›ÛH^X˜XÚÈÝ]JKÛÈH™[]]™HØ[Èœ›ÛH]ÛÝ[[™[Ù]Ú\™K‚ˆXˆ›ˆ›ØÝ\×Ü›ÝÊ	›]]Ù[‹›ÝÎˆ×Ú[
+HÂˆ›ÜˆÈ[ˆ‹ÂˆYˆÙ[‹™›Ü›KX›KœÙ[OH›ÝÈÂˆœ™XZÎÂˆBˆ]™Y›Ü™HHÙ[‹™›Ü›KX›KœÙ[ÂˆÙ[‹™›Ü›KX›K›[Ý™WÜÙ[
+YˆÙ[‹™›Ü›KX›KœÙ[›ÝÈÈHH[ÙHÈLHJNÂˆYˆÙ[‹™›Ü›KX›KœÙ[OH™Y›Ü™HÂˆœ™XZÎÈËÈÛ[\Y][ˆ[™8 %›ÝÈÝ]Ùˆ˜[™ÙBˆBˆBˆB‚ˆËËÈ™\ÛÛ™HHSQQ]Y[Ë]Xˆ\™Ù]
+˜›ÛÜÝ˜Ø›ÝY™\ÜÈ˜
+HÈ]ÈXœÛÛ]HX›H›ÝË›Ü‚ˆËËÈHÝ\Ü˜]]™K[Y[\XÚØšYÙÙ\‰ÜÈ˜[YY›Ü›H8 %[ˆ[\›˜]]™HÈH›ÝÈ[X™\ˆ[™BˆËËÈ\š]™Yœ›ÛHH][IÜÈ˜XÚÈÛÝ[ÚXÚ\È^XÝHH\ÜÝYHÌˆYÎˆ\È\›™\ÜÂˆËËÈÛ˜ÙH\™ÛÙYH›Ü›X[^™HÝY™\ÜÈ›ÝÈœ›ÛHHÔ“Ó‘È\ÜÝ[YY˜XÚÈÛÝ[ˆ™XY[™È]˜XÚÂˆËËÈ›ÝYÚH›Ü›KHØ[YHY[]Y\ÈØÙ[ŽŽ›Û—ÛÚØH\Ü]Ú\ÈÛ‹YX[œÈH˜[YBˆËËÈ\ÈÛÜœ™XÝÝÙ]™\ˆX[žH˜XÚÜÈH][HXÝX[H\Ëˆ›Û™XÚ[ˆ˜[YX\È[œ™XÛÙÛš^™YˆËËÈÜˆ™XÛÙÛš^™Y]›ÝÝ\œ™[HZ[
+HÔÙÙÛH›ÝÜÈ\™H›ÝÙ™™\™YšYÚ›ÝÊK‚ˆXˆ›ˆ›Ý×Ù›Ü—Ø]Y[×Ý\™Ù]
+	œÙ[‹˜[YNˆ	œÝŠHOˆÜ[Û×Ú[ˆÂˆ]\™Ù]HX]Ú˜[YHÂˆ˜›ÛÜÝˆOˆ˜XÚÔ›ÝÎŽ›ÛÜÝˆ›ÝY™\ÜÈˆOˆ˜XÚÔ›ÝÎŽ“ÝY™\ÜËˆÈOˆ™]\›ˆ›Û™KˆNÂˆÙ[‹™›Ü›Kš[™^ÛÙŠ	\™Ù]
+K›X\
+_H\È×Ú[
+BˆB‚ˆËËÈ™\ÛÛ™HHSQQÝX]\Ë]Xˆ\™Ù]ÈHPÒË›ÜˆHÝ\Ü˜]]™K[Y[\XÚØšYÙÙ\Ž‚ˆËËÈ˜XÚÎ“ˆ˜\ÈH‹]
+X˜\ÙY
+H˜XÚÈ[ˆQÑHÔ‘Tˆ8 %H›ÛÝ	ÜÈ˜XÚÈ›ÝÜÈš\œÝ[ˆBˆËËÈÝ\ˆ[™ÝXYÙ\ÈYÙHKVˆÚ]H][K]˜XÚÈ[™ÝXYÙH^[™Y[È]ÈÝÛˆ˜[šÙYYÙH8 %ˆËËÈ™]™\ˆÙ™‹[Z[™ÈÜˆÝ[Kˆ][œÝÙ\œÈH˜XÚÉÜÈ[™^[ˆH][IÜÈ\Ý›ÝHX›BˆËËÈ›ÝÎˆH˜XÚÈ™Z[™Ý\ˆ[™ÝXYÙ\È\È›È›ÝÈÛˆHYÙH]\ÈÚÝÚ[™Ë[™ˆËËÈØÙ[ŽŽ˜ÛÛ[Z]ÜÝX—Ý˜XÚØHÛÛ[Z]ÈžH][™^ˆH[™]Üš][ˆ›ÝÈ[X™\ˆšYÈ]™\žBˆËËÈ[YHH[™[ØZ[œÈÜˆÜÙ\ÈH›ÝÈ
+HÝX]WÝ^ÜÜØ\ÙHXÚÙY›ÝÈËÚXÚ™XØ[YBˆËËÈHÝ[H›ÝÊNÈHÜÚ][Ûˆ[ˆ\ÈÜ™\ˆØ[››Ýˆ›Û™X›Üˆ[ˆ[œ™XÛÙÛš^™Y˜[YHÜˆ[ˆˆ\ÝˆËËÈH\Ý˜XÚË‚ˆXˆ›ˆÝX—Ý˜XÚ×Ù›Ü—Ý\™Ù]
+	œÙ[‹˜[YNˆ	œÝŠHOˆÜ[Û\Ú^™OˆÂˆ]Žˆ\Ú^™HH˜[YKœÝš\Ü™Yš^
+˜XÚÎˆŠOËš[J
+Kœ\œÙJ
+K›ÚÊ
+OÎÂˆÙ[‹œ›ÛÝÝ˜XÚÜËš]\Š
+K˜ÛÜYY
+
+K˜ÚZ[ŠÙ[‹›Ý\‹š]\Š
+K™›]ÛX\
+ßË˜XÚÜËš]\Š
+K›X\
+šJJJK›
+ŠBˆB‚ˆËËÈÚÝÈX˜
+P]Y[ËOTÝX]\ÊHÛˆHY[H]\ÈS‘PQHÜ[ˆ8 %HÙXÛÛ™\ØÈ™\ÜÙYˆËËÈÚ[HHš\œÝÛ™IÜÈXˆ\ÈÚÝÚ[™ËˆØ[YH›ÙH\ÈHQ•Ô’QÒ\›H™[ÝËÚXÚ\ÈÚBˆËËÈ]\›HØ[È\È˜]\ˆ[ˆ™\X][™È]‚ˆXˆ›ˆ›ØÝ\×ÝXŠ	›]]Ù[‹Îˆ	œÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[Û‹Y]NˆY]Y]NŽ“Y]Y]UšY]Ï	×Ï‹XŽˆ×Ú[
+HÂˆYˆXˆOHÙ[‹XˆÂˆÙ[‹XˆHXŽÂˆÙ[‹œ™XZ[
+ËY]KX‹˜[ÙJNÈËÈÝØ\HÚÛH\Ý8¡¤ˆÛ˜\H[›ÈÛ™ÈÛYBˆBˆB‚ˆËËÈÛÛ[Z]H›ØÝ\ÙY›ÝÈ\ÈHXÝ]™H˜XÚÈ›Üˆ]ÈXˆ8 %\ÛZ\ÜÚ[™ÈH[™[Y\Ø\™\ÂˆËËÈHÛÛZ[™\‰ÜÈ›Øˆ›ÝË›Ý\ÈY]Ù	ÜÎÈH[œÝÙ\ˆØ^\ÈÚ]\ˆ]ÚÝ[ˆH›ÝÈ\ÂˆËËÈ™XY˜XÚÈžH]ÈØ˜XÚÔ›ÝØH
+™]™\ˆžHÜÚ][ÛŠK[™H›ÝÈH›Ü›HXÛ\™YTÐP“Q
+BˆËËÈ[H[Z[™ËÔÝ[H[™\ˆH]™H\›‹HÚ^™KÔÜÚ][Ûˆ›ÝÈH™[™\™\ˆØ[››Ý™XXÚ
+H\È[™\ˆËËÈ]H›Ü›H^Y\‹‚ˆXˆ›ˆÛ—ÛÚÊ	›]]Ù[‹Y]NˆY]Y]NŽ“Y]Y]UšY]Ï	×ÏŠHOˆ˜XÚÓÚÈÂˆ]XˆHÙ[‹XŽÂˆ]Ù[HÙ[‹™›Ü›KX›KœÙ[Âˆ]›ØÝ\ÙYHÙ[‹™›Ü›KœÙ[XÝYÚY
+
+K˜ÛÜYY
+
+NÂˆYˆXˆOHÂˆËÈHÛÈ^\ÜÈÔ›ÝÜÈ
+\ÜÝYHÌŠKY\ˆH]Y[È˜XÚÜÈ8 %ÙYBˆËÈÙ[ŽŽ˜]Y[×Ù›Ü›XÚXÚXÛ\™\È[H™\ÚYHH˜XÚÜËÛÈH˜XÚÈXÚÈ™[ÝÈ\ÂˆËÈ™]™\ˆZ\ÝZÙ[ˆ›ÜˆÛ™HÙˆ\ÙHžHÜÚ][Ûˆ\š]Y]XË‚ˆ™]\›ˆX]Ú›ØÝ\ÙYÂˆËÈH\ØX›YZ\ˆ\È˜]Ûˆ[K™XY[™ÈÙ™‹[™ÒÈÛˆ]\ÈH›Ë[Ü8 %Ø[YBˆËÈ™›ØÝ\ØX›H][™\ˆÚ\H˜XÚÔ›ÝÎŽ•[Z[™Ø[™XYH\Ù\ÈÚ[HÝX]\È\™BˆËÈÙ™‹ˆ
+H›ÛÝ›ÝH[™\ˆHZ\ˆ\È[ˆ[™\ÛÝˆ›ÈÙ^K™]™\ˆ›ØÝ\ÙYŠBˆÛÛYJ˜XÚÔ›ÝÎŽ›ÛÜÝ˜XÚÔ›ÝÎŽ“ÝY™\ÜÊHYˆÙ[‹™[š[˜ÙWÙ\ØX›Yš\×ÜÛÛYJ
+HOˆÂˆ˜XÚÓÚÎŽ’[™\ˆBˆ\™Ù]
+ÛÛYJ˜XÚÔ›ÝÎŽ›ÛÜÝ
+HÛÛYJ˜XÚÔ›ÝÎŽ“ÝY™\ÜÊJHOˆÂˆ]]]HHÙ[‹™[š[˜ÙWÜÚÝÛ‹[Ü˜\ÛÜŠÜ^Žœ^Ž]Y[Ñ[š[˜Ù[Y[ÎŽ““Ó‘JNÂˆYˆ\™Ù]OHÛÛYJ˜XÚÔ›ÝÎŽ›ÛÜÝ
+HÂˆK˜›ÛÜÝÙX[ÙÈHXK˜›ÛÜÝÙX[ÙÎÂˆH[ÙHÂˆK››Ü›X[^™WÛÝY™\ÜÈHXK››Ü›X[^™WÛÝY™\ÜÎÂˆBˆÙ[‹™[š[˜ÙWÜÚÝÛˆHÛÛYJJNÂˆYˆ]ÛÛYJ›ÝÊHHÙ[‹™›Ü›KX›Kœ›Ý×Û]]
+Ù[
+HÂˆ›ÝËÙÙÛHHÛÛYJYˆ\™Ù]OHÛÛYJ˜XÚÔ›ÝÎŽ›ÛÜÝ
+HÂˆK˜›ÛÜÝÙX[ÙÂˆH[ÙHÂˆK››Ü›X[^™WÛÝY™\ÜÂˆJNÂˆBˆÝ[[Y]žNŽ™XYÎŽ™]™[
+Ý[[Y]žNŽ™XYÎŽœØÚ[XNŽ‘XYÑ]™[Ž‘™X]\™U\ÙYÂˆ™X]\™NˆÝ[[Y]žNŽ™XYÎŽœØÚ[XNŽ‘™X]\™NŽ]Y[Ñ[š[˜Ù[Y[ˆJNÂˆ˜XÚÓÚÎŽÛÛ[Z]ÈÛÛ[Z]ˆ˜XÚÐÛÛ[Z]Ž]Y[Ñ[š[˜Ù[Y[
+JKÙY\ÛÜ[ŽˆYHBˆBˆÛÛYJ˜XÚÔ›ÝÎŽ]Y[ÊJJHOˆÂˆ]XÚÈHH\È×Ú[Âˆ]Ú[™ÙYHÙ[‹˜XÝ]™WØ]Y[ÈOHXÚÎÂˆÙ[‹˜XÝ]™WØ]Y[ÈHXÚÎÂˆYˆÚ[™ÙYÂˆËÈHY[HÛ›H™\ÜÈHXÚÈ8 %˜]]™K\ÝÚ]ÚœÈ™K]˜[œØÛÙH\ÂˆËÈ›Ý]IÜÈÛXÞKˆH[]^\‹Y˜XÚ[™È[™^\ÈHÓÓ•RS‘TˆÜ™[˜[ˆËÈ
+]Y[×ÛÜ™[˜[
+K›ÝH›ÝË‚ˆYˆ]ÛÛYJÊHH˜XÚÜÊY]JK˜[™Ý[Š˜]Y[Ë™Ù]
+JJHÂˆ]Ü™H˜XÚÜÊY]JBˆ›X\
+Y]Y]NŽ˜]Y[×ÛÜ™[˜[
+	˜]Y[ËJJBˆ[Ü˜\ÛÜŠXÚÊNÂˆÝ[[Y]žNŽ™XYÎŽ™]™[
+Ý[[Y]žNŽ™XYÎŽœØÚ[XNŽ‘XYÑ]™[Ž‘™X]\™U\ÙYÂˆ™X]\™NˆÝ[[Y]žNŽ™XYÎŽœØÚ[XNŽ‘™X]\™NŽ]Y[Õ˜XÚËˆJNÂˆ™]\›ˆ˜XÚÓÚÎŽÛÛ[Z]ÂˆÛÛ[Z]ˆ˜XÚÐÛÛ[Z]Ž]Y[ÈÂˆØ\œšYYˆÛYYXNŽœ›Ý]NŽØ\œšYY]Y[ÎŽ™œ›ÛWÜÝ™X[JËÜ™
+KˆY[[Îˆ˜XÚÜÊY]JK˜[™Ý[ŠÛYYXNŽœ›Ý]NŽ›Y[[×ÛÙ—Ø]Y[Ê	˜]Y[ËJJKˆKˆÙY\ÛÜ[Žˆ˜[ÙKˆNÂˆBˆBˆ˜XÚÓÚÎŽ‘\ÛZ\ÜÂˆBˆÈOˆ˜XÚÓÚÎŽ‘\ÛZ\ÜËˆNÂˆB‚ˆ]ÛÛYJY
+HH›ØÝ\ÙY[ÙHÈ™]\›ˆ˜XÚÓÚÎŽ’[™\NÂˆX]ÚÙ[‹™›Ü›K˜XÝ]˜]JÙ[›X^
+
+H\È\Ú^™JHÂˆËÈMÈ›ÛÝË]\ˆÚ[HH]™H›Ý]H\ÈXÝX[H\›š[™ÈHÝX]H[ÈHXÝ\™KˆËÈ[Z[™È[™Ý[H\™HXÛ\™Y\ØX›Y
+Ù[ŽŽ›^[Ý]
+H8 %H^\È[™XYH[‚ˆËÈH^[È8 %[™ÛÈ\™HÚ^™KÔÜÚ][Ûˆ[™\ˆ[ˆ[XYÙHÜˆÝ[YÝX]NˆÒÈÛˆ[žBˆËÈÙˆ[H\ÈH›Ë[Ü‚ˆ›Û™HOˆ™]\›ˆ˜XÚÓÚÎŽ’[™\ˆÛÛYJXÝ]˜][ÛŽŽ”\Ú
+\Ý
+JHOˆÂˆÙ[‹œ\Ú
+\Ý
+NÂˆ™]\›ˆ˜XÚÓÚÎŽ“˜]šYØ]YÂˆBˆÛÛYJXÝ]˜][ÛŽŽXÝ[ÛŠ
+
+JJHOˆßBˆBˆX]ÚYÂˆ˜XÚÔ›ÝÎŽÚÚXÙJšY[[™ÊHOˆÙ[‹œXÚ×ÜÝ[JšY[[™ÊKˆËÈ™XYU‘K›Ýœ›ÛHH›Ü›NˆHXÚÈ[ˆ\ÈØ[YHÜ[ˆ
+XÝ]™WÜÝX˜Üš][ˆ™[ÝËˆËÈ›È™XZ[
+H]\ÝXZÙHH™^ÒÈÛˆ[Z[™ÈÜ[ˆHØ\Ý[K‚ˆ˜XÚÔ›ÝÎŽ•[Z[™ÈYˆÙ[‹˜XÝ]™WÜÝXˆHOˆ˜XÚÓÚÎŽ“Ü[•[Z[™Ëˆ˜XÚÔ›ÝÎŽ•[Z[™ÈOˆ˜XÚÓÚÎŽ’[™\ËÈ[H[™[™\Ú[HÝX]\È\™HÙ™‚ˆ˜XÚÔ›ÝÎŽ”ÝX“Ù™ˆOˆÙ[‹˜ÛÛ[Z]ÜÝXŠLKY]JKˆ˜XÚÔ›ÝÎŽ”ÝX‘›Ü˜ÙYÛ›HOˆÙ[‹˜ÛÛ[Z]Ù›Ü˜ÙYÛÛ›JY]JKˆ˜XÚÔ›ÝÎŽ”ÝXŠJHOˆÙ[‹˜ÛÛ[Z]ÜÝXŠH\È×Ú[Y]JKˆ˜XÚÔ›ÝÎŽ”ÙX\˜Ú]
+JHOˆÙ[‹œÙX\˜ÚÙÝÛ›ØY
+JKˆ˜XÚÔ›ÝÎŽ”ÙX\˜Ú™]žHOˆ˜XÚÓÚÎŽ”ÙX\˜Ú
+Ù]NŽœÝXœÙX\˜ÚŽ”ÝX”ÙX\˜ÚÛYŽ”™]žJKˆ˜XÚÔ›ÝÎŽ“[™ÐÚÚXÙJJHOˆÙ[‹œXÚ×ÜÙX\˜ÚÛ[™ÝXYÙJJKˆÈOˆ˜XÚÓÚÎŽ’[™\ˆBˆB‚ˆËËÈÛÛ[Z]HÝX]H˜XÚÈ]X[ˆH][IÜÈ\Ý\ÈHXÝ]™HÛ™K^XÝH\ÈÒÈÛˆ]ÂˆËËÈ›ÝÈÙ\È
+ØÙ[ŽŽ›Û—ÛÚØJNˆžHH˜XÚÉÜÈÝÛˆ[™^Ú\™]™\ˆ]È›ÝÈÚ]È
+H›ÛÝBˆËËÈÝ\ˆ[™ÝXYÙ\ÈYÙHÜˆH[™ÝXYÙHYÙJKÛÈHØ[\ˆ]˜[Y\ÈH˜XÚÈ™]™\ˆ™YYÈH›ÝÂˆËËÈÈ™HÛˆHÝ\œ™[YÙK‚ˆXˆ›ˆÛÛ[Z]ÜÝX—Ý˜XÚÊ	›]]Ù[‹Nˆ\Ú^™KY]NˆY]Y]NŽ“Y]Y]UšY]Ï	×ÏŠHOˆ˜XÚÓÚÈÂˆÙ[‹˜ÛÛ[Z]ÜÝXŠH\È×Ú[Y]JBˆB‚ˆËËÈHÝX]HÛÛ[Z]™Z[™ÒÈÛˆÙ™ˆ
+LX
+HÜˆÛˆH˜XÚÈ›ÝÎˆ™XÛÜ™ÈHXÚË[™[œÝÙ\œÂˆËËÈHÛÛ[Z]ˆHÛÛ[Z]\ÈXYHÚ]\ˆÜˆ›ÝHXÚÈÚ[™ÙY[ž][™È
+H›Ý]BˆËËÈ™\X›\Ú\ÊK]]Ø\œšY\ÈHY[[ÈÛ›HÚ[ˆ]QˆH[™[Ü[œÈÛˆHÚXÚÙY›ÝËÛÂˆËËÈ[ˆÒÈ\™H\ÈÛÜÚ[™ÈHY[K›ÝÚÛÜÚ[™Ë[™[ˆ]]ÛX]XÈXÚÈ
+HY\‰ÜÈÙ™‹Ü‚ˆËËÈ]È˜XÚÊH]\Ý›Ý™XÛÛYHHÚÝÉÜÈY[[ÜžK‚ˆ›ˆÛÛ[Z]ÜÝXŠ	›]]Ù[‹™]×ÜÝXŽˆ×Ú[Y]NˆY]Y]NŽ“Y]Y]UšY]Ï	×ÏŠHOˆ˜XÚÓÚÈÂˆËÈX]š[™È›Ü˜ÙYÛ›H\ÈHÚ[™ÙH]™[ˆÛÈHÝ™X[H]™]È
+H›Ü˜ÙY˜XÚÉÜÈÝÛˆ›ÝÊBˆËÈÜˆÛÈ›Ý[™È
+Ù™ˆÚ[H›È›Ü˜ÙY˜XÚÈX]ÚY
+NˆH[™^\ÈHØ[YKHÝ]H\ÂˆËÈ›Ý‚ˆ]Ú[™ÙYHÛYYXNŽœ›Ý]NŽœÝX]WÜXÚ×ØÚ[™ÙY
+Ù[‹˜XÝ]™WÜÝX‹™]×ÜÝX‹Ù[‹™›Ü˜ÙYÛÛ›JNÂˆÙ[‹˜XÝ]™WÜÝXˆH™]×ÜÝXŽÂˆÙ[‹™›Ü˜ÙYÛÛ›HH˜[ÙNÂˆËÈHÛY[™[™\™\ˆZÙ\ÈHSP‘QQ\ÝX]HÜ™[˜[
+Ú]H[]^\‚ˆËÈ[[Y\˜]\ÊNÈ[ˆ^\›˜[XÚÈ\È›È[]^Ü™[˜[8 %]\È˜]ÛˆžHHÚYXØ\‚ˆËÈ™[™\™\ˆÛˆ\™XÝ^KÜˆ\›™Yˆ]šYH˜XÚÜÊY]JBˆ™š[\Šß™]×ÜÝXˆH
+Bˆ›X\
+Y]Y]NŽœÝX—Ü™[™\—ÛÜ™[˜[
+	œÝXœË™]×ÜÝXˆ\È\Ú^™JJBˆ[Ü˜\ÛÜŠLJNÂˆYˆÚ[™ÙYÂˆÝ[[Y]žNŽ™XYÎŽ™]™[
+Ý[[Y]žNŽ™XYÎŽœØÚ[XNŽ‘XYÑ]™[Ž‘™X]\™U\ÙYÂˆ™X]\™NˆÝ[[Y]žNŽ™XYÎŽœØÚ[XNŽ‘™X]\™NŽ”ÝX]U˜XÚËˆJNÂˆBˆ]ÚYXØ\ˆH˜XÚÜÊY]JBˆ™š[\Šß™]×ÜÝXˆH
+Bˆ˜[™Ý[ŠœÝXœË™Ù]
+™]×ÜÝXˆ\È\Ú^™JJBˆ™š[\ŠßËœÚYXØ\—Ü™[™\˜X›J
+JNÂˆ˜XÚÓÚÎŽÛÛ[Z]ÂˆÛÛ[Z]ˆ˜XÚÐÛÛ[Z]Ž”ÝX]HÂˆ™[™\¼ÓÝº¶‰žËkºwµçY\ˆ[™ˆËËÈØÜ›Û™\ÝÜ™Y
+NÈ[ˆ[˜Ú[™ÙYÚYÛ˜]\™HX]™\ÈHYÙH[Û™NÈÛˆH›ÛÝ[žHÚ[™ÙBˆËËÈ™Yœ™\Ú\È[ˆXÙK‚ˆÖÝ\ÝBˆ›ˆWÜ™XZ[ÜÚYÛ˜]\™WÛZ\ÛX]ÚÛÛ—ØWÜÝX—ÜYÙWÜÜ×Ý×ÝWÜ›ÛÝ
+
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KËÝÜ™JHHÜ[—ÝÚ]
+œÜ‹ÝX]QY™™XÝŽ”ÚYXØ\ŠNÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ”Ý[JNÂˆY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JNÂˆY[K\]JŒM‹	œÝZNŽ™š^\™NŽ‘š^\™SYX\Ý\™K	œËÝÜ™KšY]Ê
+JNÂˆ\ÜÙ\Ù\HJY[KœYÙWÜ]
+
+KÕ˜XÚÔYÙNŽ”Ý[WK˜[ˆ[˜Ú[™ÙYÚYÛ˜]\™HX]™\ÈHYÙHŠNÂ‚ˆËÈHØ[YHÝX]K›ÝÈ[ˆ[XYÙHÛ™NˆH™[™\™\ˆÚ[™[Ý™Y[™\ˆHYÙBˆ]]][XYÙHHÝ™X[JNNK‘[™Û\Ú‹™[™È‹ˆŠNÂˆ[XYÙK˜ÛÙXÈHœÜÈ‹š[Ê
+NÂˆ]ÝÜ™LˆHÝÜ™WÝÚ]
+™XÈVÚ[XYÙWJNÂˆY[K\]JŒM‹	œÝZNŽ™š^\™NŽ‘š^\™SYX\Ý\™K	œËÝÜ™L‹šY]Ê
+JNÂˆ\ÜÙ\JY[KœYÙWÜ]
+
+Kš\×Ù[\J
+KœÜYÈH›ÛÝŠNÂˆ\ÜÙ\Ù\HJY[Kœ™[™\™\‹ÝX”™[™\™\ŽŽ’[XYÙJNÂˆ\ÜÙ\Ù\HJY[KœÙ[XÝYÚY
+
+KÛÛYJ˜XÚÔ›ÝÎŽ”Ý[JK›ÛˆH›ÝÈ]Ü[™Y]ŠNÂˆ\ÜÙ\Ù\HJY[K™›Ü›KX›K]J
+K›Û™JNÂˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈ
+Š“Û›H[ˆ]˜Z[Xš[]HÚ[™ÙHÜÈHÝX‹\YÙKŠŠˆHÝXœÈš[™Ù\œš[Ú[™ÙH
+H˜XÚÈÙ™™\™YˆËËÈZY\^JHÜˆ[ˆ[š[˜Ù[Y[\›Ý]HÚ[™ÙH]X]™\ÈH™[™\™\ˆ[™HÝ[HØ]H[Û™BˆËËÈ™Yœ™\Ú\ÈHÜ[ˆÚ^™HXÚÙ\ˆ[ˆXÙNˆØ[YHYÙKØ[YH›ØÝ\ÙY›ÝË™]ÈÚYÛ˜]\™HÝÜ™Y‚ˆÖÝ\ÝBˆ›ˆWÜÚYÛ˜]\™WØÚ[™ÙWÝ]ÚÙY\×ÝWÜYÙ\×Ø]˜Z[Xš[]WÜ™Yœ™\Ú\×Ú[—ÜXÙJ
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KËÝÜ™JHHÜ[—Ý^
+
+NÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ”Ý[JNÂˆY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JNÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ“Ü[‘šY[
+Ý[QšY[Ž”Ú^™JJNÂˆY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JNÂˆ]XÚÙ\ˆHÕ˜XÚÔYÙNŽ”Ý[K˜XÚÔYÙNŽ”XÚÙ\ŠÝ[QšY[Ž”Ú^™JWNÂˆ\ÜÙ\Ù\HJY[KœYÙWÜ]
+
+KXÚÙ\ŠNÂˆ]›ØÝ\ÙYH˜XÚÔ›ÝÎŽÚÚXÙJÝ[QšY[Ž”Ú^™K
+NÂˆ›ØÝ\×ÚY
+	›]]Y[K›ØÝ\ÙY
+NÂˆ]™Y›Ü™HHY[KœÝX—ÜÚYË˜ÛÛ™J
+NÂ‚ˆËÈHÙXÛÛ™ÝX]HÙ™™\™YZY\^NˆHš[™Ù\œš[[Ý™\ËH™[™\™\ˆÙ\È›Ýˆ]ÝÜ™LˆHÝÜ™WÝÚ]
+™XÈVÜÝ™X[JNNK‘[™Û\Ú‹™[™È‹ˆŠKÝ™X[JLK‘œ™[˜Ú‹™œ˜H‹ˆŠWJNÂˆY[K\]JŒM‹	œÝZNŽ™š^\™NŽ‘š^\™SYX\Ý\™K	œËÝÜ™L‹šY]Ê
+JNÂˆ\ÜÙ\Û™HJY[KœÝX—ÜÚYË™Y›Ü™KH™]Èš[™Ù\œš[\ÈÝÜ™YŠNÂˆ\ÜÙ\Ù\HJY[KœYÙWÜ]
+
+KXÚÙ\‹HXÚÙ\ˆÝ^\ÈŠNÂˆ\ÜÙ\Ù\HJY[KœÙ[XÝYÚY
+
+KÛÛYJ›ØÝ\ÙY
+K›ÛˆH›ÝÈHšY]Ù\ˆØ\ÈÛˆŠNÂˆX\™ÝÛŠ	œÊNÂ‚ˆËÈH[š[˜Ù[Y[	ÜÈÝX]HY™™XÝ[Ý™\È
+[ˆ[X™YY˜XÚÈ\È›ÝÈHÛ™HÛˆØÜ™Y[ŠKÝ[›ÈÝÛˆ\›‚ˆ]
+]]Y[KËÝÜ™JHHÜ[—Ý^
+
+NÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ”Ý[JNÂˆY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JNÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ“Ü[‘šY[
+Ý[QšY[Ž”Ú^™JJNÂˆY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JNÂˆ›ØÝ\×ÚY
+	›]]Y[K›ØÝ\ÙY
+NÂˆ]™Y›Ü™HHY[KœÝX—ÜÚYË˜ÛÛ™J
+NÂˆX\™ÝÛŠ	œÊNÂˆ]
+Ì‹ÜÚY
+HH[š[˜Ù[Y[Ý\ÝÜÙ\ÜÚ[ÛŠ[š\Ýš^\™HÂˆ™[]^ˆ›Û™KˆÝX]WÙY™™XÝˆÝX]QY™™XÝŽ‘[X™YYˆ‹‘Y˜][Ž™Y˜][
+
+BˆJNÂˆY[K\]JŒM‹	œÝZNŽ™š^\™NŽ‘š^\™SYX\Ý\™K	œÌ‹ÝÜ™KšY]Ê
+JNÂˆ\ÜÙ\Û™HJY[KœÝX—ÜÚYË™Y›Ü™KH[š[˜Ù[Y[›Ý]H\È\ÙˆHÚYÛ˜]\™HŠNÂˆ\ÜÙ\Ù\HJY[KœYÙWÜ]
+
+KXÚÙ\‹HXÚÙ\ˆÝ^\ÈŠNÂˆ\ÜÙ\Ù\HJY[KœÙ[XÝYÚY
+
+KÛÛYJ›ØÝ\ÙY
+JNÂˆX\™ÝÛŠ	œÌŠNÂˆB‚ˆËËÈ
+Š‘]™\žHÝ[HÝ\™˜XÙHš]ÈH[™[[ˆ]™\žHÚ\Y[™ÝXYÙJŠŽˆHÝX]\È›ÛÝÚ]ˆËËÈ]ÈÝ[H›ÝËHÝ[HYÙH[™\ˆXXÚ™[™\™\ˆÚ[™
+Ú^™H[™ÜÚ][Ûˆ[HÚ]Z\‚ˆËËÈ›Ý\ÊK[™XXÚXÚÙ\ˆYÙKYÙYžHHØ[YHØ]\È\ÈH™\ÝÙˆHY[K‚ˆÖÝ\ÝBˆ›ˆ]™\žWÜÝ[WÜYÙWÙš]×ÝWÜ[™[Ú[—Ù]™\žWÛ[™ÝXYÙJ
+HÂˆ\ÙHÜ]›Ü›NŽšLNŽŽžÛ[™ÝXYÙWÛÛ—Ý\×Ý™XYÙ›Ü—Ý\ÝNÂˆ]]]Ý]H™XÎŽ›™]Ê
+NÂˆ›Üˆ[™ÝXYÙH[ˆÜ]›Ü›NŽšLNŽŽ”ÒTQÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]ÙÝX\™H[™ÝXYÙWÛÛ—Ý\×Ý™XYÙ›Ü—Ý\Ý
+[™ÝXYÙJNÂˆ›ÜˆÛÙXÈ[ˆÈœÜ‹œÜÈ‹˜\ÜÈ—HÂˆ]
+]]Y[KËÝÜ™JHHÜ[—ÝÚ]
+ÛÙXËÝX]QY™™XÝŽ”ÚYXØ\ŠNÂˆ]]]YÙHHY[Nˆ	•˜XÚÓY[TÝ]_ÂˆÝ]™^[™
+Y[K™›Ü›KX›K›Y[WØØ\Ù˜Z[\™J	œØ˜\ÙNŽ™›ÛÛÝŽŽ˜Y˜[˜Ù\ÎŽ”Ú\YYX\Ý\™K[™ÝXYÙKYÊ
+JJNÂˆÝ]™^[™
+Y[K™›Ü›KX›K˜\Ùš]Ù˜Z[\™\ÊÝZNŽX›NŽ“QS•WÓPVÕË[™ÝXYÙKYÊ
+JJNÂˆÝ]™^[™
+Y[K™›Ü›KX›K˜\Ùš]Ù˜Z[\™\×ÚYÙÙY
+[™ÝXYÙKYÊ
+JJNÂˆNÂˆYÙJ	›Y[JNÂˆY[Kœ\Ú
+˜XÚÔYÙNŽ”Ý[JNÂˆYÙJ	›Y[JNÂˆ›ÜˆšY[[ˆÝ[QšY[ŽSÂˆY[Kœ\Ú
+˜XÚÔYÙNŽ”XÚÙ\ŠšY[
+JNÂˆYÙJ	›Y[JNÂˆ\ÜÙ\JY[KœÜ
+	œËÝÜ™KšY]Ê
+JJNÂˆBˆX\™ÝÛŠ	œÊNÂˆBˆBˆÝZNŽX›NŽ˜\ÜÙ\Û›×Ùš]Ù˜Z[\™\Ê	›Ý]
+NÂˆB‚ˆËËÈ
+Š•HØÚÙY\™[™\™\ˆ›Ý\ÈÜ˜\ÈÛÈ[™\È]H^Y\‹[Y[H›ÛÜˆ
+™YH[ˆÜ[š\Ú
+KŠŠˆHÝ[HYÙH\ÈH™]ÂˆËËÈÚÜ›ÝÜÎÈÚ]Ý]Ø[YNŽ›^[Ý]Ž”VQT—ÓQS•WÓRS—ÕØH]Ú˜[šÈÈ]ÈX™[È[™BˆËËÈ›ÝHÜ˜\YÈ™YH[™\È[ˆHÛ]™\‹‚ˆÖÝ\ÝBˆ›ˆWÜÝ[WÛ›ÝWÙš]×ÝÛ×Û[™\×Ø]ÝWÜ^Y\—ÛY[WÙ›ÛÜŠ
+HÂˆ\ÙHÜ]›Ü›NŽšLNŽŽžÛ[™ÝXYÙWÛÛ—Ý\×Ý™XYÙ›Ü—Ý\Ý™Y™\™[˜Ù_NÂˆ]YX\Ý\™HHØ˜\ÙNŽ™›ÛÛÝŽŽ˜Y˜[˜Ù\ÎŽ”Ú\YYX\Ý\™NÂˆ›Üˆ[™ÝXYÙH[ˆÜ]›Ü›NŽšLNŽŽ”ÒTQÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]ÙÝX\™H[™ÝXYÙWÛÛ—Ý\×Ý™XYÙ›Ü—Ý\Ý
+[™ÝXYÙJNÂˆ›ÜˆÛÙXÈ[ˆÈœÜÈ‹˜\ÜÈ—HÂˆ]
+]]Y[KËÜÝÜ™JHHÜ[—ÝÚ]
+ÛÙXËÝX]QY™™XÝŽ”ÚYXØ\ŠNÂˆY[Kœ\Ú
+˜XÚÔYÙNŽ”Ý[JNÂˆ]ÈHY[K™›Ü›KX›K›Y[WÜ[™[ÝÚY
+	›YX\Ý\™JNÂˆ\ÜÙ\JÈH[YNŽ›^[Ý]Ž”VQT—ÓQS•WÓRS—ÕËžÛ[™ÝXYÙNßNˆHYÙH\È›ÝHÛ]™\ˆ
+ÝßJHŠNÂˆY[K™›Ü›KX›K™š]Û›Ý\ÊË	›YX\Ý\™JNÂˆ][™\ÈHY[K™›Ü›KX›KœÙXÝ[ÛœËš]\Š
+K™›]ÛX\
+ß	œËœ›ÝÜÊBˆ™š[\ŠŸ‹š\×Û›ÝJ
+JK›X\
+Ÿ‹››ÝWÛ[™\Ë™Ù]
+
+JK›X^
+
+K™^XÝ
+˜H›ÝH›ÝÈŠNÂˆËÈÜ[š\Ú	ÜÈÛ™Ù\ˆÛÜ™[™È™YYÈLŒ›ÜˆÛÈ[™\ÎÈ]H›ÛÜˆ]ZÙ\È™YBˆËÈ
+YX\Ý\™Y
+K[™Û\Ú[™™[\\ÚX[ˆZÙHÛÂˆ][ÝÙYHYˆ[™ÝXYÙHOH™Y™\™[˜ÙNŽ‘\ÈÈÈH[ÙHÈˆNÂˆ\ÜÙ\J[™\ÈH[ÝÙYžÛ[™ÝXYÙNßHØÛÙXßNˆH›ÝHZÙ\ÈÛ[™\ßH[™\È]Ýß\ŠNÂˆX\™ÝÛŠ	œÊNÂˆBˆBˆB‚ˆËËÈH]H˜[™\ÈHÚ[\‹[Û›HÝÜˆ]ÈÙ^H\È™XÛÙÛš\ÙY›È›ÝÈÝÛœÈ]‚ˆÖÝ\ÝBˆ›ˆWÝ]WÚÙ^WÚ\×ÝWØ˜[™×Ø[™Û›×Ü›ÝÜÊ
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KËÝÜ™JHHÜ[—Ý^
+
+NÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ”Ý[JNÂˆY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JNÂˆ\ÜÙ\JYÙWÜÝXÚÎŽš\×Ý]WÚÙ^JYÙWÜÝXÚÎŽ•UWÒÑVJJNÂˆ\ÜÙ\JY[KšÙ^\Ê
+Kš]\Š
+K˜[
+ß\YÙWÜÝXÚÎŽš\×Ý]WÚÙ^J
+šÊJJNÂˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈH™\^HØ[›ÛˆØ\œšY\ÈHX‹HYÙH]XXÚÜ[™\ˆ[™HÙ[XÝYÙ^NˆÛÂˆËËÈÝ]\È]Y™™\ˆ[ˆ[žHÙˆ[H\Ú\\‚ˆÖÝ\ÝBˆ›ˆWØØ[›Û—Ý[×ÜYÙ\×ÛÜ[™\œ×Ø[™ÜÙ[XÝ[Ûœ×Ø\\
+
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]\ÚHY[Nˆ	•˜XÚÓY[TÝ]_Âˆ]]]ÈHØ[›ÛŽŽ›™]Ê
+NÂˆY[K˜Ø[›ÛŠ	›]]ÊNÂˆË™š[š\Ú
+
+BˆNÂˆ]
+]]Y[KËÝÜ™JHHÜ[—Ý^
+
+NÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ”Ý[JNÂˆ]›ÛÝH\Ú
+	›Y[JNÂˆY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JNÂˆ]Ý[HH\Ú
+	›Y[JNÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ“Ü[‘šY[
+Ý[QšY[ŽÛÛÜŠJNÂˆ]Ý[WØÛÛÜˆH\Ú
+	›Y[JNÂˆY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JNÂˆ]XÚÙ\ˆH\Ú
+	›Y[JNÂˆ][HÜ›ÛÝÝ[KÝ[WØÛÛÜ‹XÚÙ\—NÂˆ›Üˆ
+KJH[ˆ[š]\Š
+K™[[Y\˜]J
+HÂˆ›Üˆˆ[ˆ	˜[ÚH
+ÈK‹—HÂˆ\ÜÙ\Û™HJKŠNÂˆBˆBˆY[K›Û—ÛY
+	œËÝÜ™KšY]Ê
+JNÂˆ\ÜÙ\Ù\HJ\Ú
+	›Y[JKÝ[WØÛÛÜ‹˜HÜ™]\›œÈÈH™XÛÜ™YÝ]HŠNÂˆX\™ÝÛŠ	œÊNÂˆBŸB‚‹ËËÈ
+Š•HÝ\ˆ[™ÝXYÙ\ÈYÙH[™H[™ÝXYÙHYÙ\ÊŠˆ
+ØÜËÜ^Y\‹\ÝX›Y[\Ë›YˆÊK‚ˆÖØÙ™Ê\Ý
+WB›[Ù[™ÝXYÙWÜYÙWÝ\ÝÈÂˆ\ÙHÝ\\ŽŽ\ÝÎŽžÜÝÜ™WÝÚ]Ý™X[_NÂˆ\ÙHÝ\\ŽŽŠŽÂˆ\ÙHÛYYXNŽœ›Ý]NŽœ™\Ù]Ü^Y\—ØÛÛ›ÛÙ›Ü—Ý\ÝÂ‚ˆ›ˆX\™ÝÛŠÎˆ	œÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[ÛŠHÂˆ™\Ù]Ü^Y\—ØÛÛ›ÛÙ›Ü—Ý\Ý
+ÊNÂˆÜ^Žœ^Žœ™\Ù]ÜÙ\™\œ×Ù›Ü—Ý\Ý
+
+NÂˆB‚ˆ›ˆÜÊ]]ÎˆY]Y]NŽ”Ý™X[JHOˆY]Y]NŽ”Ý™X[HÂˆË˜ÛÙXÈHœÜÈ‹š[Ê
+NÂˆÂˆB‚ˆËËÈ[™Û\Ú\Èž[Ý\œÈˆ
+[™^H›ÛÝ›ÝÊNÈ]Ú
+ÔÊH[™Ù\›X[ˆ\™HÚ[™ÛK]˜XÚÈÝ\œÎÂˆËËÈœ™[˜Ú\ÈH[[ˆÑ[™H›Ü˜ÙYÔÈ˜XÚË‚ˆ›ˆÝXœÊ
+HOˆ™XÏY]Y]NŽ”Ý™X[OˆÂˆ™XÈVÂˆÝ™X[JL‘[™Û\Ú‹™[™È‹ˆŠKˆÝ™X[JLKK‘œ™[˜Ú‹™œ˜H‹ˆŠKˆÝ™X[JL‹‹‘œ™[˜Ú‹™œ˜H‹”ÑŠKˆÜÊÝ™X[JLËË‘œ™[˜Ú‹™œ˜H‹‘›Ü˜ÙYŠJKˆÝ™X[JM‘Ù\›X[ˆ‹™]H‹ˆŠKˆÜÊÝ™X[JMKK‘]Ú‹››‹ˆŠJKˆBˆB‚ˆËËÈØÝXœØH\È][X[ŽˆH^[˜XÚÈ[™H›Ø”ÝXˆÑÛ™H
+™ÜÝX]X\È^	ÜÂˆËËÈÝÛˆ˜[YH›Üˆ]
+KHÛ™È˜]ÈÛÙXÈH˜YÙH]\ÝÚÜ[‹‚ˆ›ˆÝXœ×ÝÚ]Ý›ØœÝXŠ
+HOˆ™XÏY]Y]NŽ”Ý™X[OˆÂˆ]]]ˆHÝXœÊ
+NÂˆ‹œ\Ú
+Ý™X[JM‹‹’][X[ˆ‹š]H‹“™]›^ŠJNÂˆ]]]ÙHÝ™X[JMËË’][X[ˆ‹š]H‹“™]›^ŠNÂˆÙ˜ÛÙXÈH™™ÜÝX]H‹š[Ê
+NÂˆÙœÙHYNÂˆ‹œ\Ú
+Ù
+NÂˆ‚ˆB‚ˆ›ˆÜ[ŠÝXœÎˆ™XÏY]Y]NŽ”Ý™X[OŠHOˆ
+˜XÚÓY[TÝ]KÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[Û‹Ù]NŽœÝÜ™\ÎŽ›Y]Y]NŽ“Y]Y]TÝÜ™JHÂˆ]ÈHÛYYXNŽœ^Y\ŽŽœÚYXØ\ŽŽœ™\Ù]
+
+NÂˆ]ÈHÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[ÛŽŽ’QNÂˆ]ÝÜ™HHÝÜ™WÝÚ]
+ÝXœÊNÂˆ]Y[HH˜XÚÓY[TÝ]NŽ›™]Ê	œËÝÜ™KšY]Ê
+KK™XÈVÈ™[™È‹š[Ê
+WJNÂˆ
+Y[KËÝÜ™JBˆB‚ˆ›ˆ›ØÝ\×ÚY
+Y[Nˆ	›]]˜XÚÓY[TÝ]KYˆ˜XÚÔ›ÝÊHÂˆ]HHY[K™›Ü›Kš[™^ÛÙŠ	šY
+K[Ü˜\ÛÜ—Ù[ÙJ[šXÈJžÚYßH\È›ÝÛˆ\ÈYÙHŠJNÂˆY[K™›ØÝ\×Ü›ÝÊH\È×Ú[
+NÂˆ\ÜÙ\Ù\HJY[KœÙ[XÝYÚY
+
+KÛÛYJY
+JNÂˆB‚ˆ›ˆ›Ý×ÛÙŠY[Nˆ	•˜XÚÓY[TÝ]KYˆ˜XÚÔ›ÝÊHOˆ	”›ÝÈÂˆ]HHY[K™›Ü›Kš[™^ÛÙŠ	šY
+K[Ü˜\ÛÜ—Ù[ÙJ[šXÈJžÚYßH\È›ÝÛˆ\ÈYÙHŠJNÂˆY[K™›Ü›KX›KœÙXÝ[ÛœËš]\Š
+K™›]ÛX\
+ß	œËœ›ÝÜÊK›
+JK[Ü˜\
+
+BˆB‚ˆËËÈÒÈÛˆH›ÛÝ	ÜÈÝ\ˆ[™ÝXYÙ\È›ÝÈÜ[œÈHYÙHKVˆ
+HÚ[™ÛK]˜XÚÈ[™ÝXYÙH\ÈHXÚÂˆËËÈ›ÝËœ™[˜ÚHš[Z[ˆ™XY[™È]È˜XÚÈÛÝ[
+NÈÒÈÛˆœ™[˜ÚÜ[œÈ]ÈYÙK˜[šÙYÈQ•ˆËËÈÜÈXXÚ˜XÚÈÛÈH›ÝÈ]Ü[™Y]žHY[™H]H›ÛÝÜÈHYÙK‚ˆÖÝ\ÝBˆ›ˆ\ÚØ[™ÜÜÝØ[×Ü›ÛÝÛÝ\—Û[™ÝXYÙ\×Ø[™ØWÛ[™ÝXYÙJ
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KËÝÜ™JHHÜ[ŠÝXœÊ
+JNÂˆ\ÜÙ\Ù\HJY[KšYÊ
+VË‹KÕ˜XÚÔ›ÝÎŽ”ÝX“Ù™‹˜XÚÔ›ÝÎŽ”ÝX‘›Ü˜ÙYÛ›K˜XÚÔ›ÝÎŽ”ÝXŠ
+K˜XÚÔ›ÝÎŽ“Ü[“Ý\—JNÂˆ\ÜÙ\Ù\HJ›Ý×ÛÙŠ	›Y[K˜XÚÔ›ÝÎŽ“Ü[“Ý\ŠK˜[YK˜\×Ù\™YŠ
+KÛÛYJŒÈŠK‘]Úœ™[˜ÚÙ\›X[ˆŠNÂ‚ˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ“Ü[“Ý\ŠNÂˆ\ÜÙ\Ù\HJY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JK˜XÚÓÚÎŽ“˜]šYØ]Y
+NÂˆ\ÜÙ\Ù\HJY[KœYÙWÜ]
+
+KÕ˜XÚÔYÙNŽ“Ý\“[™ÝXYÙ\×JNÂˆ\ÜÙ\Ù\HJY[K™›Ü›KX›K]J
+KÛÛYJ“Ý\ˆ[™ÝXYÙ\ÈŠJNÂˆ\ÜÙ\Ù\HJˆY[KšYÊ
+KˆÕ˜XÚÔ›ÝÎŽ”ÝXŠJK˜XÚÔ›ÝÎŽ“Ü[“[™Ê[™ÒYÈÝ™X[NˆLKÛÝˆHJK˜XÚÔ›ÝÎŽ”ÝXŠ
+WKˆ‘]Úœ™[˜ÚÙ\›X[ˆ‚ˆ
+NÂˆ\ÜÙ\Ù\HJY[KœÙ[XÝYÚY
+
+KÛÛYJ˜XÚÔ›ÝÎŽ”ÝXŠJJK››Ý[™ÈÚXÚÙYˆHš\œÝ›ÝÈŠNÂˆ\ÜÙ\Ù\HJ›Ý×ÛÙŠ	›Y[K˜XÚÔ›ÝÎŽ“Ü[“[™Ê[™ÒYÈÝ™X[NˆLKÛÝˆHJJK˜[YK˜\×Ù\™YŠ
+KÛÛYJŒÈ˜XÚÜÈŠJNÂ‚ˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ“Ü[“[™Ê[™ÒYÈÝ™X[NˆLKÛÝˆHJJNÂˆ\ÜÙ\Ù\HJY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JK˜XÚÓÚÎŽ“˜]šYØ]Y
+NÂˆ\ÜÙ\Ù\HJY[KœYÙWÜ]
+
+KÕ˜XÚÔYÙNŽ“Ý\“[™ÝXYÙ\Ë˜XÚÔYÙNŽ“[™ÝXYÙJLJWJNÂˆ\ÜÙ\Ù\HJY[K™›Ü›KX›K]J
+KÛÛYJ‘œ™[˜ÚŠJNÂˆ\ÜÙ\Ù\HJˆY[KšYÊ
+KˆÕ˜XÚÔ›ÝÎŽ”ÝXŠJK˜XÚÔ›ÝÎŽ”ÝXŠŠK˜XÚÔ›ÝÎŽ”ÝXŠÊWKˆ™[Ñ›Ü˜ÙY‚ˆ
+NÂ‚ˆ\ÜÙ\JY[KœÜ
+	œËÝÜ™KšY]Ê
+JJNÂˆ\ÜÙ\Ù\HJY[KœÙ[XÝYÚY
+
+KÛÛYJ˜XÚÔ›ÝÎŽ“Ü[“[™Ê[™ÒYÈÝ™X[NˆLKÛÝˆHJJKHÜ[™\‹žHYŠNÂˆ\ÜÙ\Ù\HJY[K™›Ü›KX›K]J
+KÛÛYJ“Ý\ˆ[™ÝXYÙ\ÈŠJNÂˆ\ÜÙ\JY[KœÜ
+	œËÝÜ™KšY]Ê
+JJNÂˆ\ÜÙ\Ù\HJY[KœÙ[XÝYÚY
+
+KÛÛYJ˜XÚÔ›ÝÎŽ“Ü[“Ý\ŠKH›ÛÝ	ÜÈ›ÝÈŠNÂˆ\ÜÙ\Ù\HJY[K™›Ü›KX›K]J
+K›Û™JNÂˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈ’QÒÛˆHš[Z[ˆ[\œÈ]ZÙHÒÎÈQ•ÛˆHYÙHÜË™]™\ˆÝÚ]Ú\ÈX‹‚ˆÖÝ\ÝBˆ›ˆšYÚÙ[\œ×ØWÛ[™ÝXYÙWØ[™ÛYÛX]™\×Ú]
+
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KËÝÜ™JHHÜ[ŠÝXœÊ
+JNÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ“Ü[“Ý\ŠNÂˆY[K›Û—ÜšYÚ
+	œËÝÜ™KšY]Ê
+JNÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ“Ü[“[™Ê[™ÒYÈÝ™X[NˆLKÛÝˆHJJNÂˆY[K›Û—ÜšYÚ
+	œËÝÜ™KšY]Ê
+JNÂˆ\ÜÙ\Ù\HJY[KœYÙWÜ]
+
+KÕ˜XÚÔYÙNŽ“Ý\“[™ÝXYÙ\Ë˜XÚÔYÙNŽ“[™ÝXYÙJLJWJNÂˆY[K›Û—ÛY
+	œËÝÜ™KšY]Ê
+JNÂˆY[K›Û—ÛY
+	œËÝÜ™KšY]Ê
+JNÂˆ\ÜÙ\JY[KœYÙWÜ]
+
+Kš\×Ù[\J
+JNÂˆ\ÜÙ\Ù\HJY[KX‹KœÝ[HÝX]\ÈXˆŠNÂˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈ
+Š“Û›H[XYÙHÝX]\ÈØ\œžHH›Ü›X]˜YÙJŠŽˆÔÈÚÝÜÈÛ™KH^˜XÚÈ
+Ô•
+H›Û™H8 %Û‚ˆËËÈHÝ\ˆ[™ÝXYÙ\ÈYÙH[™ÛˆH[™ÝXYÙHYÙH[ZÙK‚ˆÖÝ\ÝBˆ›ˆWÙ›Ü›X]Ø˜YÙWÚ\×ÛÛ›WÛÛ—Ú[XYÙWÜÝX]\Ê
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KËÜÝÜ™JHHÜ[ŠÝXœ×ÝÚ]Ý›ØœÝXŠ
+JNÂˆY[Kœ\Ú
+˜XÚÔYÙNŽ“Ý\“[™ÝXYÙ\ÊNÂˆ]˜YÙ\ÈHNˆ	•˜XÚÓY[TÝ]KY›Ý×ÛÙŠKY
+K˜˜YÙ\Ëš]\Š
+K›X\
+Ÿ‹^
+
+K×ÜÝš[™Ê
+JK˜ÛÛXÝŽ™XÏÏŠ
+NÂˆ\ÜÙ\Ù\HJ˜YÙ\Ê	›Y[K˜XÚÔ›ÝÎŽ”ÝXŠJJKÈ”ÔÈ—K‘]Ú\È[ˆ[XYÙHÝX]HŠNÂˆ\ÜÙ\J˜YÙ\Ê	›Y[K˜XÚÔ›ÝÎŽ”ÝXŠ
+JKš\×Ù[\J
+K‘Ù\›X[ˆÔ•ÚÝÜÈ›È›Ü›X]ŠNÂˆ\ÜÙ\J˜YÙ\Ê	›Y[K˜XÚÔ›ÝÎŽ“Ü[“[™Ê[™ÒYÈÝ™X[NˆLKÛÝˆHJJKš\×Ù[\J
+K˜Hš[Z[ˆ\È›ÝH˜XÚÈŠNÂˆY[Kœ\Ú
+˜XÚÔYÙNŽ“[™ÝXYÙJLJJNÂˆ\ÜÙ\J˜YÙ\Ê	›Y[K˜XÚÔ›ÝÎŽ”ÝXŠJJKš\×Ù[\J
+K‘œ™[˜Ú[\ÈÔ•ŠNÂˆ\ÜÙ\J˜YÙ\Ê	›Y[K˜XÚÔ›ÝÎŽ”ÝXŠŠJKš\×Ù[\J
+KHÑÚ\ÛÝ[Û›H™\X]]ÈX™[ŠNÂˆ\ÜÙ\Ù\HJ›Ý×ÛÙŠ	›Y[K˜XÚÔ›ÝÎŽ”ÝXŠŠJK›X™[”ÑŠNÂˆ\ÜÙ\Ù\HJ˜YÙ\Ê	›Y[K˜XÚÔ›ÝÎŽ”ÝXŠÊJKÈ”ÔÈ—K˜H›Ü˜ÙY[XYÙH˜XÚÈÝ[ÚÝÜÈ]È›Ü›X]ŠNÂˆ\ÜÙ\Ù\HJ›Ý×ÛÙŠ	›Y[K˜XÚÔ›ÝÎŽ”ÝXŠÊJK›X™[‘›Ü˜ÙYŠNÂˆËÈH›Ø”ÝXˆÑ˜XÚÎˆ]È˜]ÈÛÙXÈ
+™™ÜÝX]HŠHÚÝÜÈ\ÈHÚÜ˜[YKY\ˆHÚ[™ˆY[Kœ\Ú
+˜XÚÔYÙNŽ“[™ÝXYÙJMŠJNÂˆ\ÜÙ\J˜YÙ\Ê	›Y[K˜XÚÔ›ÝÎŽ”ÝXŠŠJKš\×Ù[\J
+K’][X[ˆ^ÚÝÜÈ›È›Ü›X]ŠNÂˆ\ÜÙ\Ù\HJ˜YÙ\Ê	›Y[K˜XÚÔ›ÝÎŽ”ÝXŠÊJKÈ”Ñ‹•“Ð”ÕPˆ—JNÂˆËÈH›ÝÈÚÜÙHÛ›H˜YÙHÛÝ[™HHÛÙXÎˆHØ[YHœ™[˜Ú›Ü˜ÙY˜XÚË[›X™[Yˆ]
+]]Y[L‹Ì‹ÜÌŠHHÜ[Š™XÈVÂˆÝ™X[JK‘œ™[˜Ú‹™œ˜H‹ˆŠKˆÜÊÝ™X[J‹K‘œ™[˜Ú‹™œ˜H‹ˆŠJKˆJNÂˆY[L‹œ\Ú
+˜XÚÔYÙNŽ“Ý\“[™ÝXYÙ\ÊNÂˆY[L‹œ\Ú
+˜XÚÔYÙNŽ“[™ÝXYÙJJJNÂˆ\ÜÙ\J˜YÙ\Ê	›Y[L‹˜XÚÔ›ÝÎŽ”ÝXŠ
+JKš\×Ù[\J
+JNÂˆ\ÜÙ\Ù\HJ˜YÙ\Ê	›Y[L‹˜XÚÔ›ÝÎŽ”ÝXŠJJKÈ”ÔÈ—JNÂˆX\™ÝÛŠ	œÊNÂˆX\™ÝÛŠ	œÌŠNÂˆB‚ˆËËÈ
+Š’[š]X[›ØÝ\ÊŠŽˆÝ\ˆ[™ÝXYÙ\ÈÜ[œÈÛˆHÚXÚÙY›ÝÈ
+H[™ÝXYÙIÜÈš[Z[ˆÚ[‚ˆËËÈHXÝ]™H˜XÚÈ\È[œÚYHÛ™JKH[™ÝXYÙHYÙHÛˆ]ÈXÝ]™H˜\šX[[ÙHÛˆ]Èš\œÝ‚ˆÖÝ\ÝBˆ›ˆWÜYÙWÛÜ[œ×ÛÛ—ÝWØXÝ]™WÝ˜XÚ×ÝÚ[—Ú]Ú\×Ú[œÚYJ
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KËÝÜ™JHHÜ[ŠÝXœÊ
+JNÂˆY[K˜XÝ]™WÜÝXˆHŽÈËÈœ™[˜ÚÑˆY[Kœ™XZ[
+	œËÝÜ™KšY]Ê
+KK˜[ÙJNÂˆ\ÜÙ\J›Ý×ÛÙŠ	›Y[K˜XÚÔ›ÝÎŽ“Ü[“Ý\ŠK˜ÚXÚÙYHXÝ]™H˜XÚÈ]™\È™Z[™]ŠNÂˆ\ÜÙ\Ù\HJ›Ý×ÛÙŠ	›Y[K˜XÚÔ›ÝÎŽ“Ü[“Ý\ŠK˜[YK˜\×Ù\™YŠ
+KÛÛYJ‘œ™[˜ÚŠJNÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ“Ü[“Ý\ŠNÂˆY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JNÂˆ\ÜÙ\Ù\HJY[KœÙ[XÝYÚY
+
+KÛÛYJ˜XÚÔ›ÝÎŽ“Ü[“[™Ê[™ÒYÈÝ™X[NˆLKÛÝˆHJJKH[™ÝXYÙHÛ[™ÈHXÝ]™H˜XÚÈŠNÂˆ]œ™[˜ÚH›Ý×ÛÙŠ	›Y[K˜XÚÔ›ÝÎŽ“Ü[“[™Ê[™ÒYÈÝ™X[NˆLKÛÝˆHJJNÂˆ\ÜÙ\Jœ™[˜Ú˜ÚXÚÙY
+NÂˆ\ÜÙ\Ù\HJœ™[˜Ú˜[YK˜\×Ù\™YŠ
+KÛÛYJ”ÑŠKœ™XYÈHXÝ]™H˜\šX[ŠNÂˆY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JNÂˆ\ÜÙ\Ù\HJY[KœÙ[XÝYÚY
+
+KÛÛYJ˜XÚÔ›ÝÎŽ”ÝXŠŠJKHXÝ]™H˜\šX[ŠNÂˆ\ÜÙ\J›Ý×ÛÙŠ	›Y[K˜XÚÔ›ÝÎŽ”ÝXŠŠJK˜ÚXÚÙY
+NÂ‚ˆËÈHÚ[™ÛK]˜XÚÈXÝ]™H[™ÝXYÙNˆ]ÈXÚÈ›ÝÈÛˆÝ\ˆ[™ÝXYÙ\Âˆ]
+]]Y[KÌ‹ÝÜ™JHHÜ[ŠÝXœÊ
+JNÂˆY[K˜XÝ]™WÜÝXˆHÈËÈÙ\›X[‚ˆY[Kœ™XZ[
+	œÌ‹ÝÜ™KšY]Ê
+KK˜[ÙJNÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ“Ü[“Ý\ŠNÂˆY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JNÂˆ\ÜÙ\Ù\HJY[KœÙ[XÝYÚY
+
+KÛÛYJ˜XÚÔ›ÝÎŽ”ÝXŠ
+JJNÂ‚ˆËÈHXÝ]™H˜XÚÈ\È“Õ[ˆH[™ÝXYÙNˆ]Èš\œÝ˜XÚÂˆ]
+]]Y[KÌËÝÜ™JHHÜ[ŠÝXœÊ
+JNÂˆY[K˜XÝ]™WÜÝXˆHÈËÈ[™Û\ÚÛˆH›ÛÝˆY[Kœ\Ú
+˜XÚÔYÙNŽ“Ý\“[™ÝXYÙ\ÊNÂˆY[Kœ\Ú
+˜XÚÔYÙNŽ“[™ÝXYÙJLJJNÂˆ\ÜÙ\Ù\HJY[KœÙ[XÝYÚY
+
+KÛÛYJ˜XÚÔ›ÝÎŽ”ÝXŠJJJNÂˆX\™ÝÛŠ	œÊNÂˆX\™ÝÛŠ	œÌŠNÂˆX\™ÝÛŠ	œÌÊNÂˆ]ÈHÝÜ™NÂˆB‚ˆËËÈHXÚÈÛˆH[™ÝXYÙHYÙHÛÛ[Z]ÈZÙHH›ÛÝXÚÈÙ\È[™\ÛZ\ÜÙ\ÈH[™[‚ˆÖÝ\ÝBˆ›ˆWÜXÚ×ÛÛ—ØWÛ[™ÝXYÙWÜYÙWØÛÛ[Z]×Ø[™Ù\ÛZ\ÜÙ\Ê
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KËÝÜ™JHHÜ[ŠÝXœÊ
+JNÂˆY[Kœ\Ú
+˜XÚÔYÙNŽ“Ý\“[™ÝXYÙ\ÊNÂˆY[Kœ\Ú
+˜XÚÔYÙNŽ“[™ÝXYÙJLJJNÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ”ÝXŠŠJNÂˆX]ÚY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JHÂˆ˜XÚÓÚÎŽÛÛ[Z]ÈÛÛ[Z]ˆ˜XÚÐÛÛ[Z]Ž”ÝX]HÈÝ™X[WÚY‹ˆKÙY\ÛÜ[ˆHOˆÂˆ\ÜÙ\Ù\HJÝ™X[WÚYLŠNÂˆ\ÜÙ\JZÙY\ÛÜ[‹˜H˜XÚÈXÚÈ][žH\\ÛZ\ÜÙ\ÈŠNÂˆBˆÝ\ˆOˆ[šXÈJ™^XÝYHÝX]HÛÛ[Z]ÛÝÛÝ\ŽßHŠKˆBˆ\ÜÙ\Ù\HJY[K˜XÝ]™WÜÝX‹ŠNÂˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈœ™[˜Ú\ÈÚYXØ\œÈHÛY[Ø[ˆ˜]ÈÛ›HÚ[HXXÚ\ÈHÙ^Xˆ[ˆ[\HÛ™H\È›ÝˆËËÈÙ™™\™YÛˆ\È›Ý]KÚXÚ\ÈÝÈH[™ÝXYÙHX]™\ÈHÙ™™\™Y\Ý[™\ˆHš^Y][K‚ˆ›ˆÚYXØ\—Ùœ™[˜Ú
+Ù^\ÎˆÉœÝŽÈ×JHOˆ™XÏY]Y]NŽ”Ý™X[OˆÂˆ]]]ˆHÝXœÊ
+NÂˆ›Üˆ
+‹Ù^JH[ˆÙ^\Ëš]\Š
+K™[[Y\˜]J
+HÂˆ–ÌH
+È—K™^\›˜[HYNÂˆ–ÌH
+È—K˜ÛÙXÈHœÜ‹š[Ê
+NÂˆ–ÌH
+È—KšÙ^HHÙ^K×ÜÝš[™Ê
+NÂˆBˆ‚ˆB‚ˆËËÈ
+ŠH[™ÝXYÙHYÙH™]™\ˆÝ]]™\È]È[™ÝXYÙJŠŽˆH]™HÙ™™\™Y\ÝÜÙ\Èœ™[˜ÚÚ[BˆËËÈ]ÈYÙH\ÈÜ[‹ÛÈHÝXÚÈÜÈÈH›ÛÝ
+Ü[™\ˆ[™›ÛÝ™\ÝÜ™YžHY
+KˆHÚ[™ÙBˆËËÈ]X]™\ÈH[™ÝXYÙHÙ™™\™Y
+Û™HÙˆ]È˜XÚÜÈÛÚ[™È]Ø^JH™Yœ™\Ú\ÈHYÙH[ˆXÙBˆËËÈ[™ÙY\ÈHšY]Ù\‰ÜÈ›ÝË‚ˆÖÝ\ÝBˆ›ˆWÝ˜[š\ÚYÛ[™ÝXYÙWÜÜ×Ý×ÝWÜ›ÛÝØ[™ØWØÚ[™ÙYÛÛ™WÜ™Yœ™\Ú\×Ú[—ÜXÙJ
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]ÝÜ™HHÝÜ™WÝÚ]
+ÚYXØ\—Ùœ™[˜Ú
+È‹ØKœÜ‹‹Ø‹œÜ‹‹ØËœÜ—JJNÂˆ]ÈHÛYYXNŽœ^Y\ŽŽœÚYXØ\ŽŽœ™\Ù]
+
+NÂˆ]ÈHÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[ÛŽŽ’QNÂˆ]]]Y[HH˜XÚÓY[TÝ]NŽ›™]Ê	œËÝÜ™KšY]Ê
+KK™XÈVÈ™[™È‹š[Ê
+WJNÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ“Ü[“Ý\ŠNÂˆY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JNÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ“Ü[“[™Ê[™ÒYÈÝ™X[NˆLKÛÝˆHJJNÂˆY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JNÂˆ\ÜÙ\Ù\HJY[KšYÊ
+K›[Š
+KÊNÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ”ÝXŠŠJNÂˆ]YX\Ý\™HHÝZNŽ™š^\™NŽ‘š^\™SYX\Ý\™NÂˆY[K\]JŒM‹	›YX\Ý\™K	œËÝÜ™KšY]Ê
+JNÂˆ\ÜÙ\Ù\HJY[KœYÙWÜ]
+
+KÕ˜XÚÔYÙNŽ“Ý\“[™ÝXYÙ\Ë˜XÚÔYÙNŽ“[™ÝXYÙJLJWK˜[ˆ[˜Ú[™ÙYÚYÛ˜]\™HX]™\È]ŠNÂ‚ˆËÈÛ™Hœ™[˜ÚÚYXØ\ˆ\È›ÈÛ™Ù\ˆÙ™™\™YˆÝ[HYÙK™Yœ™\ÚY[ˆXÙBˆ]ÝÜ™LˆHÝÜ™WÝÚ]
+ÚYXØ\—Ùœ™[˜Ú
+È‹ØKœÜ‹‹Ø‹œÜ‹ˆ—JJNÂˆY[K\]JŒM‹	›YX\Ý\™K	œËÝÜ™L‹šY]Ê
+JNÂˆ\ÜÙ\Ù\HJY[KœYÙWÜ]
+
+KÕ˜XÚÔYÙNŽ“Ý\“[™ÝXYÙ\Ë˜XÚÔYÙNŽ“[™ÝXYÙJLJWK‘œ™[˜Ú\ÈÝ[Ù™™\™YŠNÂˆ\ÜÙ\Ù\HJY[KœÙ[XÝYÚY
+
+KÛÛYJ˜XÚÔ›ÝÎŽ”ÝXŠŠJK›ÛˆH›ÝÈHšY]Ù\ˆØ\ÈÛˆŠNÂˆ\ÜÙ\Ù\HJY[KšYÊ
+K›[Š
+K‹H\\Y˜XÚÈYHYÙHŠNÂ‚ˆËÈ›Û™HÙˆœ™[˜Ú\ÈÙ™™\™Yˆ]ÈYÙHØ[››Ý™H\ÝY[žH[Ü™Bˆ]ÝÜ™LÈHÝÜ™WÝÚ]
+ÚYXØ\—Ùœ™[˜Ú
+Èˆ‹ˆ‹ˆ—JJNÂˆY[K\]JŒM‹	›YX\Ý\™K	œËÝÜ™LËšY]Ê
+JNÂˆ\ÜÙ\JY[KœYÙWÜ]
+
+Kš\×Ù[\J
+KœÜYÈH›ÛÝŠNÂˆ\ÜÙ\Ù\HJY[KœÙ[XÝYÚY
+
+KÛÛYJ˜XÚÔ›ÝÎŽ“Ü[“Ý\ŠK›ÛˆH›ÝÈ]Ü[™YHÝXÚÈŠNÂˆ\ÜÙ\Ù\HJY[K™›Ü›KX›K]J
+K›Û™JNÂˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈÚ]›È[™ÝXYÙHYÈ\Ý[ˆÜ[ˆÝ\ˆ[™ÝXYÙ\ÈYÙHÜÈÛË‚ˆÖÝ\ÝBˆ›ˆWÛÝ\—Û[™ÝXYÙ\×ÜYÙWÜÜ×ÝÚ[—Û›Ý[™×Ú\×ÛYÝ×Û\Ý
+
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KËÝÜ™JHHÜ[ŠÝXœÊ
+JNÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ“Ü[“Ý\ŠNÂˆY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JNÂˆ]ÝÜ™LˆHÝÜ™WÝÚ]
+™XÈVÜÝ™X[JL‘[™Û\Ú‹™[™È‹ˆŠWJNÂˆY[K\]JŒM‹	œÝZNŽ™š^\™NŽ‘š^\™SYX\Ý\™K	œËÝÜ™L‹šY]Ê
+JNÂˆ\ÜÙ\JY[KœYÙWÜ]
+
+Kš\×Ù[\J
+JNÂˆ\ÜÙ\JY[K™›Ü›Kš[™^ÛÙŠ	•˜XÚÔ›ÝÎŽ“Ü[“Ý\ŠKš\×Û›Û™J
+K˜[™H›ÛÝ›ÈÛ™Ù\ˆÙ™™\œÈ]ŠNÂˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈÜ[ˆHÝ\ˆ[™ÝXYÙ\ÈYÙK[ˆ˜[YX	ÜÈš[Z[‹HØ^HHšY]Ù\‰ÜÈÙ^\ÈÛÝ[‚ˆ›ˆÜ[—Û[™ÝXYÙWÛ˜[YY
+Y[Nˆ	›]]˜XÚÓY[TÝ]KÝÜ™Nˆ	œÙ]NŽœÝÜ™\ÎŽ›Y]Y]NŽ“Y]Y]TÝÜ™K˜[YNˆ	œÝŠHÂˆ›ØÝ\×ÚY
+Y[K˜XÚÔ›ÝÎŽ“Ü[“Ý\ŠNÂˆ\ÜÙ\Ù\HJY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JK˜XÚÓÚÎŽ“˜]šYØ]Y
+NÂˆ]]H
+‹›Y[K™›Ü›KX›K›—Ü›ÝÜÊ
+K›X^
+
+H\È\Ú^™JBˆ™š[™
+	š_ÂˆX]Ú\ÈJY[K™›Ü›KšYØ]
+JKÛÛYJ˜XÚÔ›ÝÎŽ“Ü[“[™ÊÊJJBˆ	‰ˆY[K™›Ü›KX›KœÙXÝ[ÛœËš]\Š
+K™›]ÛX\
+ß	œËœ›ÝÜÊK›
+JKš\×ÜÛÛYWØ[™
+Ÿ‹›X™[OH˜[YJBˆJBˆ[Ü˜\ÛÜ—Ù[ÙJ[šXÈJžÛ˜[Y_H\È›Èš[Z[ˆÛˆHÝ\ˆ[™ÝXYÙ\ÈYÙHŠJNÂˆY[K™›ØÝ\×Ü›ÝÊ]\È×Ú[
+NÂˆ\ÜÙ\Ù\HJY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JK˜XÚÓÚÎŽ“˜]šYØ]Y
+NÂˆB‚ˆËËÈ
+Š‘š[™[™ÈNˆH\›™\ÜÈØ[ˆXÚÈHÝX]H]Ú]È™Z[™Ý\ˆ[™ÝXYÙ\ËŠŠˆ[ˆ][BˆËËÈÚÜÙHÝXœÈ\™H[›Û‹Hž[Ý\œÈˆ\È›È›ÛÝ˜XÚÈ›ÝÈ][È˜XÚÎ“˜Ý[™\ÛÛ™\Ë[™ˆËËÈÛÛ[Z]ÈžHH˜XÚÉÜÈÝÛˆY‚ˆÖÝ\ÝBˆ›ˆWÚ\›™\Ü×ÜXÚÜ×ØWÜÝX]WØ™Z[™ÛÝ\—Û[™ÝXYÙ\Ê
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KËÝÜ™JHHÜ[Š™XÈVÜÝ™X[JŒK‘Ù\›X[ˆ‹™]H‹ˆŠKÝ™X[JŒ‹K‘]Ú‹››‹ˆŠWJNÂˆËÈYÙHÜ™\Žˆ]Ú
+KVŠH\ÈHš\œÝÝ\‹[[™ÝXYÙ\È›ÝËÙ\›X[ˆHÙXÛÛ™ˆ]HHY[KœÝX—Ý˜XÚ×Ù›Ü—Ý\™Ù]
+˜XÚÎŒŠK™^XÝ
+˜XÚÎŒ™\ÛÛ™\È™Z[™Ý\ˆ[™ÝXYÙ\ÈŠNÂˆ\ÜÙ\Ù\HJKK˜XÚÈˆ›ÛÝÜÈYÙHÜ™\‹›ÛÝ˜XÚÜÈš\œÝŠNÂˆX]ÚY[K˜ÛÛ[Z]ÜÝX—Ý˜XÚÊKÝÜ™KšY]Ê
+JHÂˆ˜XÚÓÚÎŽÛÛ[Z]ÈÛÛ[Z]ˆ˜XÚÐÛÛ[Z]Ž”ÝX]HÈÝ™X[WÚY‹ˆK‹ˆHOˆ\ÜÙ\Ù\HJÝ™X[WÚYŒŠKˆÝ\ˆOˆ[šXÈJ™^XÝYHÝX]HÛÛ[Z]ÛÝÛÝ\ŽßHŠKˆBˆ\ÜÙ\Ù\HJY[K˜XÝ]™WÜÝX‹JNÂˆ\ÜÙ\Ù\HJY[KœÝX—Ý˜XÚ×Ù›Ü—Ý\™Ù]
+˜XÚÎŒHŠKÛÛYJ
+JNÂˆ\ÜÙ\Ù\HJY[KœÝX—Ý˜XÚ×Ù›Ü—Ý\™Ù]
+˜XÚÎŒˆŠK›Û™JNÂˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈ˜XÚÎ“˜ÛÝ[È›ÛÝ˜XÚÜÈš\œÝ[ˆÝ\ˆ[™ÝXYÙ\È[ˆYÙHÜ™\‹^[™[™ÈBˆËËÈ][K]˜XÚÈ[™ÝXYÙIÜÈÝÛˆ˜[šÙYYÙK‚ˆÖÝ\ÝBˆ›ˆWÚ\›™\Ü×Ý˜XÚ×ÛÜ™\—Ú\×Ü›ÛÝÝ[—ÛÝ\—ÜYÙ\×Ù^[™Y
+
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+Y[KËÜÝÜ™JHHÜ[ŠÝXœÊ
+JNÂˆËÈ›ÛÝˆ[™Û\Ú
+
+NÈÝ\ˆKVŽˆ]Ú
+JKœ™[˜Ú[ÔÑÙ›Ü˜ÙY
+K‹ÊKÙ\›X[Š
+Bˆ]Ü™\Žˆ™XÏÏˆH
+‹ÊK›X\
+ŸY[KœÝX—Ý˜XÚ×Ù›Ü—Ý\™Ù]
+	™›Ü›X]J˜XÚÎžÛŸHŠJJK˜ÛÛXÝ
+
+NÂˆ\ÜÙ\Ù\HJÜ™\‹ÔÛÛYJ
+KÛÛYJJKÛÛYJJKÛÛYJŠKÛÛYJÊKÛÛYJ
+K›Û™WJNÂˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈ
+Š‘š[™[™ÈŽˆHY[HÜ[œÈÛˆÝ\ˆ[™ÝXYÙ\ÈÚ[ˆHXÝ]™H˜XÚÈ\È™Z[™]
+Šˆ8 %BˆËËÈÛÙ[\ÜÈÜˆ[œ™XÛÙÛš\ÙY[[™ÝXYÙHÝX]H\È™]™\ˆž[Ý\œÈ‹ÛÈ]ÈÝÛˆ›ÝÈ\È›ÝÛˆBˆËËÈ›ÛÝ‚ˆÖÝ\ÝBˆ›ˆÜ[š[™×ÝÚ]ÝWØXÝ]™WÝ˜XÚ×Ø™Z[™ÛÝ\—Û[™ÝXYÙ\×Ù›ØÝ\Ù\×Ý]Ü›ÝÊ
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KËÝÜ™JHHÜ[Š™XÈVÜÝ™X[JL‘[™Û\Ú‹™[™È‹ˆŠKÝ™X[JLKK•[šÛ›ÝÛˆ‹ˆ‹ˆŠWJNÂˆY[K˜XÝ]™WÜÝXˆHNÂˆY[Kœ™XZ[
+	œËÝÜ™KšY]Ê
+KK˜[ÙJNÂˆ\ÜÙ\Ù\HJY[KœÙ[XÝYÚY
+
+KÛÛYJ˜XÚÔ›ÝÎŽ“Ü[“Ý\ŠJNÂˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈHØ[YH[™[™ÈÛˆH]™HÛ	ÜÈ˜[˜XÚËÚ[ˆHšY]Ù\‰ÜÈÝÛˆ›ÝÈYH›ÛÝ‚ˆÖÝ\ÝBˆ›ˆWÜÛÙ˜[˜XÚ×Û[™×ÛÛ—ÛÝ\—Û[™ÝXYÙ\×ÝÚ[—ÝWØXÝ]™WÝ˜XÚ×Ú\×Ø™Z[™Ú]
+
+HÂˆ\ÙHÛYYXNŽœ›Ý]NŽžÙ[š[˜Ù[Y[Ý\ÝÜÙ\ÜÚ[Û‹[š\Ýš^\™KÝX]QY™™XÝNÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]ÈHÛYYXNŽœ^Y\ŽŽœÚYXØ\ŽŽœ™\Ù]
+
+NÂˆËÈÝ\—ÜÝX—ÜÚY\ÈNNNˆ›ÈÝXÚÝ™X[HY]ˆ]
+ËÜÚY
+HH[š[˜Ù[Y[Ý\ÝÜÙ\ÜÚ[ÛŠ[š\Ýš^\™HÈÝX]WÙY™™XÝˆÝX]QY™™XÝŽ‘[X™YY‹‘Y˜][Ž™Y˜][
+
+HJNÂˆ][Ý\œÈH™XÈVÈ™[™È‹š[Ê
+KœÜH‹š[Ê
+K™œ˜H‹š[Ê
+WNÂˆ]ÝÜ™HHÝÜ™WÝÚ]
+™XÈVÂˆÝ™X[JL‘[™Û\Ú‹™[™È‹ˆŠKˆÝ™X[JLKK”Ü[š\Ú‹œÜH‹ˆŠKˆÝ™X[JL‹‹‘œ™[˜Ú‹™œ˜H‹ˆŠKˆJNÂˆ]]]Y[HH˜XÚÓY[TÝ]NŽ›™]Ê	œËÝÜ™KšY]Ê
+KK[Ý\œÊNÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ”ÝXŠŠJNÂˆËÈH™YH[™ÝXYÙ\ÈX]™K[™H^Z[™ÈÝX]H
+NNJH\ÈHÛÙ[\ÜÈ˜XÚÂˆ]ÝÜ™LˆHÝÜ™WÝÚ]
+™XÈVÜÝ™X[JNNK•[šÛ›ÝÛˆ‹ˆ‹ˆŠWJNÂˆY[K\]JŒM‹	œÝZNŽ™š^\™NŽ‘š^\™SYX\Ý\™K	œËÝÜ™L‹šY]Ê
+JNÂˆ\ÜÙ\Ù\HJY[K˜XÝ]™WÜÝX‹
+NÂˆ\ÜÙ\Ù\HJY[KœÙ[XÝYÚY
+
+KÛÛYJ˜XÚÔ›ÝÎŽ“Ü[“Ý\ŠKHšY]Ù\‰ÜÈ›ÝÈ\ÈÛÛ™NˆHÚXÚÙY›ÝËÚXÚ\ÈÝ\ˆ[™ÝXYÙ\ÈŠNÂˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈ
+Š‘š[™[™ÈÎˆH[™ÝXYÙHYÙH\È]È[™ÝXYÙK›ÝH\ÝÜÚ][Û‹ŠŠˆÛÈX\›Y\ˆ˜XÚÜÂˆËËÈX]™HÚ[Hœ™[˜Ú	ÜÈYÙH\ÈÜ[ˆ[™]Ú›ÝÈÝ\ÈÚ\™Hœ™[˜Ú\ÙYÎÈHYÙH]\ÝˆËËÈÝ^Hœ™[˜Ú
+]]\Ý™]™\ˆÚÝÈ]Ú[™\ˆHœ™[˜ÚÝXÚÊK‚ˆÖÝ\ÝBˆ›ˆWÛ[™ÝXYÙWÜYÙWÜÝ\š]™\×ÙX\›Y\—Ý˜XÚÜ×ÛX]š[™Ê
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]™Y›Ü™HH™XÈVÂˆÝ™X[JL‘[™Û\Ú‹™[™È‹ˆŠKˆÝ™X[JLKK‘Ù\›X[ˆ‹™]H‹ˆŠKˆÝ™X[JL‹‹‘œ™[˜Ú‹™œ˜H‹ˆŠKˆÝ™X[JLËË‘œ™[˜Ú‹™œ˜H‹”ÑŠKˆÝ™X[JM‘]Ú‹››‹ˆŠKˆÝ™X[JMKK‘]Ú‹››‹”ÑŠKˆNÂˆ]
+]]Y[KËÝÜ™JHHÜ[Š™Y›Ü™JNÂˆÜ[—Û[™ÝXYÙWÛ˜[YY
+	›]]Y[K	œÝÜ™K‘œ™[˜ÚŠNÂˆ\ÜÙ\Ù\HJY[K™›Ü›KX›K]J
+KÛÛYJ‘œ™[˜ÚŠJNÂˆ]Y\ˆHÝÜ™WÝÚ]
+™XÈVÂˆÝ™X[JL‹‘œ™[˜Ú‹™œ˜H‹ˆŠKˆÝ™X[JLËK‘œ™[˜Ú‹™œ˜H‹”ÑŠKˆÝ™X[JM‹‘]Ú‹››‹ˆŠKˆÝ™X[JMKË‘]Ú‹››‹”ÑŠKˆJNÂˆY[K\]JŒM‹	œÝZNŽ™š^\™NŽ‘š^\™SYX\Ý\™K	œËY\‹šY]Ê
+JNÂˆYˆ[Y[KœYÙWÜ]
+
+Kš\×Ù[\J
+HÂˆ\ÜÙ\Ù\HJY[K™›Ü›KX›K]J
+KÛÛYJ‘œ™[˜ÚŠK˜HYÙHÝ^\È]È[™ÝXYÙHŠNÂˆ\ÜÙ\Ù\HJY[KšYÊ
+KÕ˜XÚÔ›ÝÎŽ”ÝXŠ
+K˜XÚÔ›ÝÎŽ”ÝXŠJWK˜[™\ÝÈ]È˜XÚÜÈŠNÂˆBˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈYˆHYÙIÜÈ[™ÝXYÙH\ÈÛÛ™H[ÙÙ]\ˆHYÙHÜÈÈH›ÛÝ‚ˆÖÝ\ÝBˆ›ˆWÛ[™ÝXYÙWÜYÙWÜÜ×ÝÚ[—Ú]×Û[™ÝXYÙWÚ\×ÙÛÛ™WÝÚ]]™\—ÝWÚ[™XÙ\Ê
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KËÝÜ™JHHÜ[ŠÝXœÊ
+JNÂˆÜ[—Û[™ÝXYÙWÛ˜[YY
+	›]]Y[K	œÝÜ™K‘œ™[˜ÚŠNÂˆ]Y\ˆHÝÜ™WÝÚ]
+™XÈVÂˆÝ™X[JL‘[™Û\Ú‹™[™È‹ˆŠKˆÝ™X[JMK‘Ù\›X[ˆ‹™]H‹ˆŠKˆÜÊÝ™X[JMK‹‘]Ú‹››‹ˆŠJKˆÝ™X[JM‹Ë‘]Ú‹››‹”ÑŠKˆJNÂˆY[K\]JŒM‹	œÝZNŽ™š^\™NŽ‘š^\™SYX\Ý\™K	œËY\‹šY]Ê
+JNÂˆ\ÜÙ\JY[KœYÙWÜ]
+
+Kš\×Ù[\J
+K‘œ™[˜Ú\ÈÛÛ™NˆÜYÈH›ÛÝŠNÂˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈ
+Š‘š[™[™ÈÚš[šÊŠŽˆœ™[˜Ú›ÜÈÈÛ™HÙ™™\™Y˜XÚÈÚ[H]ÈYÙH\ÈÜ[‹ˆHYÙBˆËËÈÝ^\È
+H[™ÝXYÙHYÙH\ÝÈÚ]]™\ˆ]È[™ÝXYÙHÝ[Ù™™\œÊK[™HÜ™]\›œÈÈBˆËËÈÝ\ˆ[™ÝXYÙ\ÈYÙHÛˆœ™[˜Ú	ÜÈ›ÝËY\™XÝ›ÝË‚ˆÖÝ\ÝBˆ›ˆWÛ[™ÝXYÙWÜYÙWÝ]Ù›Ü×Ý×ÛÛ™WÝ˜XÚ×ÜÝ^\×Ø[™ÜÜ×ÛÛ×ÝWÜÚ[™ÛWÜ›ÝÊ
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]ÝÜ™HHÝÜ™WÝÚ]
+ÚYXØ\—Ùœ™[˜Ú
+È‹ØKœÜ‹‹Ø‹œÜ‹‹ØËœÜ—JJNÂˆ]ÈHÛYYXNŽœ^Y\ŽŽœÚYXØ\ŽŽœ™\Ù]
+
+NÂˆ]ÈHÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[ÛŽŽ’QNÂˆ]]]Y[HH˜XÚÓY[TÝ]NŽ›™]Ê	œËÝÜ™KšY]Ê
+KK™XÈVÈ™[™È‹š[Ê
+WJNÂˆÜ[—Û[™ÝXYÙWÛ˜[YY
+	›]]Y[K	œÝÜ™K‘œ™[˜ÚŠNÂˆ]ÝÜ™LˆHÝÜ™WÝÚ]
+ÚYXØ\—Ùœ™[˜Ú
+È‹ØKœÜ‹ˆ‹ˆ—JJNÂˆY[K\]JŒM‹	œÝZNŽ™š^\™NŽ‘š^\™SYX\Ý\™K	œËÝÜ™L‹šY]Ê
+JNÂˆ\ÜÙ\Ù\HJY[KœYÙWÜ]
+
+K›[Š
+K‹HYÙHÝ^\ÈÜ[ˆ]Û™H˜XÚÈŠNÂˆ\ÜÙ\Ù\HJY[K™›Ü›KX›K]J
+KÛÛYJ‘œ™[˜ÚŠJNÂˆ\ÜÙ\Ù\HJY[KšYÊ
+KÕ˜XÚÔ›ÝÎŽ”ÝXŠJWJNÂˆ\ÜÙ\JY[KœÜ
+	œËÝÜ™L‹šY]Ê
+JJNÂˆ\ÜÙ\Ù\HJY[KœYÙWÜ]
+
+KÕ˜XÚÔYÙNŽ“Ý\“[™ÝXYÙ\×JNÂˆ\ÜÙ\Ù\HJY[KœÙ[XÝYÚY
+
+KÛÛYJ˜XÚÔ›ÝÎŽ”ÝXŠJJK‘œ™[˜Ú\ÈH\™XÝ›ÝÈ›ÝÈŠNÂˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈ
+Š‘š[™[™ÈÜ›ÝÊŠŽˆœ™[˜Ú\ÈHÚ[™ÛH\™XÝ›ÝÈÛˆHÝ\ˆ[™ÝXYÙ\ÈYÙH[™ØZ[œÂˆËËÈ˜XÚÜÈÚ[HHšY]Ù\ˆÚ]ÈÛˆ]È›ØÝ\È›ÛÝÜÈ]È]Èš[Z[‹‚ˆÖÝ\ÝBˆ›ˆWÜÚ[™ÛWÝ˜XÚ×Û[™ÝXYÙWÝ]ÙÜ›ÝÜ×ÚÙY\×ÝWÙ›ØÝ\×ÛÛ—Ú]×Û™]×Ü›ÝÊ
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]ÝÜ™HHÝÜ™WÝÚ]
+ÚYXØ\—Ùœ™[˜Ú
+È‹ØKœÜ‹ˆ‹ˆ—JJNÂˆ]ÈHÛYYXNŽœ^Y\ŽŽœÚYXØ\ŽŽœ™\Ù]
+
+NÂˆ]ÈHÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[ÛŽŽ’QNÂˆ]]]Y[HH˜XÚÓY[TÝ]NŽ›™]Ê	œËÝÜ™KšY]Ê
+KK™XÈVÈ™[™È‹š[Ê
+WJNÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ“Ü[“Ý\ŠNÂˆY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JNÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ”ÝXŠJJNÂˆ]ÝÜ™LˆHÝÜ™WÝÚ]
+ÚYXØ\—Ùœ™[˜Ú
+È‹ØKœÜ‹‹Ø‹œÜ‹‹ØËœÜ—JJNÂˆY[K\]JŒM‹	œÝZNŽ™š^\™NŽ‘š^\™SYX\Ý\™K	œËÝÜ™L‹šY]Ê
+JNÂˆ\ÜÙ\Ù\HJY[KœYÙWÜ]
+
+KÕ˜XÚÔYÙNŽ“Ý\“[™ÝXYÙ\×JNÂˆ]œ™[˜ÚHY[KšYÊ
+Kš[×Ú]\Š
+K™š[™
+YX]Ú\ÈJY˜XÚÔ›ÝÎŽ“Ü[“[™ÊÊJJNÂˆ\ÜÙ\Jœ™[˜Úš\×ÜÛÛYJ
+K‘œ™[˜Ú\ÈHš[Z[ˆ›ÝÈŠNÂˆ\ÜÙ\Ù\HJY[KœÙ[XÝYÚY
+
+Kœ™[˜Ú‘œ™[˜Ú[ˆ]È™]ÈÚ\HŠNÂˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈHØ[›Ûˆ[ÈH™YH™]ÈYÙ\È[™Z\ˆÜ[™\œÈ\\‚ˆÖÝ\ÝBˆ›ˆWØØ[›Û—Ý[×ÝWÛ[™ÝXYÙWÜYÙ\×Ø\\
+
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]\ÚHY[Nˆ	•˜XÚÓY[TÝ]_Âˆ]]]ÈHØ[›ÛŽŽ›™]Ê
+NÂˆY[K˜Ø[›ÛŠ	›]]ÊNÂˆË™š[š\Ú
+
+BˆNÂˆ]
+]]Y[KËÝÜ™JHHÜ[ŠÝXœÊ
+JNÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ“Ü[“Ý\ŠNÂˆ]›ÛÝH\Ú
+	›Y[JNÂˆY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JNÂˆ]Ý\ˆH\Ú
+	›Y[JNÂˆ›ØÝ\×ÚY
+	›]]Y[K˜XÚÔ›ÝÎŽ“Ü[“[™Ê[™ÒYÈÝ™X[NˆLKÛÝˆHJJNÂˆ]Ý\—Ùœ™[˜ÚH\Ú
+	›Y[JNÂˆY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JNÂˆ]œ™[˜ÚH\Ú
+	›Y[JNÂˆ][HÜ›ÛÝÝ\‹Ý\—Ùœ™[˜Úœ™[˜ÚNÂˆ›Üˆ
+KJH[ˆ[š]\Š
+K™[[Y\˜]J
+HÂˆ›Üˆˆ[ˆ	˜[ÚH
+ÈK‹—HÂˆ\ÜÙ\Û™HJKŠNÂˆBˆBˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈ
+Š‘]™\žH™]ÈYÙHš]ÈH[™[[ˆ]™\žHÚ\Y[™ÝXYÙJŠŽˆH›ÛÝÚ]]ÈÝ\‚ˆËËÈ[™ÝXYÙ\È›ÝÈ
+[ÛÈÚ[HHXÝ]™H˜XÚÈ]™\È™Z[™]
+KHYÙK[™H[™ÝXYÙHYÙKˆËËÈYÙYžHHØ[YHØ]\È\ÈH™\ÝÙˆHY[K‚ˆÖÝ\ÝBˆ›ˆWÛ[™ÝXYÙWÜYÙ\×Ùš]ÝWÜ[™[Ú[—Ù]™\žWÛ[™ÝXYÙJ
+HÂˆ\ÙHÜ]›Ü›NŽšLNŽŽžÛ[™ÝXYÙWÛÛ—Ý\×Ý™XYÙ›Ü—Ý\ÝNÂˆ]]]Ý]H™XÎŽ›™]Ê
+NÂˆ›Üˆ[™ÝXYÙH[ˆÜ]›Ü›NŽšLNŽŽ”ÒTQÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]ÙÝX\™H[™ÝXYÙWÛÛ—Ý\×Ý™XYÙ›Ü—Ý\Ý
+[™ÝXYÙJNÂˆ]
+]]Y[KËÝÜ™JHHÜ[ŠÝXœ×ÝÚ]Ý›ØœÝXŠ
+JNÂˆ]YÙHHY[Nˆ	•˜XÚÓY[TÝ]KÝ]ˆ	›]]™XÏÏŸÂˆÝ]™^[™
+Y[K™›Ü›KX›K›Y[WØØ\Ù˜Z[\™J	œØ˜\ÙNŽ™›ÛÛÝŽŽ˜Y˜[˜Ù\ÎŽ”Ú\YYX\Ý\™K[™ÝXYÙKYÊ
+JJNÂˆÝ]™^[™
+Y[K™›Ü›KX›K˜\Ùš]Ù˜Z[\™\ÊÝZNŽX›NŽ“QS•WÓPVÕË[™ÝXYÙKYÊ
+JJNÂˆÝ]™^[™
+Y[K™›Ü›KX›K˜\Ùš]Ù˜Z[\™\×ÚYÙÙY
+[™ÝXYÙKYÊ
+JJNÂˆNÂˆYÙJ	›Y[K	›]]Ý]
+NÂˆ›ÜˆXÝ]™H[ˆËLK—HÂˆY[K˜XÝ]™WÜÝXˆHXÝ]™NÂˆY[Kœ™XZ[
+	œËÝÜ™KšY]Ê
+KK˜[ÙJNÂˆYÙJ	›Y[K	›]]Ý]
+NÂˆY[Kœ\Ú
+˜XÚÔYÙNŽ“Ý\“[™ÝXYÙ\ÊNÂˆYÙJ	›Y[K	›]]Ý]
+NÂˆY[Kœ\Ú
+˜XÚÔYÙNŽ“[™ÝXYÙJLJJNÂˆYÙJ	›Y[K	›]]Ý]
+NÂˆY[KœÜ
+	œËÝÜ™KšY]Ê
+JNÂˆY[Kœ\Ú
+˜XÚÔYÙNŽ“[™ÝXYÙJMŠJNÈËÈH›Ø”ÝXˆ
+ÈÑ›ÝÂˆYÙJ	›Y[K	›]]Ý]
+NÂˆBˆX\™ÝÛŠ	œÊNÂˆBˆÝZNŽX›NŽ˜\ÜÙ\Û›×Ùš]Ù˜Z[\™\Ê	›Ý]
+NÂˆBŸB‚‹ËËÈ
+Š•H[™[	ÜÈ™\Ú^™H[™YÙHÛYJŠˆ
+ZNŽœ[™[Û[Ý[Û˜ØÜËÜ^Y\‹\ÝX›Y[\Ë›Y‹ËËÈ[š[X][ÛˆŠNˆ[›š[™ÈœÈ™\Ý[™Ë[ˆ[\œ\Y˜[œÚ][Û‹H^[Ý]HØ\™[™ÈÛ‹[™‹ËËÈH]Y[ËÔÝX]\ÈXˆÝÚ]Ú‚ˆÖØÙ™Ê\Ý
+WB›[Ù[Ý[Û—Ý\ÝÈÂˆ\ÙHÝ\\ŽŽ\ÝÎŽžÜÝÜ™WÝÚ]Ý™X[_NÂˆ\ÙHÝ\\ŽŽŠŽÂˆ\ÙHØ˜\ÙNŽ™›ÛÛÝŽŽ˜Y˜[˜Ù\ÎŽ”Ú\YYX\Ý\™NÂˆ\ÙHÛYYXNŽœ›Ý]NŽœ™\Ù]Ü^Y\—ØÛÛ›ÛÙ›Ü—Ý\ÝÂ‚ˆÛÛœÝˆŒÌˆHKŒÈŒŒÂ‚ˆ›ˆX\™ÝÛŠÎˆ	œÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[ÛŠHÂˆ™\Ù]Ü^Y\—ØÛÛ›ÛÙ›Ü—Ý\Ý
+ÊNÂˆÜ^Žœ^Žœ™\Ù]ÜÙ\™\œ×Ù›Ü—Ý\Ý
+
+NÂˆB‚ˆ›ˆÝXœÊ
+HOˆ™XÏY]Y]NŽ”Ý™X[OˆÂˆ™XÈVÂˆÝ™X[JL‘[™Û\Ú‹™[™È‹ˆŠKˆÝ™X[JLKK‘œ™[˜Ú‹™œ˜H‹ˆŠKˆÝ™X[JL‹‹‘œ™[˜Ú‹™œ˜H‹”ÑŠKˆÝ™X[JM‘Ù\›X[ˆ‹™]H‹ˆŠKˆBˆB‚ˆ›ˆÜ[Š
+HOˆ
+˜XÚÓY[TÝ]KÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[Û‹Ù]NŽœÝÜ™\ÎŽ›Y]Y]NŽ“Y]Y]TÝÜ™JHÂˆ]ÈHÛYYXNŽœ^Y\ŽŽœÚYXØ\ŽŽœ™\Ù]
+
+NÂˆ]ÈHÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[ÛŽŽ’QNÂˆ]ÝÜ™HHÝÜ™WÝÚ]
+ÝXœÊ
+JNÂˆ]]]Y[HH˜XÚÓY[TÝ]NŽ›™]Ê	œËÝÜ™KšY]Ê
+KK™XÈVÈ™[™È‹š[Ê
+WJNÂˆËÈHš\œÝ\]HXÙ\ÈHØ\™U]È^[Ý]ˆHÜ[ˆ\ÈH\X\ˆ[š[X][Û‰ÜÂˆœ˜[YJ	›]]Y[K	œË	œÝÜ™JNÂˆ\ÜÙ\J[Y[K˜[œÚ][Ûš[™Ê
+K˜Hœ™\ÚHÜ[™Y[™[\È]™\ÝŠNÂˆ
+Y[KËÝÜ™JBˆB‚ˆËËÈÛ™HÛÜœ˜[YK\ÈH\Ü]Ú\ˆ[œÈ]ˆ›Ü™Ù]\Ýœ˜[YIÜÈ[Ý[Û‹[ˆ\]Kˆ™]\›œÂˆËËÈÚ]\ˆHÜš[™È[Ý™Y
+Ú]ÙY\ÈH™\Ù[Ø]H]ØZÙJK‚ˆ›ˆœ˜[YJY[Nˆ	›]]˜XÚÓY[TÝ]KÎˆ	œÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[Û‹ÝÜ™Nˆ	œÙ]NŽœÝÜ™\ÎŽ›Y]Y]NŽ“Y]Y]TÝÜ™JHOˆ›ÛÛÂˆÛXXÚ[™NŽšYNŽ™œ˜[YWØ™YÚ[Š
+NÂˆY[K\]J	”Ú\YYX\Ý\™KËÝÜ™KšY]Ê
+JNÂˆÛXXÚ[™NŽšYNŽœ™\Ù[Û[Ýš[™Ê
+BˆB‚ˆ›ˆ[ŠY[Nˆ	›]]˜XÚÓY[TÝ]KÎˆ	œÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[Û‹ÝÜ™Nˆ	œÙ]NŽœÝÜ™\ÎŽ›Y]Y]NŽ“Y]Y]TÝÜ™KŽˆ\Ú^™JHÂˆ›ÜˆÈ[ˆ‹›ˆÂˆœ˜[YJY[KËÝÜ™JNÂˆBˆB‚ˆ›ˆÚÝÛŠY[Nˆ	•˜XÚÓY[TÝ]JHOˆ™XÝÂˆY[KœÚÝÛ—Ü™XÝ
+	”Ú\YYX\Ý\™JBˆB‚ˆ›ˆ˜]\˜[
+Y[Nˆ	•˜XÚÓY[TÝ]JHOˆ™XÝÂˆY[Kœ[™[Ü™XÝ
+	”Ú\YYX\Ý\™JBˆB‚ˆ›ˆ\ÚÜÝ[JY[Nˆ	›]]˜XÚÓY[TÝ]KÝÜ™Nˆ	œÙ]NŽœÝÜ™\ÎŽ›Y]Y]NŽ“Y]Y]TÝÜ™JHÂˆ]HHY[K™›Ü›Kš[™^ÛÙŠ	•˜XÚÔ›ÝÎŽ”Ý[JK™^XÝ
+”Ý[H›ÝÈŠNÂˆY[K™›ØÝ\×Ü›ÝÊH\È×Ú[
+NÂˆ\ÜÙ\Ù\HJY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JK˜XÚÓÚÎŽ“˜]šYØ]Y
+NÂˆB‚ˆËËÈ
+ŠH\Ú[š[X]\Ë™\ÜÈ[Ý[ÛˆXXÚœ˜[YH][œÈ[™ÝÜÈ\ÚÚ[™È›Üˆœ˜[Y\È]™\ÝŠŠ‚ˆÖÝ\ÝBˆ›ˆWÜ\ÚÚ\×Ø[š[X][™×Ý[—Ø\ÚÜ×Ù›Ü—Û›×Û[Ü™WÙœ˜[Y\×Ø]Ü™\Ý
+
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KËÝÜ™JHHÜ[Š
+NÂˆ]›ÛÝH˜]\˜[
+	›Y[JNÂˆ\ÚÜÝ[J	›]]Y[K	œÝÜ™JNÂˆ\ÜÙ\JY[K˜[œÚ][Ûš[™Ê
+KHYÙHÛYH\È[›š[™ÈH[ÛY[HYÙH\È\ÚYŠNÂˆ\ÜÙ\Jœ˜[YJ	›]]Y[K	œË	œÝÜ™JK˜H[›š[™È˜[œÚ][ÛˆÙY\ÈH™\Ù[Ø]H]ØZÙHŠNÂˆ\ÜÙ\JY[K›[Ý[Û‹œÛY[™Ê
+JNÂˆ\ÜÙ\Û™HJÚÝÛŠ	›Y[JK˜]\˜[
+	›Y[JKHØ\™\È™]ÙY[ˆHÛÈ^[Ý]ÈŠNÂˆ\ÜÙ\Û™HJ˜]\˜[
+	›Y[JK›ÛÝHÝ[HYÙH\È]ÈÝÛˆ^[Ý]ŠNÂ‚ˆ]]]œ˜[Y\×Û[Ýš[™ÈHNÂˆÚ[Hœ˜[YJ	›]]Y[K	œË	œÝÜ™JHÂˆœ˜[Y\×Û[Ýš[™È
+ÏHNÂˆ\ÜÙ\Jœ˜[Y\×Û[Ýš[™ÈH˜[œÚ][Ûˆ™]™\ˆÙ]\ÈŠNÂˆBˆ\ÜÙ\J
+‹‹ŒLŒ
+K˜ÛÛZ[œÊ	™œ˜[Y\×Û[Ýš[™ÊK˜H˜[œÚ][ÛˆÜ[œÈH[™[Ùˆœ˜[Y\Ë›ÝÙœ˜[Y\×Û[Ýš[™ßHŠNÂˆ\ÜÙ\J[Y[K˜[œÚ][Ûš[™Ê
+JNÂˆ\ÜÙ\J[Y[K›[Ý[Û‹œÛY[™Ê
+JNÂˆ\ÜÙ\Ù\HJÚÝÛŠ	›Y[JK˜]\˜[
+	›Y[JKHØ\™[™ÈVPÕHÛˆH^[Ý]ŠNÂˆËÈYH\È[HYNˆHÙ]Y[™[Ý\ÈÚ]Ý]HÚ[™ÛHœ˜[YH™\]Y\ÝYˆ›ÜˆÈ[ˆ‹ŒÌÂˆ\ÜÙ\JYœ˜[YJ	›]]Y[K	œË	œÝÜ™JK˜HÙ]Y[™[]\Ý›Ý\ÚÈ›Üˆœ˜[Y\ÈŠNÂˆBˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈ
+ŠH\Ú[ˆHÜZY\ÛYH™]™\œÙ\Èœ›ÛHÚ\™H]\È[™Ù]\ÈÛˆH›ÛÝŠŠˆBˆËËÈYÙH]Ø\È\œš]š[™È™XÛÛY\ÈHÛ™H™]\›™YËØ\œžZ[™È]ÈÝÛˆ[K[™HYÙBˆËËÈ]Ø\È]™HX]™\Èœ›ÛH]ÈÝÛŽˆ›È^Y\‰ÜÈ[HÝ\È]HÝØ\‚ˆÖÝ\ÝBˆ›ˆ[—Ú[\œ\YÜ\ÚÝ[—ÜÜÜ™]™\œÙ\×Ø[™ÜÙ]\×Ø]ÝWÜ›ÛÝÜ™XÝ
+
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KËÝÜ™JHHÜ[Š
+NÂˆ]›ÛÝH˜]\˜[
+	›Y[JNÂˆ]›ÛÝÜÚÝÛˆHÚÝÛŠ	›Y[JNÂˆ\ÜÙ\Ù\HJ›ÛÝÜÚÝÛ‹›ÛÝ
+NÂˆ\ÚÜÝ[J	›]]Y[K	œÝÜ™JNÂˆ[Š	›]]Y[K	œË	œÝÜ™KLJNÂˆ]ZYHÚÝÛŠ	›Y[JNÂˆ\ÜÙ\Û™HJZY›ÛÝ›ZY\ÛYHHØ\™\È›Ý]H›ÛÝ^[Ý]ŠNÂˆ]™Y›Ü™HHY[K›[Ý[Û‹›]™WÙ
+
+NÂˆ\ÜÙ\J™Y›Ü™HˆŒ˜H\Ú\œš]™\Èœ›ÛHHšYÚˆØ™Y›Ü™_HŠNÂˆ]
+X]š[™×Ø™Y›Ü™K]™WØ™Y›Ü™JHHY[K›[Ý[Û‹˜[\Ê
+NÂˆ\ÜÙ\J]™WØ™Y›Ü™HˆŒ	‰ˆ]™WØ™Y›Ü™HKŒ˜Ø]YÚZYY˜YNˆÛ]™WØ™Y›Ü™_HŠNÂ‚ˆ\ÜÙ\JY[KœÜ
+	œËÝÜ™KšY]Ê
+JJNÂˆ\ÜÙ\Ù\HJÚÝÛŠ	›Y[JKZYH™]™\œØ[ÛÛ[Y\Èœ›ÛHH˜]Ûˆ™XÝ›È[\ŠNÂˆ\ÜÙ\JY[K›[Ý[Û‹œÛY[™Ê
+KHÛYH™]™\œÙ\È˜]\ˆ[ˆ[™[™ÈŠNÂˆ]
+X]š[™×ØY\‹]™WØY\ŠHHY[K›[Ý[Û‹˜[\Ê
+NÂˆ\ÜÙ\Ù\HJX]š[™×ØY\‹™XÈVÛ]™WØ™Y›Ü™WKHYÙH]Ø\È]™HX]™\Èœ›ÛH]ÈÝÛˆ[HŠNÂˆ]™]š]™YHX]š[™×Ø™Y›Ü™K›\Ý
+
+K˜ÛÜYY
+
+K[Ü˜\ÛÜŠŒ
+NÂˆ\ÜÙ\Ù\HJ]™WØY\‹™]š]™YHYÙH™]\›™YÈÛÛ[Y\Èœ›ÛH]ÈÝÛˆ[HŠNÂˆ]Y\ˆHY[K›[Ý[Û‹›]™WÙ
+
+NÂˆ\ÜÙ\JY\ˆHŒ˜HÜ™]\›œÈH›ÛÝœ›ÛHHY›ÝHšYÚˆØY\ŸHŠNÂˆ\ÜÙ\JY[K˜[œÚ][Ûš[™Ê
+JNÂ‚ˆ]]]ˆHÂˆÚ[Hœ˜[YJ	›]]Y[K	œË	œÝÜ™JHÂˆˆ
+ÏHNÂˆ\ÜÙ\JˆH™]™\œÙY˜[œÚ][Ûˆ™]™\ˆÙ]\ÈŠNÂˆBˆ\ÜÙ\Ù\HJÚÝÛŠ	›Y[JK›ÛÝœÙ]\ÈÛˆH›ÛÝ^[Ý]ŠNÂˆ\ÜÙ\J[Y[K˜[œÚ][Ûš[™Ê
+JNÂˆ\ÜÙ\JY[KœYÙ\Ëš\×Ù[\J
+JNÂˆ\ÜÙ\Ù\HJY[KœÙ[XÝYÚY
+
+KÛÛYJ˜XÚÔ›ÝÎŽ”Ý[JKHÜ[™\ˆ\È›ØÝ\ÙYYØZ[ˆŠNÂˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈ
+Š•HÛÈYÙ\È™]™\ˆ™XYÛˆÜÙˆXXÚÝ\ŠŠŽˆÛˆ]™\žHœ˜[YHÙˆH\ÚHÜ[™[‚ˆËËÈ[\œ\YÛ™K][ÜÝÛ™H^Y\ˆ\ÈX›Ý™HHØ]H[H
+[™[Û[Ý[ÛŽŽ‘ÐUX
+K[™HX]š[™ÈYÙH˜]ÜÈ›ÂˆËËÈ›ØÝ\È[
+H\œš]š[™ÈYÙHÝÛœÈHÛ›HÛ™JK‚ˆÖÝ\ÝBˆ›ˆWÝÛ×ÜYÙ\×Ø\™WÛ™]™\—Ø›ÝØX›Ý™WÝWÙØ]WØ[™ÛÛ›WÛÛ™WÙ˜]Ü×ØWÜ[
+
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KËÝÜ™JHHÜ[Š
+NÂˆ]ÚXÚÈHY[Nˆ	•˜XÚÓY[TÝ]KÚ]ˆ	œÝŸÂˆ]
+X]š[™Ë]™JHHY[K›[Ý[Û‹˜[\Ê
+NÂˆ]ÝY\ÝHX]š[™Ëš]\Š
+K˜ÛÜYY
+
+K™›Û
+ŒÙŒÌ‹ŒÌŽŽ›X^
+NÂˆ\ÜÙ\JÝY\Ý›Z[Š]™JHHÝZNŽœ[™[Û[Ý[ÛŽŽ‘ÐUH
+ÈYKMžÝÚ]NˆX]š[™ÈÛX]š[™ÎßH[™]™HÛ]™_HÝ™\›\ŠNÂˆ\ÜÙ\Ù\HJY[K›[Ý[Û‹›X]š[™×Ü[Ê
+KžÝÚ]NˆHX]š[™ÈYÙH˜]ÜÈH›ØÝ\È[ŠNÂˆNÂˆ\ÚÜÝ[J	›]]Y[K	œÝÜ™JNÂˆ]]]Ø]×ÛX]š[™×ÛÛ›HH˜[ÙNÂˆ]]]Ø]×Û]™WÛÛ›HH˜[ÙNÂˆ›ÜˆH[ˆ‹ŽLÂˆœ˜[YJ	›]]Y[K	œË	œÝÜ™JNÂˆÚXÚÊ	›Y[K	™›Ü›X]Jœ\Úœ˜[YHÚ_HŠJNÂˆ]
+X]š[™Ë]™JHHY[K›[Ý[Û‹˜[\Ê
+NÂˆØ]×ÛX]š[™×ÛÛ›HH[X]š[™Ëš\×Ù[\J
+H	‰ˆ]™HOHŒÂˆØ]×Û]™WÛÛ›HHX]š[™Ëš\×Ù[\J
+H	‰ˆ]™HˆŒ	‰ˆ]™HKŒÂˆBˆ\ÜÙ\JØ]×ÛX]š[™×ÛÛ›KHÝ]ÛÚ[™ÈYÙH\È[Û™HÛˆØÜ™Y[ˆ]š\œÝŠNÂˆ\ÜÙ\JØ]×Û]™WÛÛ›K˜[™H[˜ÛÛZ[™ÈYÙH[Û™H]H[™Ùˆ]È˜YHŠNÂˆ\ÜÙ\JY[KœÜ
+	œËÝÜ™KšY]Ê
+JJNÂˆ›ÜˆH[ˆ‹ŽLÂˆœ˜[YJ	›]]Y[K	œË	œÝÜ™JNÂˆÚXÚÊ	›Y[K	™›Ü›X]JœÜœ˜[YHÚ_HŠJNÂˆBˆËÈ[\œ\Y]]™\žH\ÙˆH\Úˆ›ÜˆÝÜ[ˆÌKË‹KL‹ŒHÂˆ\ÚÜÝ[J	›]]Y[K	œÝÜ™JNÂˆ[Š	›]]Y[K	œË	œÝÜ™KÝÜ
+NÂˆÚXÚÊ	›Y[K	™›Ü›X]J˜™Y›Ü™HH[\œ\]ÜÝÜHŠJNÂˆ\ÜÙ\JY[KœÜ
+	œËÝÜ™KšY]Ê
+JJNÂˆÚXÚÊ	›Y[K	™›Ü›X]JœšYÚY\ˆH[\œ\]ÜÝÜHŠJNÂˆ›ÜˆH[ˆ‹ŽLÂˆœ˜[YJ	›]]Y[K	œË	œÝÜ™JNÂˆÚXÚÊ	›Y[K	™›Ü›X]Jš[\œ\Y]ÜÝÜKœ˜[YHÚ_HŠJNÂˆBˆBˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈ
+ŠH\Ú\š[™ÈH\Ú\ÈÛÛ[[Ý\ÈÛÊŠŽˆHYÙH]Ø\È\œš]š[™ÈX]™\Èœ›ÛHBˆËËÈ[H[™Ù™œÙ]]YHÛ\ˆX]š[™ÈYÙHÙY\È˜Y[™Ë[™H™]ÈYÙHÝ\ÈÛX\‹‚ˆÖÝ\ÝBˆ›ˆWÜ\ÚÙ\š[™×ØWÜ\ÚÜÝ\×Û›×Û^Y\Š
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KËÝÜ™JHHÜ[Š
+NÂˆ\ÚÜÝ[J	›]]Y[K	œÝÜ™JNÂˆ[Š	›]]Y[K	œË	œÝÜ™KLŠNÂˆ]
+ÛÛX]š[™Ë]™JHHY[K›[Ý[Û‹˜[\Ê
+NÂˆ]HY[K›[Ý[Û‹›]™WÙ
+
+NÂˆ\ÜÙ\J]™HˆŒ	‰ˆ]™HKŒ›ZYY˜YNˆÛ]™_HŠNÂˆ]HHY[K™›Ü›Kš[™^ÛÙŠ	•˜XÚÔ›ÝÎŽ“Ü[‘šY[
+Ý[QšY[Ž”Ú^™JJK™^XÝ
+”Ú^™H›ÝÈŠNÂˆY[K™›ØÝ\×Ü›ÝÊH\È×Ú[
+NÂˆ\ÜÙ\Ù\HJY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JK˜XÚÓÚÎŽ“˜]šYØ]Y
+NÂˆ]
+X]š[™Ë™]×Û]™JHHY[K›[Ý[Û‹˜[\Ê
+NÂˆ\ÜÙ\Ù\HJ™]×Û]™KŒH™]ÈYÙH\œš]™\Èœ›ÛH˜[œÜ\™[ŠNÂˆ\ÜÙ\Ù\HJX]š[™Ë›\Ý
+
+K˜ÛÜYY
+
+KÛÛYJ]™JKHYÙH]Ø\È\œš]š[™ÈX]™\Èœ›ÛH]ÈÝÛˆ[HŠNÂˆ›Üˆ
+Ù\Ø\ÊH[ˆX]š[™Ëš]\Š
+Kžš\
+ÛÛX]š[™Ëš]\Š
+JHÂˆ\ÜÙ\Ù\HJÙ\Ø\Ë˜[ˆÛ\ˆX]š[™ÈYÙH\È›ÝÝXÚYžHHÝØ\ŠNÂˆBˆ\ÜÙ\Ù\HJY[K›[Ý[Û‹›X]š[™×Ü[Ê
+K
+NÂˆ\ÜÙ\Û™HJŒ
+NÂˆ[Š	›]]Y[K	œË	œÝÜ™K
+NÂˆ\ÜÙ\J[Y[K›[Ý[Û‹œÛY[™Ê
+JNÂˆ\ÜÙ\Ù\HJÚÝÛŠ	›Y[JK˜]\˜[
+	›Y[JJNÂˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈ˜\Y™\X]Y\Ú\È[™ÜÈ
+H[Ù^KHÝX›H™\ÜÊH™]™\ˆÝXÚÈ^Y\œÈÜˆX]™HBˆËËÈØ\™Ù™ˆ]È^[Ý]‚ˆÖÝ\ÝBˆ›ˆ˜\YÜ\Ú\×Ø[™ÜÜ×ÛX]™WÛÛ™WÜÛYWØ[™Û[™ÛÛ—ÝWÛÙÚXØ[ÜYÙJ
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KËÝÜ™JHHÜ[Š
+NÂˆ]›ÛÝH˜]\˜[
+	›Y[JNÂˆ›ÜˆÈ[ˆ‹Âˆ\ÚÜÝ[J	›]]Y[K	œÝÜ™JNÂˆœ˜[YJ	›]]Y[K	œË	œÝÜ™JNÂˆ\ÜÙ\JY[KœÜ
+	œËÝÜ™KšY]Ê
+JJNÂˆœ˜[YJ	›]]Y[K	œË	œÝÜ™JNÂˆBˆËÈ[™H\Ú]ÛÙ\ÈY\\ˆÚ[HHš\œÝ\ÈÝ[ÛY[™Âˆ\ÚÜÝ[J	›]]Y[K	œÝÜ™JNÂˆ[Š	›]]Y[K	œË	œÝÜ™KŠNÂˆ]HHY[K™›Ü›Kš[™^ÛÙŠ	•˜XÚÔ›ÝÎŽ“Ü[‘šY[
+Ý[QšY[Ž”Ú^™JJK™^XÝ
+”Ú^™H›ÝÈŠNÂˆY[K™›ØÝ\×Ü›ÝÊH\È×Ú[
+NÂˆ\ÜÙ\Ù\HJY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JK˜XÚÓÚÎŽ“˜]šYØ]Y
+NÂˆ\ÜÙ\Ù\HJY[KœYÙ\Ë›[Š
+KŠNÂˆ[Š	›]]Y[K	œË	œÝÜ™K
+NÂˆ\ÜÙ\J[Y[K˜[œÚ][Ûš[™Ê
+JNÂˆ\ÜÙ\Ù\HJÚÝÛŠ	›Y[JK˜]\˜[
+	›Y[JJNÂˆ\ÜÙ\JY[KœÜ
+	œËÝÜ™KšY]Ê
+JJNÂˆ\ÜÙ\JY[KœÜ
+	œËÝÜ™KšY]Ê
+JJNÂˆ[Š	›]]Y[K	œË	œÝÜ™K
+NÂˆ\ÜÙ\Ù\HJÚÝÛŠ	›Y[JK›ÛÝ
+NÂˆ\ÜÙ\J[Y[K˜[œÚ][Ûš[™Ê
+JNÂˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈ[ˆ]Y[ËÔÝX]\ÈXˆÝÚ]Ú™\Ú^™\ÈHØ\™Ú]HØ[YHÜš[™Ë[™HÛÛ[ˆËËÈÙ\È›ÝÛYK‚ˆÖÝ\ÝBˆ›ˆWÝX—ÜÝÚ]ÚØ[š[X]\×ÝWÚZYÚ
+
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KËÝÜ™JHHÜ[Š
+NÂˆ][H˜]\˜[
+	›Y[JNÂˆY[K™›ØÝ\×ÝXŠ	œËÝÜ™KšY]Ê
+K
+NÂˆ]ÚÜH˜]\˜[
+	›Y[JNÂˆ\ÜÙ\JÚÜš[šH[\H]Y[ÈXˆ\ÈÚÜ\ˆ[ˆHÝX]\ÈXŽˆßHßH‹ÚÜš[š
+NÂˆ\ÜÙ\Ù\HJÚÜžH
+ÈÚÜš[žH
+È[šH›ÝÛHYÙH\ÈH[˜ÚÜˆŠNÂˆ\ÜÙ\Ù\HJÚÜž
+ÈÚÜË[ž
+È[Ë˜[™ÛÈ\ÈHšYÚYÙHŠNÂˆ\ÜÙ\Jœ˜[YJ	›]]Y[K	œË	œÝÜ™JKH™\Ú^™H\È[Ý[ÛˆŠNÂˆ]š\œÝHÚÝÛŠ	›Y[JNÂˆ\ÜÙ\Jš\œÝšˆÚÜš	‰ˆš\œÝšH[š›ZY\™\Ú^™HHØ\™\È™]ÙY[ˆHÛÈZYÚÎˆÙš\œÝßHŠNÂˆ\ÜÙ\J[Y[K›[Ý[Û‹œÛY[™Ê
+K˜HXˆÝÚ]ÚÝØ\ÈHÛÛ[]Ù\È›ÝÛYH]ŠNÂˆ\ÜÙ\Ù\HJY[K›[Ý[Û‹›]™WÙ
+
+KŒ
+NÂˆ[Š	›]]Y[K	œË	œÝÜ™K
+NÂˆ\ÜÙ\Ù\HJÚÝÛŠ	›Y[JKÚÜ
+NÂˆËÈ[™˜XÚÂˆY[K™›ØÝ\×ÝXŠ	œËÝÜ™KšY]Ê
+KJNÂˆ\ÜÙ\Jœ˜[YJ	›]]Y[K	œË	œÝÜ™JJNÂˆ[Š	›]]Y[K	œË	œÝÜ™K
+NÂˆ\ÜÙ\Ù\HJÚÝÛŠ	›Y[JK[
+NÂˆ\ÜÙ\JYœ˜[YJ	›]]Y[K	œË	œÝÜ™JJNÂˆX\™ÝÛŠ	œÊNÂˆB‚ˆËËÈH^[Ý]\™Ù]\ÈYX\Ý\™YÚ[ˆHX›HÚ[™ÙY[™›ÝÝ\Ú\ÙK‚ˆÖÝ\ÝBˆ›ˆWÛ^[Ý]Ú\×ØØXÚYÝ[[ÝWÝX›WØÚ[™Ù\Ê
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KËÝÜ™JHHÜ[Š
+NÂˆ]™]ˆHY[K™›Ü›KX›K›^[Ý]Ü™]Š
+NÂˆ]HH˜]\˜[
+	›Y[JNÂˆ[Š	›]]Y[K	œË	œÝÜ™KÊNÂˆ\ÜÙ\Ù\HJY[K™›Ü›KX›K›^[Ý]Ü™]Š
+K™]‹\]KÙ˜]ËÜXÙHÈ›ÝÝXÚHX›IÜÈ^[Ý]ŠNÂˆ\ÜÙ\Ù\HJ˜]\˜[
+	›Y[JKJNÂˆ\ÚÜÝ[J	›]]Y[K	œÝÜ™JNÂˆ\ÜÙ\Û™HJY[K™›Ü›KX›K›^[Ý]Ü™]Š
+K™]‹˜HYÙHÚ[™ÙH[Ý™\ÈH™]š\Ú[ÛˆŠNÂˆX\™ÝÛŠ	œÊNÂˆB‚ˆËÈKKKHHÙX\˜Ú›ÜˆÝX]\ÈYÙ\ÈKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKB‚ˆ\ÙHÙ]NŽœÝXœÙX\˜ÚŽžÑÝÛ›ØY\ÙKÙX\˜Ú˜Z[\™KÙX\˜ÚÝ]\ËÝX’]ÝX”ÙX\˜ÚÛYÝX”ÙX\˜ÚÛ˜\ÚÝNÂ‚ˆ›ˆ]
+]Nˆ	œÝŠHOˆÝX’]ÂˆÝX’]ÈÙ^Nˆ›Ü›X]J‹ÛXœ˜\žKÜÝ™X[\ËÞÝ]_HŠK]Nˆ]Kš[Ê
+K›ÝšY\Žˆ“Ü[”ÝX]\È‹š[Ê
+Kˆ[™ÝXYÙNˆ“™Y\›[™È‹š[Ê
+K[™ÝXYÙWØÛÙNˆ››‹š[Ê
+KÛÙXÎˆœÜ‹š[Ê
+KØÛÜ™NˆKˆX\š[™×Ú[\Z\™Yˆ˜[ÙK›Ü˜ÙYˆ˜[ÙHBˆB‚ˆ›ˆÛ˜\
+Ý]\ÎˆÙX\˜ÚÝ]\Ë˜Z[\™NˆÜ[ÛÙX\˜Ú˜Z[\™O‹]Îˆ™XÏÝX’]‹ÝÛ›ØYˆÝÛ›ØY\ÙJHOˆÝX”ÙX\˜ÚÛ˜\ÚÝÂˆÝX”ÙX\˜ÚÛ˜\ÚÝÈÝ]\Ë˜Z[\™K]Ë[™Îˆ››‹š[Ê
+KÝÛ›ØYÙ[ŽˆÈBˆB‚ˆËËÈHÝX]\Ë]XˆY[HÚ]Û™H[™Û\Ú˜XÚËÙ™™\™YHÙX\˜Ú[ˆÝ]HØÛˆHÙX\˜ÚYÙK‚ˆ›ˆÛ—ÜÙX\˜ÚÜYÙJÎˆÝX”ÙX\˜ÚÛ˜\ÚÝ
+HOˆ
+˜XÚÓY[TÝ]KÙ]NŽœÝÜ™\ÎŽ›Y]Y]NŽ“Y]Y]TÝÜ™JHÂˆÛ—ÜÙX\˜ÚÜYÙWÝÚ]
+™XÎŽ›™]Ê
+KÊBˆB‚ˆËËÈØÛ—ÜÙX\˜ÚÜYÙXKÚ]^˜XÝX]HÝ™X[\ÈÛˆH^Z[™È][H™\ÚYHH[™Û\ÚÛ™K‚ˆ›ˆÛ—ÜÙX\˜ÚÜYÙWÝÚ]
+ˆ^˜Nˆ™XÏY]Y]NŽ”Ý™X[O‹ˆÎˆÝX”ÙX\˜ÚÛ˜\ÚÝˆ
+HOˆ
+˜XÚÓY[TÝ]KÙ]NŽœÝÜ™\ÎŽ›Y]Y]NŽ“Y]Y]TÝÜ™JHÂˆÛYYXNŽœ^Y\ŽŽœÚYXØ\ŽŽœ™\Ù]
+
+NÂˆ]ÈHÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[ÛŽŽ’QNÂˆ]]]ÝXœÈH™XÈVÛY]Y]NŽ”Ý™X[HÈYˆK[™^ˆ[™Îˆ‘[™Û\Ú‹š[Ê
+Kˆ[™×ØÛÙNˆ™[™È‹š[Ê
+KÛÙXÎˆœÜ‹š[Ê
+K‹‘Y˜][Ž™Y˜][
+
+HWNÂˆÝXœË™^[™
+^˜JNÂˆ]ÝÜ™HHÝÜ™WÝÚ]
+ÝXœÊNÂˆ]]]Y[HH˜XÚÓY[TÝ]NŽ›™]×ÝÚ]
+	œËÝÜ™KšY]Ê
+KK™XÈVÈ™[™È‹š[Ê
+WKYJNÂˆY[KœÙ]ÜÙX\˜Ú
+ÝX”ÙX\˜ÚÛ˜\ÚÝŽšYJÊJNÂˆY[K™›ØÝ\×ÚÙ^J˜XÚÔ›ÝÎŽ“Ü[”ÙX\˜ÚšÙ^J
+KŒ
+NÂˆ\ÜÙ\Ù\HJY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JK˜XÚÓÚÎŽ“˜]šYØ]Y
+NÂˆY[KœÙ]ÜÙX\˜Ú
+ÊNÂˆ
+Y[KÝÜ™JBˆB‚ˆËËÈH›ÝÈ^\ÝÈÛ›HÚ[ˆHÜÝÙ™™\œÈHÙX\˜ÚÛÈHÜÝÚ]Ý]Û™H8 %]™\žH\ÝÜÝˆËËÈ]™Y]\È\ÈYÙH8 %˜]ÜÈ^XÝHHY[H][Ø^\ÈY‚ˆÖÝ\ÝBˆ›ˆWÜÙX\˜ÚÜ›Ý×Ø\X\œ×ÛÛ›WÝÚ[—ÝWÚÜÝÛÙ™™\œ×ØWÜÙX\˜Ú
+
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]ÈHÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[ÛŽŽ’QNÂˆ]ÝÜ™HHÝÜ™WÝÚ]
+™XÈVÛY]Y]NŽ”Ý™X[HÈYˆK[™^ˆ[™Îˆ‘[™Û\Ú‹š[Ê
+Kˆ[™×ØÛÙNˆ™[™È‹š[Ê
+KÛÙXÎˆœÜ‹š[Ê
+K‹‘Y˜][Ž™Y˜][
+
+HWJNÂˆ]]]Y[HH˜XÚÓY[TÝ]NŽ›™]Ê	œËÝÜ™KšY]Ê
+KK™XÈVÈ™[™È‹š[Ê
+WJNÂˆ\ÜÙ\J[Y[KšYÊ
+K˜ÛÛZ[œÊ	•˜XÚÔ›ÝÎŽ“Ü[”ÙX\˜Ú
+JNÂˆY[KœÙ]ÜÙX\˜Ú
+ÝX”ÙX\˜ÚÛ˜\ÚÝŽšYJÊJNÂˆ\ÜÙ\J[Y[KšYÊ
+K˜ÛÛZ[œÊ	•˜XÚÔ›ÝÎŽ“Ü[”ÙX\˜Ú
+K˜H]HX›\Ú™]™\ˆYÈHÙ™™\ˆŠNÂˆ]Y[HH˜XÚÓY[TÝ]NŽ›™]×ÝÚ]
+	œËÝÜ™KšY]Ê
+KK™XÈVÈ™[™È‹š[Ê
+WKYJNÂˆ\ÜÙ\Ù\HJY[KšYÊ
+K›\Ý
+
+KÛÛYJ	•˜XÚÔ›ÝÎŽ“Ü[”ÙX\˜Ú
+KHÙ™™\™Y›ÛÝ[™ÈÚ]H›ÝÈŠNÂˆB‚ˆËËÈ[\š[™ÈHYÙH\ÈÚ]XZÙ\ÈHØÜ™Y[ˆÜ[ˆHÙX\˜Ú8 %™]™\ˆY\™[HÜ[š[™ÈHY[K‚ˆÖÝ\ÝBˆ›ˆ[\š[™×ÝWÜÙX\˜ÚÜYÙWØ\ÚÜ×Ù›Ü—ÝWÜÙX\˜ÚØ[™Û[™×ÛÛ—ÝWÛ[™ÝXYÙWÜ›ÝÊ
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+Y[KÜÝÜ™JHHÛ—ÜÙX\˜ÚÜYÙJÛ˜\
+ÙX\˜ÚÝ]\ÎŽ”ÙX\˜Ú[™Ë›Û™K™XÈV×KÝÛ›ØY\ÙNŽ“›Û™JJNÂˆ\ÜÙ\Ù\HJY[KœYÙWÜ]
+
+KÕ˜XÚÔYÙNŽ”ÙX\˜ÚJNÂˆ\ÜÙ\JY[KØ[×ÜÙX\˜Ú
+
+JNÂˆ\ÜÙ\Ù\HJY[KšYÊ
+KÕ˜XÚÔ›ÝÎŽ”ÙX\˜Ú[™×KœÙX\˜Ú[™Îˆ›Ý[™ÈÈ\ÝY]ŠNÂˆ\ÜÙ\Ù\HJY[K™›Ü›KœÙ[XÝYÚY
+
+KÛÛYJ	•˜XÚÔ›ÝÎŽ”ÙX\˜Ú[™ÊJNÂˆB‚ˆËËÈ™\Ý[È[™[ˆXÙK[™H™\ÜÈ][Ý\ÈHÙ[™\˜][Ûˆ^HÙ\™HX›\ÚY[™\ˆ8 %BˆËËÈÙ^\È\™H\[Y\˜[ÛÈHÝÜ™H™Y\Ù\ÈH™\ÜÈYØZ[œÝH™\XÙYÙ]‚ˆÖÝ\ÝBˆ›ˆWÜ™\Ý[Ü™\Ü×Ø\ÚÜ×Ý×ÙÝÛ›ØYÜ][Ý[™×Ú]×ÙÙ[™\˜][ÛŠ
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KÝÜ™JHBˆÛ—ÜÙX\˜ÚÜYÙJÛ˜\
+ÙX\˜ÚÝ]\ÎŽ”™XYK›Û™K™XÈVÚ]
+˜HŠK]
+˜ˆŠWKÝÛ›ØY\ÙNŽ“›Û™JJNÂˆ\ÜÙ\Ù\HJY[KšYÊ
+KÕ˜XÚÔ›ÝÎŽ”ÙX\˜Ú[™Ë˜XÚÔ›ÝÎŽ”ÙX\˜Ú]
+
+K˜XÚÔ›ÝÎŽ”ÙX\˜Ú]
+JWJNÂˆ\ÜÙ\Ù\HJY[KœYÙWÜ]
+
+KÕ˜XÚÔYÙNŽ”ÙX\˜ÚK˜H[™[™È™]™\ˆÜÈHYÙHŠNÂˆY[K™›ØÝ\×ÚÙ^J˜XÚÔ›ÝÎŽ”ÙX\˜Ú]
+JKšÙ^J
+KŒ
+NÂˆ\ÜÙ\Ù\HJY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JK˜XÚÓÚÎŽ”ÙX\˜Ú
+ÝX”ÙX\˜ÚÛYŽ‘ÝÛ›ØYÈÙ[ŽˆË]ˆHJJNÂˆB‚ˆËËÈÛ›HH˜[œÜÜ˜Z[\™H\È™]žXX›NÈH™Y\Ø[Ø^\ÈÚH[™Ù™™\œÈ›Ý[™Ë™XØ]\ÙHHÂˆËËÈ™]šYY\ÈHË‚ˆÖÝ\ÝBˆ›ˆWÝ˜[œÜÜÙ˜Z[\™WÛÙ™™\œ×ØWÜ™]žWØ[™ØWÙ[šX[ÙÙ\×Û›Ý
+
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KÝÜ™JHBˆÛ—ÜÙX\˜ÚÜYÙJÛ˜\
+ÙX\˜ÚÝ]\ÎŽ‘˜Z[YÛÛYJÙX\˜Ú˜Z[\™NŽ•˜[œÜÜ
+K™XÈV×KÝÛ›ØY\ÙNŽ“›Û™JJNÂˆ\ÜÙ\JY[KšYÊ
+K˜ÛÛZ[œÊ	•˜XÚÔ›ÝÎŽ”ÙX\˜Ú™]žJJNÂˆY[K™›ØÝ\×ÚÙ^J˜XÚÔ›ÝÎŽ”ÙX\˜Ú™]žKšÙ^J
+KŒ
+NÂˆ\ÜÙ\Ù\HJY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JK˜XÚÓÚÎŽ”ÙX\˜Ú
+ÝX”ÙX\˜ÚÛYŽ”™]žJJNÂ‚ˆ]
+Y[KÊHBˆÛ—ÜÙX\˜ÚÜYÙJÛ˜\
+ÙX\˜ÚÝ]\ÎŽ‘˜Z[YÛÛYJÙX\˜Ú˜Z[\™NŽ‘[šYY
+K™XÈV×KÝÛ›ØY\ÙNŽ“›Û™JJNÂˆ\ÜÙ\J[Y[KšYÊ
+K˜ÛÛZ[œÊ	•˜XÚÔ›ÝÎŽ”ÙX\˜Ú™]žJJNÂˆB‚ˆËËÈÛ™HÝÛ›ØY]H[YNˆÚ[HÛ™H\ÈÛˆHÚ\™H]™\žH™\Ý[[™H[™ÝXYÙH›ÝÈ\™H[™\‚ˆÖÝ\ÝBˆ›ˆWØ\ÞWÙÝÛ›ØYÛXZÙ\×ÝWÜ›ÝÜ×Ú[™\
+
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KÝÜ™JHHÛ—ÜÙX\˜ÚÜYÙJÛ˜\
+ÙX\˜ÚÝ]\ÎŽ”™XYK›Û™K™XÈVÚ]
+˜HŠK]
+˜ˆŠWKˆÝÛ›ØY\ÙNŽ”Ù[™[™ÈÈ]ˆJJNÂˆY[K™›ØÝ\×ÚÙ^J˜XÚÔ›ÝÎŽ”ÙX\˜Ú]
+JKšÙ^J
+KŒ
+NÂˆ\ÜÙ\Ù\HJY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JK˜XÚÓÚÎŽ’[™\
+NÂˆY[K™›ØÝ\×ÚÙ^J˜XÚÔ›ÝÎŽ”ÙX\˜Ú[™ËšÙ^J
+KŒ
+NÂˆ\ÜÙ\Ù\HJY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JK˜XÚÓÚÎŽ’[™\››È[™ÝXYÙHÚ[™ÙHZYYÝÛ›ØYŠNÂˆB‚ˆËËÈXÚÚ[™ÈH[™ÝXYÙH™]\›œÈÈHÙX\˜ÚYÙH[™™XYÈœÙX\˜Ú[™Èˆ]Û˜ÙKÛÈHÛˆËËÈ[™ÝXYÙIÜÈ™\Ý[È™]™\ˆÚ][™\ˆH™]È[™ÝXYÙIÜÈ˜[YK‚ˆÖÝ\ÝBˆ›ˆXÚÚ[™×ØWÛ[™ÝXYÙWÜ™]\›œ×Ý×ÝWÜÙX\˜ÚÜYÙWÜÙX\˜Ú[™×Ú[—Ú]
+
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KÝÜ™JHBˆÛ—ÜÙX\˜ÚÜYÙJÛ˜\
+ÙX\˜ÚÝ]\ÎŽ”™XYK›Û™K™XÈVÚ]
+˜HŠWKÝÛ›ØY\ÙNŽ“›Û™JJNÂˆY[K™›ØÝ\×ÚÙ^J˜XÚÔ›ÝÎŽ”ÙX\˜Ú[™ËšÙ^J
+KŒ
+NÂˆ\ÜÙ\Ù\HJY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JK˜XÚÓÚÎŽ“˜]šYØ]Y
+NÂˆ\ÜÙ\Ù\HJY[KœYÙWÜ]
+
+KÕ˜XÚÔYÙNŽ”ÙX\˜Ú˜XÚÔYÙNŽ”ÙX\˜Ú[™ÝXYÙWJNÂˆ][™ÜÈHÙX\˜ÚÛ[™ÝXYÙ\Ê
+NÂˆ\ÜÙ\J[™ÜËš]\Š
+K˜[
+˜ÛÙK›[Š
+HOHŠK›Û›HÛÙ\ÈHÙ\™\ˆXØÙ\ÈŠNÂˆ]œˆH[™ÜËš]\Š
+KœÜÚ][ÛŠ˜ÛÙHOH™œˆŠK™^XÝ
+‘œ™[˜Ú\ÈÙ™™\™YŠNÂˆY[K™›ØÝ\×ÚÙ^J˜XÚÔ›ÝÎŽ“[™ÐÚÚXÙJœŠKšÙ^J
+KŒ
+NÂˆ\ÜÙ\Ù\HJY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JK˜XÚÓÚÎŽ”ÙX\˜Ú
+ÝX”ÙX\˜ÚÛYŽ”Ù][™ÝXYÙJ™œˆ‹š[Ê
+JJJNÂˆ\ÜÙ\Ù\HJY[KœYÙWÜ]
+
+KÕ˜XÚÔYÙNŽ”ÙX\˜ÚJNÂˆ\ÜÙ\Ù\HJY[KœÙX\˜Ú
+
+K›X\
+ßËœÝ]\ÊKÛÛYJÙX\˜ÚÝ]\ÎŽ”ÙX\˜Ú[™ÊJNÂˆ\ÜÙ\Ù\HJY[KšYÊ
+KÕ˜XÚÔ›ÝÎŽ”ÙX\˜Ú[™×KHÛ™\Ý[È\™HÛÛ™HŠNÂˆB‚ˆËËÈHÙX\˜Ú›ÝÜÈ›Ú[ˆHÛ™HÙ^H[X™]Ú]Ý]ÛÛY[™ÈÚ][žHÝ\ˆ›ÝË‚ˆÖÝ\ÝBˆ›ˆWÜÙX\˜ÚÚÙ^\×Ø\™WÙ\Ý[˜ÝÙœ›ÛWÙ]™\žWÛÝ\—Ü›ÝÊ
+HÂˆ]]]YÈH™XÈVÕ˜XÚÔ›ÝÎŽ”ÝX“Ù™‹˜XÚÔ›ÝÎŽ•[Z[™Ë˜XÚÔ›ÝÎŽ”Ý[K˜XÚÔ›ÝÎŽ›ÛÜÝˆ˜XÚÔ›ÝÎŽ“ÝY™\ÜË˜XÚÔ›ÝÎŽ“Ü[“Ý\‹˜XÚÔ›ÝÎŽ“Ü[”ÙX\˜Ú˜XÚÔ›ÝÎŽ”ÙX\˜Ú[™Ëˆ˜XÚÔ›ÝÎŽ”ÙX\˜Ú™]žWNÂˆYË™^[™
+
+‹ŒÌ
+K™›]ÛX\
+_Õ˜XÚÔ›ÝÎŽ”ÝXŠJK˜XÚÔ›ÝÎŽ]Y[ÊJK˜XÚÔ›ÝÎŽ”ÙX\˜Ú]
+JKˆ˜XÚÔ›ÝÎŽ“[™ÐÚÚXÙJJWJJNÂˆ]Ù^\Îˆ™XÏLÌˆHYËš]\Š
+K›X\
+_KšÙ^J
+KŒ
+K˜ÛÛXÝ
+
+NÂˆ›Üˆ
+‹JH[ˆÙ^\Ëš]\Š
+K™[[Y\˜]J
+HÂˆ\ÜÙ\J
+˜HS‘ÐTÑJNÂˆ\ÜÙ\JZÙ^\ÖÛˆ
+ÈK‹—K˜ÛÛZ[œÊJK™\XØ]HÙ^HØNˆÞHŠNÂˆBˆB‚ˆËËÈH]]Ë\Ù[XÝ[™ÈH[œÝ[YÝ™X[HÝ™\ˆÓÑH8 %HÛ˜\ÚÝ\È™\X›\ÚY]™\žBˆËËÈœ˜[YH8 %\ÈHØ[YHÚYXØ\ˆÛÛ[Z]HXÚÈÛˆ]È›ÝÈXZÙ\Ë‚ˆÖÝ\ÝBˆ›ˆ[—Ú[œÝ[YÙÝÛ›ØYØÛÛ[Z]×ÛÛ˜ÙWØ\×ØWÜÚYXØ\—ÜXÚÊ
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ][œÝ[YHÝÛ›ØY\ÙNŽ’[œÝ[YÈ]ˆÝ™X[NˆÙ]NŽœÝXœÙX\˜ÚŽ’[œÝ[YÝ™X[HÂˆYˆNLŽMLNKÙ^Nˆ‹ÛXœ˜\žKÜÝ™X[\ËÌNLŽMLNH‹š[Ê
+KÛÙXÎˆœÜ‹š[Ê
+K[™ÝXYÙWØÛÙNˆ››‹š[Ê
+HHNÂˆ]ØZ][™ÈHÝÛ›ØY\ÙNŽ•ØZ][™ÈÈ]ˆ™Y›Ü™Nˆ™XÈVÌWK][\ÎˆNÂˆ]
+]]Y[KÜÝÜ™JHHÛ—ÜÙX\˜ÚÜYÙJÛ˜\
+ÙX\˜ÚÝ]\ÎŽ”™XYK›Û™K™XÈVÚ]
+œ™[ŠWKØZ][™ÊJNÂˆ\ÜÙ\JY[KZÙWÜÙX\˜ÚØÛÛ[Z]
+
+Kš\×Û›Û™J
+K››Ý[™È[œÝ[YY]ŠNÂˆY[KœÙ]ÜÙX\˜Ú
+Û˜\
+ÙX\˜ÚÝ]\ÎŽ”™XYK›Û™K™XÈVÚ]
+œ™[ŠWK[œÝ[Y
+JNÂˆ]
+Ý™X[KÛÛ[Z]
+HHY[KZÙWÜÙX\˜ÚØÛÛ[Z]
+
+K™^XÝ
+H[œÝ[\È[™YÝ™\ˆŠNÂˆ\ÜÙ\Ù\HJÛÛ[Z]˜XÚÐÛÛ[Z]Ž”ÝX]HÈ™[™\—ÛÜ™[˜[ˆLKÝ™X[WÚYˆNLŽMLNKˆÚYXØ\—ÚÙ^NˆÛÛYJ‹ÛXœ˜\žKÜÝ™X[\ËÌNLŽMLNH‹š[Ê
+JKÚYXØ\—ØÛÙXÎˆœÜ‹š[Ê
+KˆËÈ™[Y[X™\™YžHÚ]]TÎˆH]ÚÚYXØ\‰ÜÈ[™ÝXYÙKÚ[™[™]K\ÈH]ˆËÈ™XY]
+H]
+œ™[ŠX[\‰ÜÈÝÛˆ˜YÙ\È\™H›Ý›Ü˜ÙY[™›ÝÑ
+BˆY[[ÎˆÛÛYJÜ^Žœ^ŽœÙ\ÜÚ[ÛŽŽœ™YœÎŽ”ÝX]SY[[ÎŽ•˜XÚÊˆÜ^Žœ^ŽœÙ\ÜÚ[ÛŽŽœ™YœÎŽ”ÝX]U˜XÚÓY[[ÈÂˆ[™Îˆ››‹š[Ê
+KÚ[™ˆ^‹š[Ê
+K^\›˜[ˆYK]Nˆœ™[‹š[Ê
+Kˆ‹‘Y˜][Ž™Y˜][
+
+BˆJJHJNÂˆ\ÜÙ\JÝ™X[K™^\›˜[	‰ˆÝ™X[KœÚYXØ\—Ü™[™\˜X›J
+K›\ÝY\ÈH˜]ØX›HÚYXØ\ˆŠNÂˆ\ÜÙ\Ù\HJ
+Ý™X[K›[™Ë˜\×ÜÝŠ
+KÝ™X[K]K˜\×ÜÝŠ
+JK
+“™Y\›[™È‹œ™[ŠJNÂˆ\ÜÙ\JY[KZÙWÜÙX\˜ÚØÛÛ[Z]
+
+Kš\×Û›Û™J
+K›™]™\ˆÚXÙH›ÜˆÛ™HÝ™X[HŠNÂˆB‚ˆËËÈ
+Š”™YÜ™\ÜÚ[Ûˆ
+]šXÙKŒ‹LLL
+NŠŠˆY\ˆHÝÛ›ØYHÝX]\È[™]Y[ÈY[\ÈÛÝ[ˆËËÈ›ÈÛ™Ù\ˆ™HÜ[™YˆHÝÜ™HÙY\È]È[œÝ[YÝ]H›ÜˆH^Z[™È][K[™]™\žBˆËËÈ‘UÈ[™[Ø]È]™KXÛÛ[Z]Y[™\ÛZ\ÜÙY]Ù[ˆÛˆ]Èš\œÝXÚËˆÛ›HH[™[]ˆËËÈØ]ÚYHÝÛ›ØY[ˆ›YÚX^H]]Ë\Ù[XÝ]‚ˆÖÝ\ÝBˆ›ˆWÜ[™[ÛÜ[™YØY\—ÝWÚ[œÝ[Û™]™\—Ø]]×ÜÙ[XÝ×Ú]ØYØZ[Š
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ][œÝ[YHÝÛ›ØY\ÙNŽ’[œÝ[YÈ]ˆÝ™X[NˆÙ]NŽœÝXœÙX\˜ÚŽ’[œÝ[YÝ™X[HÂˆYˆNLŽMLNKÙ^Nˆ‹ÛXœ˜\žKÜÝ™X[\ËÌNLŽMLNH‹š[Ê
+KÛÙXÎˆœÜ‹š[Ê
+K[™ÝXYÙWØÛÙNˆ››‹š[Ê
+HHNÂˆ]ÈHÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[ÛŽŽ’QNÂˆ]ÝÜ™HHÝÜ™WÝÚ]
+™XÈVÛY]Y]NŽ”Ý™X[HÈYˆK[™^ˆ[™Îˆ‘[™Û\Ú‹š[Ê
+Kˆ[™×ØÛÙNˆ™[™È‹š[Ê
+KÛÙXÎˆœÜ‹š[Ê
+K‹‘Y˜][Ž™Y˜][
+
+HWJNÂˆ›ÜˆXˆ[ˆÌWHÂˆ]]]Y[HH˜XÚÓY[TÝ]NŽ›™]×ÝÚ]
+	œËÝÜ™KšY]Ê
+KX‹™XÈVÈ™[™È‹š[Ê
+WKYJNÂˆY[KœÙ]ÜÙX\˜Ú
+Û˜\
+ÙX\˜ÚÝ]\ÎŽ”™XYK›Û™K™XÈVÚ]
+œ™[ŠWK[œÝ[Y˜ÛÛ™J
+JJNÂˆ\ÜÙ\JY[KZÙWÜÙX\˜ÚØÛÛ[Z]
+
+Kš\×Û›Û™J
+KXˆÝXŸNˆ™[Ü[š[™È]\Ý›Ý™KXÛÛ[Z]ŠNÂˆBˆB‚ˆËËÈ
+Š”™YÜ™\ÜÚ[Ûˆ
+[˜\™]šY]ËŒ‹LLLJNŠŠˆH™\Ý[˜YÙYÑÑ›Ü˜ÙYÛˆHÙX\˜ÚYÙHÜÝˆËËÈH˜YÙHÛ˜ÙH][™Y[ˆHÝX]\È\Ý8 %H\ÝYÝ™X[HØ\ÈZ[Ú]›Ý›YÜÂˆËËÈY˜][Yˆ]Ø\œšY\ÈH]	ÜÈÝÛˆ›YÜËÛÈH›ÝÈ™XYÈHØ[YH[ˆ›ÝXÙ\Ë‚ˆÖÝ\ÝBˆ›ˆ[—Ú[œÝ[YÙÝÛ›ØYÚÙY\×Ú]×ÜÙØ[™Ù›Ü˜ÙYÙ›YÜÊ
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]›YÙÙYHÝX’]ÈX\š[™×Ú[\Z\™YˆYK›Ü˜ÙYˆYK‹š]
+œ™[ŠHNÂˆ]ØZ][™ÈHÝÛ›ØY\ÙNŽ•ØZ][™ÈÈ]ˆ™Y›Ü™Nˆ™XÈVÌWK][\ÎˆNÂˆ][œÝ[YHÝÛ›ØY\ÙNŽ’[œÝ[YÈ]ˆÝ™X[NˆÙ]NŽœÝXœÙX\˜ÚŽ’[œÝ[YÝ™X[HÂˆYˆNLŽMLNKÙ^Nˆ‹ÛXœ˜\žKÜÝ™X[\ËÌNLŽMLNH‹š[Ê
+KÛÙXÎˆœÜ‹š[Ê
+K[™ÝXYÙWØÛÙNˆ››‹š[Ê
+HHNÂˆ]
+]]Y[KÜÝÜ™JHHÛ—ÜÙX\˜ÚÜYÙJÛ˜\
+ÙX\˜ÚÝ]\ÎŽ”™XYK›Û™K™XÈVÙ›YÙÙY˜ÛÛ™J
+WKØZ][™ÊJNÂˆY[KœÙ]ÜÙX\˜Ú
+Û˜\
+ÙX\˜ÚÝ]\ÎŽ”™XYK›Û™K™XÈVÙ›YÙÙYK[œÝ[Y
+JNÂˆ]
+Ý™X[KÊHHY[KZÙWÜÙX\˜ÚØÛÛ[Z]
+
+K™^XÝ
+H[œÝ[\È[™YÝ™\ˆŠNÂˆ\ÜÙ\JÝ™X[KœÙ	‰ˆÝ™X[K™›Ü˜ÙYœÙ^ßH›Ü˜ÙY^ßH‹Ý™X[KœÙÝ™X[K™›Ü˜ÙY
+NÂˆB‚ˆËËÈHÚYXØ\ˆHÙ\™\ˆ[™XYHØ\œšY\Ë\ÈH^Z[™È][H\ÝÈ]ˆH™[X\ÙH˜[YHTÂˆËËÈÛÜYYœ›ÛHHØ[™Y]H]Ø\ÈÝÛ›ØYYœ›ÛK[™\ˆH‘UÈY‚ˆ›ˆÚYXØ\ŠYˆM]Nˆ	œÝ‹[™×ØÛÙNˆ	œÝŠHOˆY]Y]NŽ”Ý™X[HÂˆY]Y]NŽ”Ý™X[HÈY[™×ØÛÙNˆ[™×ØÛÙKš[Ê
+K]Nˆ]Kš[Ê
+K^\›˜[ˆYKˆÙ^Nˆ›Ü›X]J‹ÛXœ˜\žKÜÝ™X[\ËÞÚYHŠKÛÙXÎˆœÜ‹š[Ê
+K‹‘Y˜][Ž™Y˜][
+
+HBˆB‚ˆËËÈ
+Š”™YÜ™\ÜÚ[Ûˆ
+ÝÛ™\ˆ™\Ü
+NŠŠˆH]H][HS‘PQHØ\œšY\È\ÈHÚYXØ\ˆ
+ÝÛ›ØYYˆËËÈX\›Y\‹ÜˆÛˆ[›Ý\ˆÛY[
+HÛÝ[™H™\ÜÙY[™YYHÙXÛÛ™[YK[™H˜XÚÈY[BˆËËÈ[ˆ\ÝY]ÚXÙH[[Hš[HØ\È™[ØYYˆ]™XYÈYYˆZÙHH›ÝÈ[œÝ[YˆËËÈ\ÈÙ\ÜÚ[Ûˆ[™ÒÈÙ\È›Ý[™ÈÛˆ]È]È™ZYÚ›Ý\œÈÝ^H]™K‚ˆÖÝ\ÝBˆ›ˆWÚ]ÝWÚ][WØ[™XYWØØ\œšY\×Ü™XY×ØYYØ[™ØØ[››ÝØ™WØYYØYØZ[Š
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KÝÜ™JHHÛ—ÜÙX\˜ÚÜYÙWÝÚ]
+ˆ™XÈVÜÚYXØ\ŠK˜H‹››ŠWKˆÛ˜\
+ÙX\˜ÚÝ]\ÎŽ”™XYK›Û™K™XÈVÚ]
+˜HŠK]
+˜ˆŠWKÝÛ›ØY\ÙNŽ“›Û™JKˆ
+NÂˆ]
+›Ý×ØK›Ý×ØŠHH
+˜XÚÔ›ÝÎŽ”ÙX\˜Ú]
+
+K˜XÚÔ›ÝÎŽ”ÙX\˜Ú]
+JJNÂˆ]˜[YWÛÙˆHY[Nˆ	•˜XÚÓY[TÝ]KYˆ˜XÚÔ›ÝßÂˆ]HHY[K™›Ü›Kš[™^ÛÙŠ	šY
+K™^XÝ
+›ÛˆHYÙHŠNÂˆ]›ÝÈHY[K™›Ü›KX›KœÙXÝ[ÛœËš]\Š
+K™›]ÛX\
+ß	œËœ›ÝÜÊK›
+JK[Ü˜\
+
+NÂˆ›ÝË˜[YK˜ÛÛ™J
+K[Ü˜\ÛÜ—ÙY˜][
+
+BˆNÂˆ\ÜÙ\Ù\HJ˜[YWÛÙŠ	›Y[K›Ý×ØJKÜ]›Ü›NŽšLNŽŽ›\ÙÎŽÚYÙ]×Ý˜XÚÜ×ÜÙX\˜ÚØYY
+
+JNÂˆ\ÜÙ\Ù\HJ˜[YWÛÙŠ	›Y[K›Ý×ØŠKˆ‹˜H]H][HXÚÜÈ\È›ÝX\šÙYŠNÂˆY[K™›ØÝ\×ÚÙ^J›Ý×ØKšÙ^J
+KŒ
+NÂˆ\ÜÙ\Ù\HJY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JK˜XÚÓÚÎŽ’[™\
+NÂˆY[K™›ØÝ\×ÚÙ^J›Ý×Ø‹šÙ^J
+KŒ
+NÂˆ\ÜÙ\Ù\HJY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JK˜XÚÓÚÎŽ”ÙX\˜Ú
+ÝX”ÙX\˜ÚÛYŽ‘ÝÛ›ØYÈÙ[ŽˆË]ˆHJJNÂˆB‚ˆËËÈHY[]H\ÈH™[X\ÙH˜[YHS‘H[™ÝXYÙNˆHØ[YH™[X\ÙH[ˆ[›Ý\ˆ[™ÝXYÙKÜ‚ˆËËÈ[ˆ[X™YY˜XÚÈ]Y\™[HÚ\™\ÈH]K\È›Ý˜[™XYHYY‹‚ˆÖÝ\ÝBˆ›ˆÛ›WØWÜÚYXØ\—ÛÙ—ÝWÜØ[YWÜ™[X\ÙWØ[™Û[™ÝXYÙWÛX\šÜ×ØWÚ]ØYY
+
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ][X™YYHY]Y]NŽ”Ý™X[HÈ^\›˜[ˆ˜[ÙKÙ^NˆÝš[™ÎŽ›™]Ê
+K‹œÚYXØ\Š‹˜H‹››ŠHNÂˆ]
+]]Y[KÝÜ™JHHÛ—ÜÙX\˜ÚÜYÙWÝÚ]
+ˆ™XÈVÜÚYXØ\ŠK˜H‹™œ˜HŠK[X™YYÚYXØ\ŠËˆ‹››ŠWKˆÛ˜\
+ÙX\˜ÚÝ]\ÎŽ”™XYK›Û™K™XÈVÚ]
+˜HŠKÝX’]È]NˆÝš[™ÎŽ›™]Ê
+K‹š]
+˜HŠHWKˆÝÛ›ØY\ÙNŽ“›Û™JKˆ
+NÂˆ›ÜˆH[ˆ‹ŒˆÂˆY[K™›ØÝ\×ÚÙ^J˜XÚÔ›ÝÎŽ”ÙX\˜Ú]
+JKšÙ^J
+KŒ
+NÂˆ\ÜÙ\Ù\HJY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JK˜XÚÓÚÎŽ”ÙX\˜Ú
+ÝX”ÙX\˜ÚÛYŽ‘ÝÛ›ØYÈÙ[ŽˆË]ˆHJKˆš]Ú_HŠNÂˆBˆB‚ˆËËÈH[œÝ[YÝX]H›Ú[œÈHVRS‘È][IÜÈ\ÝÛ˜ÙK[™Û›H]][IÜË‚ˆÖÝ\ÝBˆ›ˆ[—Ú[œÝ[YÜÝX]WÚ\×Ø\[™YÝ×ÝWÜ^Z[™×Ú][WÛÛ˜ÙWØ[™ÛÛ›WÝ\™J
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]]]ÝÜ™HHÝÜ™WÝÚ]
+™XÈVÛY]Y]NŽ”Ý™X[HÈYˆK‹‘Y˜][Ž™Y˜][
+
+HWJNÂˆ]
+ÚYšÊHHÈ]HÝÜ™KšY]Ê
+Kœ^Z[™Ê
+K™^XÝ
+œ^Z[™ÈŠNÈ
+œÚYœšË˜ÛÛ™J
+JHNÂˆ]Ý™X[HHY]Y]NŽ”Ý™X[HÈYˆK^\›˜[ˆYKÙ^Nˆ‹ÛXœ˜\žKÜÝ™X[\ËÎH‹š[Ê
+KˆÛÙXÎˆœÜ‹š[Ê
+K‹‘Y˜][Ž™Y˜][
+
+HNÂˆ]\[™HšÎˆÝš[™ßÙ]NŽœÝÜ™\ÎŽ›Y]Y]NŽ“Y]Y]PÛYŽ\[™^Z[™ÔÝXˆÈÚYšËÝ™X[NˆÝ™X[J
+HNÂˆ\ÜÙ\JÝÜ™Kœ[Š\[™
+šË˜ÛÛ™J
+JJJNÂˆ\ÜÙ\J\ÝÜ™Kœ[Š\[™
+šË˜ÛÛ™J
+JJK˜H™\X]\ÈH›Ë[ÜŠNÂˆ\ÜÙ\J\ÝÜ™Kœ[Š\[™
+›Ü›X]JžÜšßK[Ý\ˆŠJJK˜[›Ý\ˆ][IÜÈ[™[™È\È›ÜYŠNÂˆ]YÎˆ™XÏMˆHÝÜ™KšY]Ê
+Kœ^Z[™Ê
+K[Ü˜\
+
+KœÝXœËš]\Š
+K›X\
+ßËšY
+K˜ÛÛXÝ
+
+NÂˆ\ÜÙ\Ù\HJYËÌKWJNÂˆB‚ˆËËÈ
+Š”™YÜ™\ÜÚ[Ûˆ
+ÝÛ™\ˆ™\Ü
+NŠŠˆTÈÚ]™\ÈH™KYÝÛ›ØYYÝX]HH‘UÈYÛÈHÝ[BˆËËÈ[žH›ÜˆHØ[YH™[X\ÙH[™H™]ÈÛ™H›ÝØ][ˆH\Ý
+ÛÈ›ÝÜËÛ™HÝX]JBˆËËÈ[[H™[ØYˆH™]ÈYZÙ\ÈHÛ[žIÜÈXÙK‚ˆÖÝ\ÝBˆ›ˆWÜ™Z[œÝ[YÜÝX]WÜ™\XÙ\×Ú]×ÜÝ[WÙ[žWÚ[œÝXYÛÙ—Ù\XØ][™×Ú]
+
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]]]ÝÜ™HHÝÜ™WÝÚ]
+™XÈVÛY]Y]NŽ”Ý™X[HÈYˆK‹‘Y˜][Ž™Y˜][
+
+HKÚYXØ\ŠKœ™[‹››ŠWJNÂˆ]
+ÚYšÊHHÈ]HÝÜ™KšY]Ê
+Kœ^Z[™Ê
+K™^XÝ
+œ^Z[™ÈŠNÈ
+œÚYœšË˜ÛÛ™J
+JHNÂˆ]\[™HÝ™X[_Ù]NŽœÝÜ™\ÎŽ›Y]Y]NŽ“Y]Y]PÛYŽ\[™^Z[™ÔÝXˆÈÚYšÎˆšË˜ÛÛ™J
+KÝ™X[HNÂˆ\ÜÙ\JÝÜ™Kœ[Š\[™
+ÚYXØ\ŠKœ™[‹››ŠJJKH\ÝÚ[™ÙYŠNÂˆ]YÈHÝÜ™Nˆ	œÙ]NŽœÝÜ™\ÎŽ›Y]Y]NŽ“Y]Y]TÝÜ™_Oˆ™XÏMˆÂˆÝÜ™KšY]Ê
+Kœ^Z[™Ê
+K[Ü˜\
+
+KœÝXœËš]\Š
+K›X\
+ßËšY
+K˜ÛÛXÝ
+
+BˆNÂˆ\ÜÙ\Ù\HJYÊ	œÝÜ™JKÌKWK›Û™H[žH›ÜˆHÝX]K[™\ˆH™]ÈY[ˆXÙHŠNÂˆ\ÜÙ\J\ÝÜ™Kœ[Š\[™
+ÚYXØ\ŠKœ™[‹››ŠJJKHØ[YHYYØZ[ˆ\ÈH›Ë[ÜŠNÂˆ\ÜÙ\Ù\HJYÊ	œÝÜ™JKÌKWJNÂˆB‚ˆËËÈHY™™\™[™[X\ÙKHY™™\™[[™ÝXYÙKÜˆH˜[Y[\ÜÈÝ™X[H\ÈHY™™\™[ÝX]N‚ˆËËÈ]Ý[\[™È™\ÚYHÚ]\È\™K‚ˆÖÝ\ÝBˆ›ˆWÙY™™\™[ÜÝX]WÜÝ[Ø\[™Ê
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]]]ÝÜ™HHÝÜ™WÝÚ]
+™XÈVÜÚYXØ\ŠKœ™[‹››ŠKÚYXØ\Š‹ˆ‹››ŠWJNÂˆ]
+ÚYšÊHHÈ]HÝÜ™KšY]Ê
+Kœ^Z[™Ê
+K™^XÝ
+œ^Z[™ÈŠNÈ
+œÚYœšË˜ÛÛ™J
+JHNÂˆ]\[™HÝ™X[_Ù]NŽœÝÜ™\ÎŽ›Y]Y]NŽ“Y]Y]PÛYŽ\[™^Z[™ÔÝXˆÈÚYšÎˆšË˜ÛÛ™J
+KÝ™X[HNÂˆ\ÜÙ\JÝÜ™Kœ[Š\[™
+ÚYXØ\ŠK›Ý\ˆ‹››ŠJJK˜[›Ý\ˆ™[X\ÙHŠNÂˆ\ÜÙ\JÝÜ™Kœ[Š\[™
+ÚYXØ\ŠLœ™[‹™œ˜HŠJJKHØ[YH™[X\ÙH[ˆ[›Ý\ˆ[™ÝXYÙHŠNÂˆ\ÜÙ\JÝÜ™Kœ[Š\[™
+ÚYXØ\ŠLKˆ‹››ŠJJK˜[ˆ[\H]H˜[Y\È›Ý[™ËÛÈX]Ú\È›Ý[™ÈŠNÂˆ]YÎˆ™XÏMˆHÝÜ™KšY]Ê
+Kœ^Z[™Ê
+K[Ü˜\
+
+KœÝXœËš]\Š
+K›X\
+ßËšY
+K˜ÛÛXÝ
+
+NÂˆ\ÜÙ\Ù\HJYËÍK‹KLLWJNÂˆBŸB‚‹ËËÈ
+ŠÛ\ÜÚXÉÜÈÙ]Y˜XÚÜÈ[™[Ù\È›Ý[Ý™JŠˆÚ[ˆ]ÈXÙ[Y[ÛÛY\Èœ›ÛH[ˆ[˜ÚÜŽˆB‹ËËÈšYÚYÙH\ÈHÛÛ›Û›ÝÉÜÈ
+Õ“Ô’QÒ
+KH›ÝÛHYÙHÍHÚYHYË[™B‹ËËÈZYÚHYX\Ý\™YÛ™H\ÈH›ÛÛHX›Ý™HH›ÝË‚ˆÖØÙ™Ê\Ý
+WB›[ÙÛ\ÜÚX×ÜXÙ[Y[Ý\ÝÈÂˆ\ÙHÝ\\ŽŽ\ÝÎŽœÝ™X[NÂˆ\ÙHÝ\\ŽŽŠŽÂˆ\ÙHØ˜\ÙNŽ™›ÛÛÝŽŽ˜Y˜[˜Ù\ÎŽ”Ú\YYX\Ý\™NÂ‚ˆ›ˆ][J]Y[Îˆ\Ú^™JHOˆÙ]NŽœÝÜ™\ÎŽ›Y]Y]NŽ“Y]Y]TÝÜ™HÂˆ]]]ÝÜ™HHÙ]NŽœÝÜ™\ÎŽ›Y]Y]NŽ“Y]Y]TÝÜ™NŽ™Y˜][
+
+NÂˆ]]]][HHY]Y]NŽ”^Z[™Ò][NŽÚ]ÜÝXœÊ™XÈVÜÝ™X[JL‘[™Û\Ú‹™[™È‹ˆŠKÝ™X[JLKK‘œ™[˜Ú‹™œ˜H‹”ÑŠWJNÂˆ][K˜]Y[ÈH
+‹˜]Y[ÊK›X\
+_Ý™X[JL
+ÈH\ÈMH\ÈM	™›Ü›X]J‘XˆÚ_HŠK™[™È‹ˆŠJK˜ÛÛXÝ
+
+NÂˆ\ÜÙ\JÝÜ™Kœ[ŠÙ]NŽœÝÜ™\ÎŽ›Y]Y]NŽ“Y]Y]PÛYŽ’[œÝ[^Z[™ÊÛÛYJ][JJJJNÂˆÝÜ™BˆB‚ˆËËÈ
+˜[YKšYÚYÙK›ÝÛHYÙKÚYZYÚ
+HÙˆXXÚÙ]YYÙK‚ˆ›ˆÙ]Y
+]Y[Îˆ\Ú^™JHOˆ™XÏ
+Ýš[™ËÙŒÌŽÈJOˆÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]ÈHÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[ÛŽŽ’QNÂˆ]ÝÜ™HH][J]Y[ÊNÂˆ]]]Ý]H™XÎŽ›™]Ê
+NÂˆ›Üˆ
+X‹˜[YJH[ˆÊ˜]Y[È›ÛÝŠK
+KœÝX]\È›ÛÝŠWHÂˆ]]]Y[HH˜XÚÓY[TÝ]NŽ›™]Ê	œËÝÜ™KšY]Ê
+KX‹™XÈVÈ™[™È‹š[Ê
+WJNÂˆ]ˆHY[Kœ[™[Ü™XÝ
+	”Ú\YYX\Ý\™JNÂˆÝ]œ\Ú
+
+›Ü›X]JžÛ˜[Y_H
+Ø]Y[ßHXœÊHŠKÜ‹ž
+È‹Ë‹žH
+È‹š‹Ë‹šJJNÂˆYˆ]ÛÛYJJHHY[K™›Ü›Kš[™^ÛÙŠ	•˜XÚÔ›ÝÎŽ”Ý[JHÂˆY[K™›ØÝ\×Ü›ÝÊH\È×Ú[
+NÂˆ\ÜÙ\Ù\HJY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JK˜XÚÓÚÎŽ“˜]šYØ]Y
+NÂˆ]ˆHY[Kœ[™[Ü™XÝ
+	”Ú\YYX\Ý\™JNÂˆÝ]œ\Ú
+
+›Ü›X]JœÝ[HYÙH
+Ø]Y[ßHXœÊHŠKÜ‹ž
+È‹Ë‹žH
+È‹š‹Ë‹šJJNÂˆBˆBˆÜ^Žœ^Žœ™\Ù]ÜÙ\™\œ×Ù›Ü—Ý\Ý
+
+NÂˆÝ]ˆB‚ˆËËÈØ\\™Yœ›ÛHHÛÛœÝ[Ë\XÙY[™[È
+Õ“Ô’QÒHØ›ÝÛHÍ
+H™Y›Ü™HBˆËËÈXÙ[Y[Ø[YHœ›ÛH[ˆ[˜ÚÜŽˆ
+šYÚ›ÝÛKÚYZYÚ
+K‚ˆÖÝ\ÝBˆ›ˆÛ\ÜÚX×Ý˜XÚÜ×Ü[™[×ÜÙ]WÝÚ\™WÝ^WØ[Ø^\×ÙY
+
+HÂˆ]ÛÝHÙ]Y
+ÊNÂˆ\ÜÙ\Ù\HJˆÛÝš]\Š
+K›X\
+
+‹Š_
+‹˜\×ÜÝŠ
+K
+œŠJK˜ÛÛXÝŽ™XÏÏŠ
+KˆÂˆ
+˜]Y[È›ÛÝ
+ÈXœÊH‹ÌNŒÍŒŽŒÍM‹ŒJKˆ
+œÝX]\È›ÛÝ
+ÈXœÊH‹ÌNŒÍŒËŒŒJKˆ
+œÝ[HYÙH
+ÈXœÊH‹ÌNŒÍŒŒŽM‹ŒJKˆKˆ
+NÂˆB‚ˆËËÈH\Ý[\ˆ[ˆH›ÛÛHØÜ›ÛÈ[œÚYHH[™[]ÝÜÈ]HØ\ˆHØ\Ø\ÈÌˆËËÈ
+›ÝÛHHŒ
+H[™\È›ÝÈH›ÛÛHX›Ý™HH›ÝËÌLˆHÛ™HÙ]Yœ˜[YH]Y™™\œËˆËËÈ[™Û›H›ÜˆH\Ý[\ˆ[ˆHÛØ\‚ˆÖÝ\ÝBˆ›ˆWÛÛ™×ÙX—Û\ÝÜÝÜ×Ø]ÝWÜ›ÛÛWØX›Ý™WÝWÜ›ÝÊ
+HÂˆ]ÛÝHÙ]Y
+
+NÂˆ]
+˜[YKÜšYÚ›ÝÛKËJHH	™ÛÝÌNÂˆ\ÜÙ\J˜[YKœÝ\×ÝÚ]
+˜]Y[È›ÛÝŠJNÂˆ\ÜÙ\Ù\HJ
+
+œšYÚ
+˜›ÝÛK
+Ë
+š
+K
+NŒÍŒŽŒÌLŒ
+JNÂˆ\ÜÙ\Ù\HJ
+˜›ÝÛHH
+šÝZNŽ˜ÛÛœÝÎŽ”ÐQ‘KžKH›ÛÛH\ÈÚ]\ÈY[™\ˆÐQ‘IÜÈÜŠNÂˆB‚ˆËËÈ]™\žHÜ[™\ˆÙˆÛ\ÜÚXÈÙ]ÈHØ[YH[˜ÚÜˆœ›ÛHH^Y\ˆØÜ™Y[‹[™]\ÈHÛÛ›ÛˆËËÈ›ÝÉÜË[™[™È]HÙYÛY[	ÜÈYÙNˆ]\ÈÚHH]Y[ËÝX]\È[™8 )˜\ØÜÈ[Ü[‚ˆËËÈH[™[]Õ“Ô’QÒHØ›ÝÛHÍ‚ˆÖÝ\ÝBˆ›ˆWØÛ\ÜÚX×Ø[˜ÚÜ—Ú\×ÝWÜ›Ý×Ù[™[™×Ø]ÝWÜÙYÛY[ÙYÙWØX›Ý™WÝWÙØ\
+
+HÂˆ]HHÜ˜]NŽœ^Y\—ÚYŽ˜Û\ÜÚXÎŽ˜Ý›Ü›Ý×Ú]Ü™XÝ
+
+NÂˆ\ÜÙ\Ù\HJKž
+ÈKËÜ˜]NŽœ^Y\—ÚYŽ˜Û\ÜÚXÎŽÕ“Ô’QÒHÙYÛY[	ÜÈÝ]\ˆYÙHŠNÂˆ\ÜÙ\Ù\HJKžHH[YNŽ›^[Ý]Ž”VQT—ÓQS•WÑÐTÍŒ”VQT—ÓQS•WÑÐTX›Ý™HH›ÝÈ\ÈÛ\ÜÚXÉÜÈ›ÝÛHYÙHŠNÂˆ\ÜÙ\Ù\HJ
+KžKKš
+K
+Ü˜]NŽœ^Y\—ÚYŽ˜Û\ÜÚXÎŽÕ“ÖKÜ˜]NŽœ^Y\—ÚYŽ˜Û\ÜÚXÎŽÕ“Ò
+KH\ØÜÉÈÝÛˆ˜[™ŠNÂˆB‚ˆ›ˆY[WØ]
+[˜ÚÜŽˆ™XÝXŽˆ×Ú[
+HOˆ
+˜XÚÓY[TÝ]KÙ]NŽœÝÜ™\ÎŽ›Y]Y]NŽ“Y]Y]TÝÜ™JHÂˆ]ÈHÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[ÛŽŽ’QNÂˆ]ÝÜ™HH][JÊNÂˆ
+˜XÚÓY[TÝ]NŽ›™]Ê	œËÝÜ™KšY]Ê
+KX‹™XÈVÈ™[™È‹š[Ê
+WJKÚ]Ø[˜ÚÜŠ[˜ÚÜŠKÝÜ™JBˆB‚ˆËËÈH[™[Ü[œÈ™\ÚYHH[˜ÚÜˆ]Ø\È[™YÚXÚ]™\ˆÚYH]\Ë‚ˆÖÝ\ÝBˆ›ˆWÜ[™[ÛÜ[œ×Ø™\ÚYWÝWØ[˜ÚÜ—Ú]ÝØ\×Ú[™Y
+
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ\ÙHÝZNŽœÜÝ™\ŽŽ”ÚYNÂˆ]Ø\H[YNŽ›^[Ý]Ž”VQT—ÓQS•WÑÐTÂˆËÈ[ˆÜ[™\ˆYÚÛˆHØÜ™Y[ŽˆH[™[[™ÜÈ‘SÕÈ]œ›ÛH]ÈšYÚYÙBˆ]YÚH™XÝŽ›™]ÊMLŒLŒŒÌŒŒ
+NÂˆ]
+Y[KÜÝÜ™JHHY[WØ]
+YÚJNÂˆ]ˆHY[Kœ[™[Ü™XÝ
+	”Ú\YYX\Ý\™JNÂˆ\ÜÙ\Ù\HJY[KœÚYK™Ù]
+
+KÚYNŽ™[ÝÊNÂˆ\ÜÙ\Ù\HJ
+‹žK‹ž
+È‹ÊK
+YÚžH
+ÈYÚš
+ÈØ\YÚž
+ÈYÚÊJNÂˆËÈ[ˆÜ[™\ˆ[ˆHZYHÙˆHšYÚYÙHÚ]›È›ÛÛHX›Ý™HÜˆ™[ÝÈ›Üˆ‘QQÒˆÈ]ÈYˆ]ZYH™XÝŽ›™]ÊMÌŒMŒŒŒŒ
+NÂˆ]
+Y[KÜÝÜ™JHHY[WØ]
+ZYJNÂˆ]ˆHY[Kœ[™[Ü™XÝ
+	”Ú\YYX\Ý\™JNÂˆ\ÜÙ\Ù\HJY[KœÚYK™Ù]
+
+KÚYNŽ”Ý\
+NÂˆ\ÜÙ\Ù\HJ‹ž
+È‹ËZYžHØ\
+NÂˆ\ÜÙ\JÝZNŽ˜ÛÛœÝÎŽ”ÐQ‘K˜ÛÛZ[œÊ‹ž‹žJH	‰ˆ‹žH
+È‹šHÝZNŽ˜ÛÛœÝÎŽ”ÐQ‘KžH
+ÈÝZNŽ˜ÛÛœÝÎŽ”ÐQ‘Kš
+NÂˆÜ^Žœ^Žœ™\Ù]ÜÙ\™\œ×Ù›Ü—Ý\Ý
+
+NÂˆB‚ˆËËÈ
+Š•H[˜ÚÜˆ\È]ÚY
+ŠŽˆH[™[	ÜÈÚYH[™]ÈYÙHžHHÜ[™\ˆÝ^H]\ÈHYÙBˆËËÈÚ[™Ù\È[™\ˆ]
+H\ÚHÝ\ˆXŽˆ›ÝÚ[™ÙHHÚY[™ZYÚ
+K™XØ]\ÙH›Ý[™ÂˆËËÈ™K\™XYÈÚ\™HHÜ[™\ˆ\Ë‚ˆÖÝ\ÝBˆ›ˆWÜ[™[ÙÙ\×Û›ÝÛ[Ý™WÛÙ™—Ú]×Ø[˜ÚÜ—ÝÚ[WÚ]Ú\×ÛÜ[Š
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]
+]]Y[KÝÜ™JHHY[WØ]
+™XÝŽ›™]ÊMLŒÌŒÌŒŒ
+KJNÂˆ]š\œÝHY[Kœ[™[Ü™XÝ
+	”Ú\YYX\Ý\™JNÂˆ]ÚYHHY[KœÚYK™Ù]
+
+NÂˆ\ÜÙ\Ù\HJÚYKÝZNŽœÜÝ™\ŽŽ”ÚYNŽ™[ÝËHÜ[™\ˆ\ÈYÚˆH[™[[™ÜÈ[™\ˆ]ŠNÂˆ]HHY[K™›Ü›Kš[™^ÛÙŠ	•˜XÚÔ›ÝÎŽ”Ý[JK™^XÝ
+”Ý[H›ÝÈŠNÂˆY[K™›ØÝ\×Ü›ÝÊH\È×Ú[
+NÂˆ\ÜÙ\Ù\HJY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JK˜XÚÓÚÎŽ“˜]šYØ]Y
+NÂˆ]\ÚYHY[Kœ[™[Ü™XÝ
+	”Ú\YYX\Ý\™JNÂˆ\ÜÙ\Û™HJ
+\ÚYË\ÚYš
+K
+š\œÝËš\œÝš
+KHYÙHÚ[™ÙYH[™[	ÜÈÚ^™HŠNÂˆ\ÜÙ\Ù\HJY[KœÚYK™Ù]
+
+KÚYJNÂˆ\ÜÙ\Ù\HJ\ÚYž
+È\ÚYËš\œÝž
+Èš\œÝËHYÙHžHHÜ[™\ˆŠNÂˆ\ÜÙ\Ù\HJ\ÚYžKš\œÝžK˜[™H[™[	ÜÈÝ\
+™[ÝÈHÜ[™\Žˆ]ÈÜ
+HŠNÂˆÜ^Žœ^Žœ™\Ù]ÜÙ\™\œ×Ù›Ü—Ý\Ý
+
+NÂˆB‚ˆËËÈ‘QQÒ\ÈÚ]HÚYH\ÈXÚYYÛ‹ÛÈ]\ÈÈÛÝ™\ˆH[\ÝYÙHHY[HÚÝÜÂˆËËÈÚ]\[ÝÛ™Y›ÝÜË[™\ÈÈš]Û\ÜÚXÉÜÈ›ÛÛHX›Ý™HH›ÝÈ
+ÌL
+HÜˆÛ\ÜÚXÈÛÝ[›\‚ˆÖÝ\ÝBˆ›ˆ™YYÚØÛÝ™\œ×ÝWØ\ÛÝÛ™YÜYÙ\×Ø[™Ùš]×ØÛ\ÜÚXÜ×Ü›ÛÛJ
+HÂˆ]ÙÈHØ˜\ÙNŽ\ÝØÚÎŽœÙ\šX[
+
+NÂˆ]ÈHÛYYXNŽœ›Ý]NŽ”^X˜XÚÔÙ\ÜÚ[ÛŽŽ’QNÂˆ]ÝÜ™HH][J
+NÂˆ]]][\ÝHŒŒÌŽÂˆ›ÜˆXˆ[ˆÌWHÂˆ]]]Y[HH˜XÚÓY[TÝ]NŽ›™]×ÝÚ]
+	œËÝÜ™KšY]Ê
+KX‹™XÈVÈ™[™È‹š[Ê
+WKYJNÂˆ[\ÝH[\Ý›X^
+Y[K™›Ü›KX›K›YX\Ý\™YÚZYÚ
+
+JNÂˆYˆ]ÛÛYJJHHY[K™›Ü›Kš[™^ÛÙŠ	•˜XÚÔ›ÝÎŽ”Ý[JHÂˆY[K™›ØÝ\×Ü›ÝÊH\È×Ú[
+NÂˆ\ÜÙ\Ù\HJY[K›Û—ÛÚÊÝÜ™KšY]Ê
+JK˜XÚÓÚÎŽ“˜]šYØ]Y
+NÂˆ[\ÝH[\Ý›X^
+Y[K™›Ü›KX›K›YX\Ý\™YÚZYÚ
+
+JNÂˆBˆBˆ\ÜÙ\J[\ÝˆŒŒœÛÛY][™ÈØ\ÈYX\Ý\™YˆÝ[\ÝHŠNÂˆ\ÜÙ\J[\ÝH‘QQÒ˜HYÙHÙˆÝ[\ÝH\È[\ˆ[ˆ‘QQÒÓ‘QQÒHŠNÂˆ\ÜÙ\J‘QQÒHÍŒHÝZNŽ˜ÛÛœÝÎŽ”ÐQ‘KžK˜Û\ÜÚXÉÜÈ›ÛÛHX›Ý™HH›ÝÈÛÈ‘QQÒŠNÂˆÜ^Žœ^Žœ™\Ù]ÜÙ\™\œ×Ù›Ü—Ý\Ý
+
+NÂˆB‚ˆËËÈHÝ™\œØØ[ˆ]Y]	ÜÈ™XÝ\ÈHXÙ\‰ÜË[™Ú]È[œÚYHÐQ‘K‚ˆÖÝ\ÝBˆ›ˆWÛÝ™\œØØ[—Ü™XÝØÛÛY\×Ùœ›ÛWÝWÜXÙ\Š
+HÂˆ]]]Ý]H™XÎŽ›™]Ê
+NÂˆÝ™\œØØ[—Ü™XÝÊ	›]]Ý]
+NÂˆ]ˆHÝ]ÌKŒNÂˆ\ÜÙ\Ù\HJ
+‹ž
+È‹Ë‹žH
+È‹š‹ÊK
+NŒÍŒÝZNŽX›NŽ“QS•WÓPVÕÊJNÂˆ\ÜÙ\Ù\HJ‹žKÝZNŽ˜ÛÛœÝÎŽ”ÐQ‘KžKHÚÛH›ÛÛHŠNÂˆBŸB

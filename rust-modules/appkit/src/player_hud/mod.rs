@@ -43,7 +43,7 @@ use plx_machine::machine::Measure;
 // shared with the synthesized ASS header (plan `libass-text-subs` §2.5, PR 5a).
 use model::HudModel;
 use plx_media::player::text_style::{
-    position_lift, size_scale, wrap_width, CAPTION_ANCHOR_LINES, CAPTION_FACE, CAPTION_FLOOR_Y,
+    position_distance, position_lift, size_scale, wrap_width, BOTTOM_GAP, CAPTION_ANCHOR_LINES, CAPTION_FACE, CAPTION_FLOOR_Y,
     CAPTION_INK_CLEARANCE, CAPTION_LINE_PITCH, CAPTION_TEXT_INSET, SUB_BASE_Y,
 };
 pub use plx_media::player::text_style::{HudBand, CAPSULE_BOTTOM_Y};
@@ -111,8 +111,10 @@ fn caption_geometry_for_block(
     block_h: f32,
 ) -> (f32, f32, f32) {
     let scale = size_scale(size);
-    let rise = if hud_up { HudBand::clear_rise(band.rise_for(position), band.rest_limit(position), block_h) } else { 0.0 };
-    let baseline = (if hud_up { band.ceil_y } else { SUB_BASE_Y }) - position_lift(position) - rise;
+    let custom_adjust = BOTTOM_GAP - position_distance(position);
+    let rest = band.rest_limit(position) + custom_adjust;
+    let rise = if hud_up { HudBand::clear_rise((band.rise_for(position) + custom_adjust).max(0.0), rest, block_h) } else { 0.0 };
+    let baseline = (if hud_up { band.ceil_y } else { SUB_BASE_Y }) - position_lift(position) - rise + custom_adjust;
     let floor = if hud_up { band.ceil_y } else { CAPTION_FLOOR_Y };
     (scale, baseline, floor)
 }
@@ -299,7 +301,7 @@ fn hud_lift<I: Iterator<Item = Rect>>(rects: I, hud_up: bool, band: HudBand) -> 
 /// The rise of the limit an image caption stands under: the band's ceiling is the Low Position's, so it is
 /// Low's rise.
 fn image_rise(band: HudBand) -> f32 {
-    band.rise_for(plx_plex::plex::session::SubtitlePosition::Low)
+    band.rise_for(plx_plex::plex::session::SubtitlePosition::TvScreen)
 }
 
 /// Does this rect reach below the band's limit (its ceiling, less the section's rise)? Only such rects

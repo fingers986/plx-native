@@ -21,6 +21,8 @@ pub struct AssSubtitles {
     textures: Vec<CachedTexture>,
     uploaded: u64,
     viewport: Viewport,
+    /// Vertical offset from the TV screen's bottom anchor to the current picture's bottom.
+    frame_offset_y: f32,
     /// The origin `frame` was requested under. The source's current origin can already differ
     /// (a restyle bumps the revision when its worker publishes; the libass worker's re-render
     /// follows), and the lift is
@@ -65,11 +67,19 @@ impl AssSubtitles {
             plx_media::player::is_playing(ps),
         );
         let clock = clock.saturating_sub(plx_media::player::subtitle_offset_ms());
+        let video = plx_media::player::video_viewport(SCR_W as i32, SCR_H as i32);
         let (viewport, (coded_w, coded_h)) = frame_geometry(
             source.origin,
-            plx_media::player::video_viewport(SCR_W as i32, SCR_H as i32),
+            video,
             plx_media::player::video_raster(),
         );
+        self.frame_offset_y = if source.origin.is_text()
+            && plx_media::route::subtitle_position() == plx_plex::plex::session::SubtitlePosition::VideoFrame
+        {
+            (video.y + video.height - SCR_H as i32) as f32
+        } else {
+            0.0
+        };
         if self.viewport != viewport {
             self.viewport = viewport;
             self.frame = None;
@@ -160,7 +170,7 @@ impl AssSubtitles {
         };
         self.spans.clear();
         self.spans.extend(frame.rects.iter().map(|r| (r.y, r.height)));
-        lift_dys(origin, lift, band, &self.spans, aligns, &mut self.dys);
+        lift_dys(origin, lift, band, self.frame_offset_y, &self.spans, aligns, &mut self.dys);
         let ink = plx_appkit::player_hud::subtitle_ink(model);
         for (i, (texture, rect)) in self.textures.iter().zip(&frame.rects).enumerate() {
             let dy = self.dys[i];
@@ -231,6 +241,7 @@ fn lift_dys(
     origin: ass::Origin,
     lift: bool,
     band: HudBand,
+    frame_offset_y: f32,
     regions: &[(i32, i32)],
     aligns: ass::AlignSet,
     dys: &mut Vec<f32>,
@@ -238,7 +249,7 @@ fn lift_dys(
     dys.clear();
     dys.resize(regions.len(), 0.0);
     let ass::Origin::Text(style) = origin else { return };
-    if !lift || !aligns.bottom {
+    if !aligns.bottom {
         return;
     }
     let pitch = text_style::CAPTION_LINE_PITCH * style.scale();
@@ -274,15 +285,20 @@ fn lift_dys(
         dys.fill(-1.0);
     }
     let Some(top) = moving_top(regions, dys) else { return };
-    // the moving group rises by the band's fixed lift and, while a section is open, by the rise that
-    // clears it, unless the group's own top would then cross the safe area (it overlaps the section
-    // instead, at its own size). The one shared delta is the same for every region that moves.
+    // Anchor to the picture first. While the HUD is visible, raise only as far as needed to clear
+    // its safe edge, then add any section-specific rise.
     let position = style.position;
     let height = (moving_bottom(regions, dys).unwrap_or(top) - top) as f32;
-    let rise = HudBand::clear_rise(band.rise_for(position), band.rest_limit(position), height);
-    let lift = (band.lift + rise).min(top.max(0) as f32);
+    let bottom = moving_bottom(regions, dys).unwrap_or(top) as f32;
+    let hud_rise = if lift { (bottom + frame_offset_y - band.ceil_y).max(0.0) } else { 0.0 };
+    let custom_adjust = text_style::BOTTOM_GAP - text_style::position_distance(style.position);
+    let anchor_adjust = frame_offset_y + custom_adjust;
+    let rest = band.rest_limit(position) + anchor_adjust - hud_rise;
+    let section_rise = (band.rise_for(position) + anchor_adjust).max(0.0);
+    let rise = if lift { HudBand::clear_rise(section_rise, rest, height) } else { 0.0 };
+    let shift = (frame_offset_y - hud_rise - rise).max(-top.max(0) as f32);
     for dy in dys.iter_mut().filter(|d| **d != 0.0) {
-        *dy = -lift;
+        *dy = shift;
     }
 }
 

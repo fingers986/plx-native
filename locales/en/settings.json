@@ -681,19 +681,23 @@
   },
   "settings.playback.subtitle_position": {
     "value": "Subtitle position",
-    "description": "Settings, consent or sign-in UI: how high above the bottom edge the client-rendered subtitle caption sits."
+    "description": "Settings: choose whether client-rendered subtitles follow the video frame or the TV screen."
   },
   "settings.playback.subtitle_position.low": {
-    "value": "Low",
-    "description": "Subtitle position picker option: the caption sits near the bottom edge (the default)."
+    "value": "Video frame",
+    "description": "Subtitle position picker option: keep the subtitle 60 px above the bottom of the video picture."
   },
   "settings.playback.subtitle_position.middle": {
     "value": "Middle",
     "description": "Subtitle position picker option: the caption sits further up the picture."
   },
   "settings.playback.subtitle_position.high": {
-    "value": "High",
-    "description": "Subtitle position picker option: the caption sits near the top of the safe area."
+    "value": "TV screen",
+    "description": "Subtitle position picker option: keep the subtitle 60 px above the bottom of the TV screen."
+  },
+  "settings.playback.subtitle_position.custom": {
+    "value": "Custom",
+    "description": "Subtitle position picker option: set a custom TV-screen bottom gap from 40 to 180 px in 5 px steps."
   },
   "settings.playback.hdr_overlay": {
     "value": "HDR overlay brightness",

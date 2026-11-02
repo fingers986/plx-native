@@ -88,10 +88,12 @@ pub enum OverlayKind {
     More { page: Option<plx_appkit::more_menu::MorePage> },
     /// The on-video Subtitle Timing capsule (`appkit/timing_capsule.rs`, plan `subtitle-menu-capsule`
     /// §4) — the Subtitles panel's Timing row hands off here
-    /// (`appkit::track_menu::TrackOk::OpenTiming`) rather than stepping the offset itself. The only
-    /// overlay whose [`Self::hud_policy`] is [`HudPolicy::Hidden`] — the capsule sits where the
-    /// transport's caption band and scrubber would, so the two must never be up together.
+    /// (`appkit::track_menu::TrackOk::OpenTiming`) rather than stepping the offset itself. Timing
+    /// and Custom Distance both use [`HudPolicy::Hidden`] — their capsules sit where the
+    /// transport's caption band and scrubber would, so they must never be drawn together.
     Timing,
+    /// The Custom subtitle-distance capsule, reached from Player > Style > Position.
+    CustomDistance { gap: u8 },
 }
 
 impl OverlayKind {
@@ -100,10 +102,11 @@ impl OverlayKind {
     /// navigation tests), so a new kind is added here once rather than to each of them.
     /// `every_kind_is_listed_once` fails to compile when a variant is added and not listed.
     #[cfg(any(test, feature = "test-support"))]
-    pub const ALL: [OverlayKind; 3] = [
+    pub const ALL: [OverlayKind; 4] = [
         OverlayKind::Tracks { tab: 0 },
         OverlayKind::More { page: None },
         OverlayKind::Timing,
+        OverlayKind::CustomDistance { gap: 40 },
     ];
 
     /// The heartbeat's `overlay=` word. These spellings are the ones `tests/manifest.json`'s
@@ -125,6 +128,7 @@ impl OverlayKind {
             OverlayKind::Tracks { .. } => 0,
             OverlayKind::More { .. } => 1,
             OverlayKind::Timing => 2,
+            OverlayKind::CustomDistance { .. } => 3,
         }
     }
 
@@ -133,18 +137,19 @@ impl OverlayKind {
             OverlayKind::Tracks { .. } => "menu",
             OverlayKind::More { .. } => "more",
             OverlayKind::Timing => "timing",
+            OverlayKind::CustomDistance { .. } => "subtitle-distance",
         }
     }
 
     /// **What this panel does to the transport HUD while it is up** (any phase but `Hidden` —
-    /// `app::bridge::player_hud_policy`, plan `subtitle-menu-capsule` §4). Only the Timing capsule
-    /// HIDES it: it sits at the caption's own band, over the scrubber, so the transport and the
-    /// capsule must never both be drawn. The other panels leave it up and lift the captions clear
+    /// `app::bridge::player_hud_policy`, plan `subtitle-menu-capsule` §4). The Timing and Custom
+    /// Distance capsules HIDE it: they sit at the caption's own band, over the scrubber, so the
+    /// transport and each capsule must never both be drawn. The other panels leave it up and lift the captions clear
     /// of it — the same distinction their own `survives_failure`/`swallows_transport` answer for
     /// different questions.
     pub fn hud_policy(self) -> HudPolicy {
         match self {
-            OverlayKind::Timing => HudPolicy::Hidden,
+            OverlayKind::Timing | OverlayKind::CustomDistance { .. } => HudPolicy::Hidden,
             OverlayKind::Tracks { .. } | OverlayKind::More { .. } => HudPolicy::Lifted,
         }
     }
@@ -202,6 +207,7 @@ impl LogicalState for PlayerOverlayArg {
                 });
             }
             OverlayKind::Timing => {}
+            OverlayKind::CustomDistance { gap } => { c.u8(gap); }
         }
     }
     fn probe(&self, out: &mut String) {
@@ -214,6 +220,7 @@ pub enum Panel {
     Tracks(plx_appkit::track_menu::TrackMenuState),
     More(plx_appkit::more_menu::MoreMenuState),
     Timing(TimingCapsule),
+    CustomDistance(plx_appkit::timing_capsule::CustomDistanceCapsule),
 }
 
 pub struct PlayerOverlayScreen {
@@ -321,6 +328,9 @@ impl PlayerOverlayScreen {
                 let (lo, hi) = plx_media::player::subtitle_offset_range_ms();
                 Panel::Timing(TimingCapsule::new(plx_media::player::subtitle_offset_ms(), lo, hi))
             }
+            OverlayKind::CustomDistance { gap } => {
+                Panel::CustomDistance(plx_appkit::timing_capsule::CustomDistanceCapsule::new(gap))
+            }
         };
         Self {
             entry,
@@ -364,6 +374,7 @@ impl PlayerOverlayScreen {
             // Timing exposes no rows and no cursor — the capsule is driven entirely by its own
             // `key()`, never by the engine's focus movement.
             Panel::Timing(_) => 0,
+            Panel::CustomDistance(_) => 0,
         }
     }
 
@@ -441,7 +452,7 @@ impl PlayerOverlayScreen {
         match &mut self.panel {
             Panel::Tracks(p) => match p.commit_sub_track(i, meta) {
                 TrackOk::Commit { commit, .. } => Some(commit),
-                TrackOk::Dismiss | TrackOk::OpenTiming | TrackOk::Inert | TrackOk::Navigated
+                TrackOk::Dismiss | TrackOk::OpenTiming | TrackOk::OpenCustomDistance(_) | TrackOk::Inert | TrackOk::Navigated
                 | TrackOk::Search(_) => None,
             },
             _ => None,
@@ -465,7 +476,7 @@ impl PlayerOverlayScreen {
             p.focus_row(row);
             return match p.on_ok(meta) {
                 TrackOk::Commit { commit, .. } => Some(commit),
-                TrackOk::Dismiss | TrackOk::OpenTiming | TrackOk::Inert | TrackOk::Navigated
+                TrackOk::Dismiss | TrackOk::OpenTiming | TrackOk::OpenCustomDistance(_) | TrackOk::Inert | TrackOk::Navigated
                 | TrackOk::Search(_) => None,
             };
         }
@@ -543,6 +554,14 @@ impl PlayerOverlayScreen {
                         self.closing(fx);
                     }
                 }
+                TrackOk::OpenCustomDistance(position) => {
+                    fx.push(Fx::App(AppFx::Player(PlayerReq::CommitTrack(
+                        plx_appkit::track_menu::TrackCommit::SubtitlePosition(position),
+                    ))));
+                    let next = OverlayKind::CustomDistance { gap: position.custom_gap().unwrap_or(40) };
+                    self.dismiss(fx);
+                    Self::ask(fx, PlayerReq::OpenOverlay(next));
+                }
             },
             Panel::More(p) => match p.on_ok(ps) {
                 // A folded row is a HUD command: More closes FIRST, then the app's one performer runs it, the
@@ -566,6 +585,7 @@ impl PlayerOverlayScreen {
             // key before `Machine::step` ever reaches its `Activate`/`PressCommit` arms), so
             // nothing ever calls `activate()` while this variant is up. Exhaustiveness only.
             Panel::Timing(_) => {}
+            Panel::CustomDistance(_) => {}
         }
     }
 
@@ -675,6 +695,26 @@ impl PlayerOverlayScreen {
             }
             return Handled::Yes;
         }
+        if let Panel::CustomDistance(cap) = &mut self.panel {
+            match edge {
+                Edge::Down => self.repeat.rearm(now),
+                Edge::Repeat if !self.repeat.ready_every(now, PANEL_REPEAT_MS) => return Handled::Yes,
+                Edge::Up => return Handled::Yes,
+                _ => {}
+            }
+            match cap.key(key, edge) {
+                Some(plx_appkit::timing_capsule::DistanceCapsuleOut::Step(gap)) => {
+                    Self::ask(fx, PlayerReq::CommitTrack(
+                        plx_appkit::track_menu::TrackCommit::SubtitlePosition(
+                            plx_plex::plex::session::SubtitlePosition::Custom(gap),
+                        ),
+                    ));
+                }
+                Some(plx_appkit::timing_capsule::DistanceCapsuleOut::Close) => self.dismiss(fx),
+                None => {}
+            }
+            return Handled::Yes;
+        }
         // A held direction is paced; a FRESH press is never swallowed by the cadence before it.
         let directional = matches!(key, Key::Up | Key::Down | Key::Left { .. } | Key::Right { .. });
         if directional {
@@ -773,6 +813,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Machine<H> 
                     // every press and always returns `Handled::Yes`, so this arm is unreached for
                     // it in practice.
                     Panel::Timing(_) => {}
+                    Panel::CustomDistance(_) => {}
                 }
                 self.moved(fx);
                 Handled::No
@@ -850,6 +891,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Machine<H> 
                     }
                     Panel::More(p) => p.update(dt, cx.measure, ps),
                     Panel::Timing(p) => p.update(dt),
+                    Panel::CustomDistance(_) => {}
                 }
                 // The transport must not auto-hide out from under a panel a viewer is reading —
                 // the rule `app/run.rs` kept as "keep the HUD alive while the track menu is open",
@@ -884,6 +926,7 @@ impl PlayerOverlayScreen {
             // Timing owns its own key ladder and never asks the engine for focus, so it has no
             // per-row geometry to register — `draw`, below, paints the capsule itself.
             Panel::Timing(_) => {}
+            Panel::CustomDistance(_) => {}
         }
     }
 }
@@ -905,6 +948,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Focusable<H
             // Timing declares no group at all — the capsule's own `key()` swallows every press
             // (`Handled::Yes`) before the engine's focus machinery ever sees one.
             Panel::Timing(_) => {}
+            Panel::CustomDistance(_) => {}
         }
     }
     fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
@@ -912,6 +956,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Focusable<H
             Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.group_of(key, cx),
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.group_of(key, cx),
             Panel::Timing(_) => None,
+            Panel::CustomDistance(_) => None,
         }
     }
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
@@ -919,6 +964,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Focusable<H
             Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.neighbour(key, dir, cx),
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.neighbour(key, dir, cx),
             Panel::Timing(_) => Step::Edge,
+            Panel::CustomDistance(_) => Step::Edge,
         }
     }
     fn place(&self, key: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
@@ -926,6 +972,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Focusable<H
             Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.place(key, cx, at),
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.place(key, cx, at),
             Panel::Timing(_) => None,
+            Panel::CustomDistance(_) => None,
         }
     }
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
@@ -933,6 +980,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Focusable<H
             Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.reconcile(want, cx),
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.reconcile(want, cx),
             Panel::Timing(_) => want,
+            Panel::CustomDistance(_) => want,
         }
     }
     fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<u32> {
@@ -940,6 +988,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Focusable<H
             Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.seat(g, from, cx),
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.seat(g, from, cx),
             Panel::Timing(_) => FocusKey { entry: self.entry, elem: 0 },
+            Panel::CustomDistance(_) => FocusKey { entry: self.entry, elem: 0 },
         }
     }
 }
@@ -982,6 +1031,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Screen<H> f
                 Panel::Tracks(p) => p.warm_open(cx.measure),
                 Panel::More(p) => p.warm_open(cx.measure),
                 Panel::Timing(_) => {}
+                Panel::CustomDistance(_) => {}
             }
         }
     }
@@ -1001,6 +1051,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Screen<H> f
             Panel::More(_) => plx_ui::screen::Scrim::over_video(DIM_SHEET),
             // The capsule sits over the video in the transport's own band — no dim.
             Panel::Timing(_) => plx_ui::screen::Scrim::NONE,
+            Panel::CustomDistance(_) => plx_ui::screen::Scrim::NONE,
         }
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
@@ -1020,6 +1071,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Screen<H> f
             Panel::More(p) => p.draw(appear, measure),
             // Fixed y, never the live caption's own baseline — see `player_hud::CAPSULE_BOTTOM_Y`.
             Panel::Timing(p) => p.draw(plx_appkit::player_hud::CAPSULE_BOTTOM_Y, appear),
+            Panel::CustomDistance(p) => p.draw(plx_appkit::player_hud::CAPSULE_BOTTOM_Y, appear),
         }
         self.record_stops(f);
     }
@@ -1040,6 +1092,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Screen<H> f
             Panel::Tracks(p) => p.transitioning(),
             Panel::More(p) => p.transitioning(),
             Panel::Timing(_) => false,
+            Panel::CustomDistance(_) => false,
         }
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> {

@@ -269,6 +269,65 @@ impl TimingCapsule {
     }
 }
 
+/// Draw the Player's Custom subtitle-distance control using the same capsule layout as Subtitle
+/// Timing. It is D-pad-only; `gap_px` changes in fixed 5 px steps without Timing's repeat acceleration.
+pub fn draw_custom_distance_capsule(gap_px: u8, bottom_y: f32, appear: f32) {
+    if appear <= 0.0 { return; }
+    let caption = CString::new(format!("{gap_px} px")).unwrap_or_default();
+    let p = Painter::root().alpha(appear);
+    let cx = plx_ui::consts::SCR_W * 0.5;
+    let (r, [left_x, text_x, right_x]) = TimingCapsule::geometry(cx, bottom_y);
+    p.rect(r, CAPSULE_H * 0.5, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
+    let left_ink = if gap_px <= 40 { theme::INK_DISABLED } else { theme::TEXT_PRIMARY };
+    let right_ink = if gap_px >= 180 { theme::INK_DISABLED } else { theme::TEXT_PRIMARY };
+    let chevron_at = |x: f32| Rect::new(x, r.y + (CAPSULE_H - CHEVRON_SZ) * 0.5, CHEVRON_SZ, CHEVRON_SZ);
+    icons::draw(p, Icon::ChevronLeft, chevron_at(left_x), left_ink);
+    icons::draw(p, Icon::Chevron, chevron_at(right_x), right_ink);
+    Label::new(caption.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY)
+        .bold().h(HAlign::Center).draw(p, Rect::new(text_x, r.y, CAPSULE_TEXT_W, r.h));
+}
+
+/// The player overlay's Custom subtitle-distance capsule. Its appearance is shared with the
+/// Settings picker above; unlike timing, every admitted Left/Right press remains a 5 px step.
+pub struct CustomDistanceCapsule {
+    gap_px: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DistanceCapsuleOut {
+    Step(u8),
+    Close,
+}
+
+impl CustomDistanceCapsule {
+    pub fn new(gap_px: u8) -> Self {
+        Self { gap_px: (gap_px.clamp(40, 180) / 5) * 5 }
+    }
+
+    pub fn gap_px(&self) -> u8 { self.gap_px }
+
+    pub fn key(&mut self, key: Key, edge: Edge) -> Option<DistanceCapsuleOut> {
+        match key {
+            Key::Left { .. } | Key::Right { .. } if edge != Edge::Up => {
+                let next = if matches!(key, Key::Left { .. }) {
+                    self.gap_px.saturating_sub(5).max(40)
+                } else {
+                    self.gap_px.saturating_add(5).min(180)
+                };
+                if next == self.gap_px { return None; }
+                self.gap_px = next;
+                Some(DistanceCapsuleOut::Step(next))
+            }
+            Key::Ok | Key::Back if edge == Edge::Down => Some(DistanceCapsuleOut::Close),
+            _ => None,
+        }
+    }
+
+    pub fn draw(&self, bottom_y: f32, appear: f32) {
+        draw_custom_distance_capsule(self.gap_px, bottom_y, appear);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

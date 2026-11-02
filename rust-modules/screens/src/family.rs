@@ -15,6 +15,7 @@ use plx_machine::machine::{
 };
 use plx_ui::screen::ScreenArg;
 use plx_ui::widgets::ControlPalette;
+use plx_plex::plex::session::SubtitlePosition;
 
 use super::registry::{AppFx, AppMsg, DirectoryLike};
 
@@ -51,6 +52,8 @@ pub enum SettingsPage {
     ConsentStage(u8),
     /// One playback / account preference's choice list, pushed from Playback or Audio & Subtitles.
     Picker(PickerKind),
+    /// A distance picker page pushed by Settings > Playback > Subtitle Position.
+    SubtitlePositionDistance(SubtitlePosition),
 }
 
 /// Which preference a [`SettingsPage::Picker`] edits. The parent page (`Playback` for the local ones,
@@ -85,6 +88,8 @@ impl SettingsPage {
     /// lands where an interactive visit would. Every other page is booted as the surface's root.
     pub fn boot_trail(self) -> Vec<SettingsPage> {
         match self {
+            SettingsPage::SubtitlePositionDistance(_) => vec![SettingsPage::Root, SettingsPage::Playback,
+                SettingsPage::Picker(PickerKind::SubtitlePosition), self],
             SettingsPage::Picker(kind) if kind.parent() == SettingsPage::Root => vec![SettingsPage::Root, self],
             SettingsPage::Picker(kind) => vec![SettingsPage::Root, kind.parent(), self],
             page => vec![page],
@@ -124,6 +129,7 @@ impl ScreenArg for SettingsPage {
             SettingsPage::Preview(_) => 106,
             SettingsPage::ConsentStage(_) => 107,
             SettingsPage::Picker(_) => 112,
+            SettingsPage::SubtitlePositionDistance(_) => 115,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -164,6 +170,7 @@ impl LogicalState for SettingsPage {
             | SettingsPage::About => 0,
             SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) => *i,
             SettingsPage::Picker(kind) => *kind as u8,
+            SettingsPage::SubtitlePositionDistance(position) => position.index(),
         });
     }
     fn probe(&self, out: &mut String) {
@@ -183,12 +190,16 @@ impl LogicalState for SettingsPage {
             SettingsPage::Preview(_) => "preview",
             SettingsPage::ConsentStage(_) => "stage",
             SettingsPage::Picker(_) => "picker",
+            SettingsPage::SubtitlePositionDistance(_) => "subtitle-position-distance",
         });
         if let SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) = self {
             out.push_str(&format!("[{i}]"));
         }
         if let SettingsPage::Picker(kind) = self {
             out.push_str(&format!("[{}]", *kind as u8));
+        }
+        if let SettingsPage::SubtitlePositionDistance(position) = self {
+            out.push_str(&format!("[{}]", position.index()));
         }
     }
 }

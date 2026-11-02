@@ -31,7 +31,7 @@ pub const CAPTION_ANCHOR_LINES: usize = 3;
 /// top of the first line of a top-aligned cue ([`TOP_MARGIN_V`]). It is the geometry of the block
 /// the appkit draw places, which the Timing capsule is cleared against, so it is NOT the libass
 /// `MarginV` of the Low position: libass sets the same line on a different box ([`INK_TRIM`]).
-pub const BOTTOM_GAP: f32 = 100.0;
+pub const BOTTOM_GAP: f32 = 60.0;
 
 /// How much nearer the frame's bottom libass's `MarginV` sits than [`BOTTOM_GAP`], so the ink
 /// baseline of a one-line cue lands where [`today_ink_baseline`] puts it. Fixed by the native
@@ -79,9 +79,8 @@ pub const SUB_BASE_Y: f32 = SCR_H - BOTTOM_GAP;
 /// **The rise** (`docs/hud-plugins.md`, "Captions"): a caption's bottom limit is the HUD-up limit P of
 /// the viewer's Position (`ceil_y - position_lift`) while no section is open, and
 /// `min(P, S - CAPTION_INK_CLEARANCE)` while one is, `S` being the resting top of everything the HUD
-/// has open. `rise[i]` is `P - limit` for Position `i` in [`SubtitlePosition::LADDER`] order (Low,
-/// Middle, High), so a Position that already clears the section has none, and the limit is `P - rise`
-/// exactly: a band with every `rise` zero leaves every reader's arithmetic as it was. The rise is
+/// has open. `rise[i]` is `P - limit` for Position `i` in [`SubtitlePosition::LADDER`] order
+/// (VideoFrame, TvScreen), so a Position that already clears the section has none. The rise is
 /// motion (a spring the HUD steps, `player_hud::motion`), which is why it is a field of the value
 /// the readers take and not something they compute.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -122,7 +121,11 @@ impl HudBand {
     /// `block_top`: `max(0, P - (block_top - CAPTION_INK_CLEARANCE))`. A Position already above that
     /// takes none (Position gives way first).
     pub fn rise_to_clear(&self, block_top: f32) -> [f32; 3] {
-        SubtitlePosition::LADDER.map(|p| (self.rest_limit(p) - (block_top - CAPTION_INK_CLEARANCE)).max(0.0))
+        let mut rises = [0.0; 3];
+        for position in SubtitlePosition::LADDER {
+            rises[position.index() as usize] = (self.rest_limit(position) - (block_top - CAPTION_INK_CLEARANCE)).max(0.0);
+        }
+        rises
     }
 
     /// **The safe-area clamp**: of the `rise` a caption of `height` px was given, the part that keeps
@@ -167,21 +170,23 @@ pub fn size_scale(size: SubtitleSize) -> f32 {
     }
 }
 
-/// How far ABOVE the Low baseline the viewer's Position pick lifts the caption. Low is the
-/// baseline every build before the preference drew, so it lifts nothing.
-pub fn position_lift(position: SubtitlePosition) -> f32 {
-    match position {
-        SubtitlePosition::Low => 0.0,
-        SubtitlePosition::Middle => 160.0,
-        SubtitlePosition::High => 320.0,
-    }
+/// Both anchor modes use the same bottom gap; the video-frame offset is applied using the viewport.
+pub fn position_lift(_position: SubtitlePosition) -> f32 {
+    0.0
+}
+
+/// The saved default distance for fixed anchors, or the selected gap for Custom.
+pub fn position_distance(position: SubtitlePosition) -> f32 {
+    position.custom_gap().map_or_else(
+        || f32::from(plx_plex::plex::session::peek().subtitle_distance(position)),
+        f32::from,
+    )
 }
 
 /// The fixed pixel width a text subtitle line wraps at. Font size changes glyph width, not this box.
 pub fn wrap_width(_scale: f32) -> f32 {
     CAPTION_WRAP_W
 }
-
 /// The fixed left and right margin of synthesized styles, centring the wrap box on the 1920 px canvas.
 pub fn side_margin(_scale: f32) -> u32 {
     ((SCR_W - CAPTION_WRAP_W) / 2.0).round().max(0.0) as u32
@@ -190,7 +195,7 @@ pub fn side_margin(_scale: f32) -> u32 {
 /// The `MarginV` of the bottom-aligned styles: the gap under the last line ([`BOTTOM_GAP`] less
 /// [`INK_TRIM`]) plus the Position lift.
 pub fn bottom_margin_v(position: SubtitlePosition) -> u32 {
-    (BOTTOM_GAP - INK_TRIM + position_lift(position)).round() as u32
+    (position_distance(position) - INK_TRIM + position_lift(position)).round() as u32
 }
 
 /// The y (frame pixels, from the top) of the bottom of the last line box of a bottom-aligned cue
@@ -220,7 +225,7 @@ pub struct TextStyle {
 
 impl Default for TextStyle {
     fn default() -> Self {
-        Self { size: SubtitleSize::Medium, position: SubtitlePosition::Low,
+        Self { size: SubtitleSize::Medium, position: SubtitlePosition::TvScreen,
         }
     }
 }
@@ -239,7 +244,9 @@ impl TextStyle {
     /// A number that differs for every distinct pair of picks, so a stored copy is stale exactly
     /// when the header it was built for no longer matches.
     pub fn generation(&self) -> u32 {
-        self.size.index() as u32 * SubtitlePosition::LADDER.len() as u32 + self.position.index() as u32
+        self.size.index() as u32 * 2048
+            + self.position.index() as u32 * 256
+            + position_distance(self.position).round() as u32
     }
 }
 

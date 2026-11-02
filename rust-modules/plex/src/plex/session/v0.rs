@@ -228,7 +228,7 @@ impl Default for CanonicalSessionPreferences {
             trailer_autoplay: true,
             subtitle_tone: SubtitleTone::White,
             subtitle_size: SubtitleSize::Medium,
-            subtitle_position: SubtitlePosition::Low,
+            subtitle_position: SubtitlePosition::TvScreen,
             next_episode_mode: NextEpisodeMode::Countdown,
             skip_interval: SkipInterval::Seconds10,
             deck_press: DeckPress::Details,
