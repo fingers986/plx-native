@@ -981,7 +981,7 @@ const EPISODE: &[Pin] = &[
     p("UULD", 0, 0, 0, "vr", ""),
     p("UULL", 1, 0, 0, "vr", ""),
     p("UULR", 1, 3, 0, "vr", ""),
-    p("UULK", 1, 0, 0, "vr", "Command(Previous)"),
+    p("UULK", 1, 0, 0, "vr", "Command(OpenTracks(Subtitles))"),
     p("UURU", 0, 2, 0, "vd", ""),
     p("UURD", 0, 2, 0, "vr", ""),
     p("UURL", 1, 1, 0, "vr", ""),
@@ -1093,7 +1093,7 @@ const NEXT_ONLY: &[Pin] = &[
     p("UURRD", 0, 3, 0, "vr", ""),
     p("UURRL", 1, 2, 0, "vr", ""),
     p("UURRR", 1, 3, 0, "vr", ""),
-    p("UURRK", 1, 3, 0, "vr", "Command(OpenTracks(Audio))"),
+    p("UURRK", 1, 3, 0, "vr", "Command(OpenMore(Root))"),
     p("DD", 2, 0, 0, "vr", ""),
     p("DU", 1, 1, 0, "vr", ""),
     p("DDU", 0, 0, 0, "vr", ""),
@@ -1165,7 +1165,7 @@ const PREVIOUS_ONLY: &[Pin] = &[
     p("UURRD", 0, 3, 0, "vr", ""),
     p("UURRL", 1, 2, 0, "vr", ""),
     p("UURRR", 1, 3, 0, "vr", ""),
-    p("UURRK", 1, 3, 0, "vr", "Command(OpenTracks(Audio))"),
+    p("UURRK", 1, 3, 0, "vr", "Command(OpenMore(Root))"),
     p("DD", 2, 0, 0, "vr", ""),
     p("DU", 1, 0, 0, "vr", ""),
     p("DDU", 0, 0, 0, "vr", ""),
@@ -1335,7 +1335,7 @@ const UP_NEXT: &[Pin] = &[
     p("DURRR", 1, 1, 0, "vr", ""),
     p("DURRRR", 1, 1, 0, "vr", ""),
     p("DUL!", 1, 0, 0, "v", ""),
-    p("DUL!K", 1, 2, 0, "vr", "Command(OpenTracks(Subtitles))"),
+    p("DUL!K", 1, 0, 0, "vr", "Command(OpenTracks(Subtitles))"),
 ];
 
 const CENSUSES: &[Census] = &[
