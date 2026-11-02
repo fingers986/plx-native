@@ -99,9 +99,9 @@ fn the_row_group_is_as_long_as_the_packages_row() {
     let _g = plx_base::testlock::serial();
     let compiled = moved();
     let declared = compiled.lookup(0, Slot::Discs, false, false, false).expect("the compact state").row_ids.len();
-    assert_eq!(declared, 6, "the sixth control is in the row");
-    assert_eq!(row_spec(&page_with(compiled)).len, 6);
-    assert_eq!(row_spec(&page_with(classic())).len, 5, "classic's row");
+    assert_eq!(declared, 4, "the row contains the three controls and its focus stop");
+    assert_eq!(row_spec(&page_with(compiled)).len, 4);
+    assert_eq!(row_spec(&page_with(classic())).len, 3, "classic's row has Subtitles, Audio, More");
 }
 
 /// The caption band and the pointer's mapping onto the bar take the package's numbers.

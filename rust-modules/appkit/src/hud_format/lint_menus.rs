@@ -374,12 +374,12 @@ pub(super) const INVALID: &[super::lint::testing::InvalidCase] = &[
     InvalidCase {
         name: "classic lifted into the middle: its three openers' panels hop",
         code: "HUD-E1303",
-        pointer: "/layout/block/0/cells/1/segment/items/3",
+        pointer: "/layout/block/0/cells/1/segment/items/1",
         base: Base::Classic,
         edits: &[(r#""inset": 13,"#, r#""inset": 143,"#)],
         langs: &[],
         skew: 0.0,
-        also: &[("HUD-E1303", "/layout/block/0/cells/1/segment/items/4")],
+        also: &[("HUD-E1303", "/layout/block/0/cells/1/segment/items/2")],
     },
     // the same lift with the row's gap opened to 440: Subtitles' anchor then runs from x 752 to CTRL_RIGHT, so
     // the Start side (628 px of room) and the End side (none) both fail to hold the 650-wide panel, and the
@@ -391,14 +391,14 @@ pub(super) const INVALID: &[super::lint::testing::InvalidCase] = &[
     InvalidCase {
         name: "classic lifted with a wide row: no side holds the Subtitles menu",
         code: "HUD-E1302",
-        pointer: "/layout/block/0/cells/1/segment/items/2",
+        pointer: "/layout/block/0/cells/1/segment/items/0",
         base: Base::Classic,
         edits: &[(r#""inset": 13,"#, r#""inset": 143,"#), (r#""id": "row", "gap": 20,"#, r#""id": "row", "gap": 440,"#)],
         langs: &[],
         skew: 0.0,
         also: &[
-            ("HUD-E1303", "/layout/block/0/cells/1/segment/items/3"),
-            ("HUD-E1303", "/layout/block/0/cells/1/segment/items/4"),
+            ("HUD-E1303", "/layout/block/0/cells/1/segment/items/1"),
+            ("HUD-E1303", "/layout/block/0/cells/1/segment/items/2"),
             ("HUD-E0601", "/layout/block/0/cells/0/vstack/cells/0/text"),
             ("HUD-E1102", "/layout/up_next"),
         ],
@@ -630,7 +630,7 @@ mod tests {
         let en = [LintLang::for_tag("en").expect("English")];
         let found: Vec<_> = lint(&text, &ShippedMeasure, &en).into_iter().filter(|f| f.code == "HUD-E1303").collect();
         let pointers: Vec<&str> = found.iter().map(|f| f.pointer.as_str()).collect();
-        assert_eq!(pointers, ["/layout/block/0/cells/1/segment/items/3", "/layout/block/0/cells/1/segment/items/4"]);
+        assert_eq!(pointers, ["/layout/block/0/cells/1/segment/items/1", "/layout/block/0/cells/1/segment/items/2"]);
         for f in &found {
             let names: Vec<&str> = f.ctx.rects.iter().map(|r| r.name.as_str()).collect();
             assert_eq!(names, ["menu", "previous menu"]);
@@ -719,7 +719,7 @@ mod tests {
         let over = Rect::new(1700.0, 700.0, 200.0, 300.0);
         with_placement(over, Side::Above, |cx, state, o| {
             let f = m1(cx, state, o).expect("a finding");
-            assert_eq!((f.code, f.pointer.as_str()), ("HUD-E1301", "/layout/block/0/cells/1/segment/items/4"));
+            assert_eq!((f.code, f.pointer.as_str()), ("HUD-E1301", "/layout/block/0/cells/1/segment/items/2"));
             assert_eq!(f.ctx.lang.as_deref(), Some("en"));
             assert_eq!(f.ctx.slot.as_deref(), Some("discs"));
             assert_eq!(f.ctx.rects.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["opener", "menu"]);
@@ -735,7 +735,7 @@ mod tests {
     fn a_panel_off_its_side_is_e1303() {
         with_placement(Rect::new(1174.0, 54.0, 650.0, 710.0), Side::Below, |cx, state, o| {
             let f = m3(cx, state, o).expect("a finding");
-            assert_eq!((f.code, f.pointer.as_str()), ("HUD-E1303", "/layout/block/0/cells/1/segment/items/4"));
+            assert_eq!((f.code, f.pointer.as_str()), ("HUD-E1303", "/layout/block/0/cells/1/segment/items/2"));
             assert_eq!(f.ctx.rects.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["anchor", "menu"]);
         });
         with_placement(Rect::new(1174.0, 54.0, 650.0, 710.0), Side::Above, |cx, state, o| assert!(m3(cx, state, o).is_none()));

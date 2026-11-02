@@ -3579,12 +3579,12 @@ mod step_ladder_tests {
         let failure_n = player_hud::FailureReadout::now(TestHost::session(&cx())).actions().len() as u32;
         assert!(failure_n >= 1, "Back is always offered");
         let cases: [(&str, ControlSlot, Busy, Vec<u32>); 5] = [
-            ("discs", ControlSlot::Discs(player_hud::Controls::NONE), Busy::None, [(2..5).map(|i| ELEM_CONTROL_BASE + i).collect::<Vec<_>>(), vec![ELEM_TAB_BASE],
+            ("discs", ControlSlot::Discs(player_hud::Controls::NONE), Busy::None, [row(3), vec![ELEM_TAB_BASE],
                 ].concat(),
             ),
             ("episode", ControlSlot::Discs(player_hud::Controls { previous: true, next: true, restart: false,
                 }),
-                Busy::None, [row(5), vec![ELEM_TAB_BASE]].concat(),
+                Busy::None, [row(3), vec![ELEM_TAB_BASE]].concat(),
             ),
             ("skip", skip, Busy::None, [row(1), vec![ELEM_TAB_BASE]].concat(),
             ),
@@ -4361,9 +4361,11 @@ mod scrub_ownership_tests {
     /// Every request that MOVES THE PLAYHEAD, whichever variant carries it — so a case counts
     /// seeks rather than asserting on one spelling of them.
     fn seeks(reqs: Vec<PlayerReq>) -> Vec<PlayerReq> {
-        reqs.into_iter()
-            .filter(|r| matches!(r, PlayerReq::SeekTo(_) | PlayerReq::CommitSeek(_)))
-            .collect()
+        reqs.into_iter().filter_map(|r| match r {
+            PlayerReq::SeekTo(ns) | PlayerReq::CommitSeek(ns) | PlayerReq::ConfirmScrubSeek(ns) =>
+                Some(PlayerReq::SeekTo(ns)),
+            _ => None,
+        }).collect()
     }
 
     /// A point on the scrubber's registered band, `frac` of the way along it.
@@ -4467,7 +4469,7 @@ mod scrub_ownership_tests {
         let (_, reqs) = key(&mut page, SDLK_RETURN, Edge::Up, 1_080);
         assert_eq!(
             seeks(reqs),
-            vec![PlayerReq::CommitSeek(target)],
+            vec![PlayerReq::SeekTo(target)],
             "a scrub commit must be the request that HOLDS the pause, not the one that resumes",
         );
     }
@@ -4984,7 +4986,7 @@ mod scrub_ownership_tests {
 
         let (handled, reqs) = back(&mut page, 1_500);
         assert_eq!(handled, Handled::Yes);
-        assert!(reqs.is_empty(), "BACK cancels: no seek, and not an Exit either: {reqs:?}");
+        assert_eq!(reqs, vec![PlayerReq::CancelScrubPreview], "BACK explicitly cancels the preview without seeking or exiting");
         assert_eq!(page.scrub.ns, -1, "the preview is gone");
         assert_eq!(page.scrub.key.dir, 0, "…and so is the hold");
         assert!(!page.hud.dismissed, "BACK spent itself on the scrub; the transport stays");
@@ -5010,7 +5012,7 @@ mod scrub_ownership_tests {
             key(&mut page, SDLK_RIGHT, Edge::Down, 1_000);
             key(&mut page, SDLK_RIGHT, Edge::Up, 1_020);
             let (_, reqs) = back(&mut page, at);
-            assert!(reqs.is_empty(), "BACK at {at} ms: {reqs:?}");
+            assert_eq!(reqs, vec![PlayerReq::CancelScrubPreview], "BACK at {at} ms cancels the visible preview: {reqs:?}");
             assert_eq!(page.scrub.ns, -1);
             assert!(!page.hud.dismissed, "BACK spent itself on the target; the transport stays");
             let (_, reqs) = tick(&mut page, at + input::HUD_LINGER_MS + 50);
@@ -5033,7 +5035,7 @@ mod scrub_ownership_tests {
         assert!(page.scrub.drag && page.scrub.ns > 0, "the fixture: a drag is seated");
 
         let (_, reqs) = back(&mut page, 1_100);
-        assert!(reqs.is_empty());
+        assert_eq!(reqs, vec![PlayerReq::CancelScrubPreview]);
         assert!(!page.scrub.drag && page.scrub.ns == -1);
         let (_, reqs) = key(&mut page, SDLK_RETURN, Edge::Up, 1_150);
         assert!(seeks(reqs).is_empty(), "the release has nothing left to commit");
@@ -5216,13 +5218,13 @@ mod scrub_ownership_tests {
             };
             let mut page = pending();
             let (_, reqs) = key(&mut page, SDLK_RETURN, Edge::Down, 2_000);
-            assert_eq!(reqs, vec![PlayerReq::SeekTo(60 * S)], "paused {paused}: OK: seek and resume, nothing else");
+            assert_eq!(reqs, vec![PlayerReq::ConfirmScrubSeek(60 * S)], "paused {paused}: OK confirms the visible preview");
             assert_eq!(page.scrub.ns, -1);
 
             for wcode in [WCODE_PLAY, WCODE_PLAYPAUSE] {
                 let mut page = pending();
                 let (_, reqs) = key_w(&mut page, 0, wcode, Edge::Down, 2_000);
-                assert_eq!(reqs, vec![PlayerReq::SeekTo(60 * S)], "paused {paused}: wcode {wcode}");
+                assert_eq!(reqs, vec![PlayerReq::ConfirmScrubSeek(60 * S)], "paused {paused}: wcode {wcode} confirms the visible preview");
                 assert_eq!(page.scrub.ns, -1);
             }
 
@@ -5254,14 +5256,14 @@ mod scrub_ownership_tests {
             page
         };
         let mut page = pending();
-        assert_eq!(page.toggle_play(None, 2_000), PlayerReq::SeekTo(60 * S));
+        assert_eq!(page.toggle_play(None, 2_000), PlayerReq::ConfirmScrubSeek(60 * S));
         assert_eq!(page.scrub.ns, -1, "the target is spent");
         assert_eq!(page.toggle_play(None, 2_100), PlayerReq::Transport(None), "with none pending it toggles");
         let mut page = pending();
         assert_eq!(page.toggle_play(Some(false), 2_000), PlayerReq::Transport(Some(false)));
         assert_eq!(page.scrub.ns, 60 * S, "PAUSE leaves the target alone");
         let mut page = pending();
-        assert_eq!(page.toggle_play(Some(true), 2_000), PlayerReq::SeekTo(60 * S), "PLAY confirms it");
+        assert_eq!(page.toggle_play(Some(true), 2_000), PlayerReq::ConfirmScrubSeek(60 * S), "PLAY confirms it");
     }
 
     /// **B.7 — BACK returns the knob to the playhead**, playing or paused: no seek, the target is
@@ -5352,7 +5354,7 @@ mod scrub_ownership_tests {
             );
             let target = page.scrub.ns;
             let (_, reqs) = key(&mut page, SDLK_RETURN, Edge::Up, 1_080);
-            assert_eq!(reqs, vec![PlayerReq::CommitSeek(target)], "paused {paused}: one request, not a resuming one");
+        assert_eq!(reqs, vec![PlayerReq::ConfirmScrubSeek(target)], "paused {paused}: one explicit confirmation request");
         }
     }
 
@@ -5371,14 +5373,15 @@ mod scrub_ownership_tests {
         );
         let target = page.scrub.ns;
         let (_, reqs) = key(&mut page, SDLK_RETURN, Edge::Up, 1_080);
-        assert_eq!(reqs, vec![PlayerReq::CommitSeek(target)], "one request, and not a resuming one");
+        assert_eq!(reqs, vec![PlayerReq::ConfirmScrubSeek(target)], "one explicit confirmation request");
 
         let mut page = page_on_the_bar();
         pointer(&mut page, InputKind::Click { x: mx, y: my, hit: Some(player_hud::ELEM_SCRUB),
             }, 1_000,
         );
         let (_, reqs) = back(&mut page, 1_040);
-        assert!(reqs.is_empty() && page.scrub.ns == -1 && !page.scrub.drag);
+        assert_eq!(reqs, vec![PlayerReq::CancelScrubPreview]);
+        assert!(page.scrub.ns == -1 && !page.scrub.drag);
     }
 
     /// A pending target does not depend on the transport's state: pausing or resuming the film by
@@ -5402,7 +5405,7 @@ mod scrub_ownership_tests {
         tick(&mut page, 2_200);
         assert_eq!(page.scrub.ns, 60 * S, "paused again: the target stays");
         let (_, reqs) = key(&mut page, SDLK_RETURN, Edge::Down, 2_300);
-        assert_eq!(reqs, vec![PlayerReq::SeekTo(60 * S)]);
+        assert_eq!(reqs, vec![PlayerReq::ConfirmScrubSeek(60 * S)]);
     }
 }
 #[cfg(test)]

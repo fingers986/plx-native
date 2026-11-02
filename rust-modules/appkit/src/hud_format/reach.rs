@@ -86,7 +86,12 @@ pub fn check(package: &Package) -> Checked {
     for v in layout.valuations() {
         let reachable = layout.explore(v);
         states += reachable.len();
-        layout.accumulate_folds(v, &reachable, &mut folded);
+        layout.accumulate_folds(
+            v,
+            &reachable,
+            &mut folded,
+            package.id != "builtin:classic",
+        );
         if more_missing.is_none() && !layout.more_is_placed(v) {
             more_missing = Some(v);
         }
@@ -341,8 +346,20 @@ impl<'a> Layout<'a> {
     /// Add to `folded` every foldable command no state of `reachable` places under `v`, where a row for it
     /// would do something there (R2). Accumulates across valuations: a command placed under only some of
     /// them folds.
-    fn accumulate_folds(&self, v: Valuation, reachable: &[State], folded: &mut [bool; FOLDABLE.len()]) {
+    fn accumulate_folds(
+        &self,
+        v: Valuation,
+        reachable: &[State],
+        folded: &mut [bool; FOLDABLE.len()],
+        fold_queue_navigation: bool,
+    ) {
         for (i, fold) in FOLDABLE.iter().enumerate() {
+            // Classic has no Previous/Next controls and its More menu intentionally stays the
+            // same as the upstream player menu. Generic packages still expose unplaced queue
+            // commands through More.
+            if !fold_queue_navigation && matches!(fold.command, "previous" | "next") {
+                continue;
+            }
             let placed = reachable.iter().any(|&s| {
                 self.controls
                     .iter()
@@ -355,10 +372,15 @@ impl<'a> Layout<'a> {
     /// **R2 as data**: the commands this package leaves unplaced in every state a row for them would do
     /// something in, in the command table's order. [`check`] reports the same list in [`Checked::folds`];
     /// the compiler stores it ([`super::compile::Compiled::folds`]) so More's root can list the rows.
-    pub(super) fn folds(&self) -> Vec<Fold> {
+    pub(super) fn folds(&self, fold_queue_navigation: bool) -> Vec<Fold> {
         let mut folded = [false; FOLDABLE.len()];
         for v in self.valuations() {
-            self.accumulate_folds(v, &self.explore(v), &mut folded);
+            self.accumulate_folds(
+                v,
+                &self.explore(v),
+                &mut folded,
+                fold_queue_navigation,
+            );
         }
         fold_list(folded)
     }

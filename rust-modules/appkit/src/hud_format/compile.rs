@@ -990,7 +990,7 @@ pub fn compile(package: &Package, measure: &dyn Measure, ctx: CompileCtx) -> Com
         band: HudBand::CLASSIC,
         block: package.layout.get("band").and_then(Val::as_str) == Some("block"),
         modal: package.layout.get("sections").and_then(Val::as_str) != Some("inline"),
-        folds: layout.folds(),
+        folds: layout.folds(package.id != "builtin:classic"),
         findings,
         assets: package.assets.clone(),
     };

@@ -177,12 +177,7 @@ pub fn draw_at(
     progress: f32,
     countdown_cancelled: bool,
 ) {
-    let label = match (pr.kind, countdown_cancelled) {
-        (MarkerKind::Intro, false) => plx_platform::i18n::msg::widgets_skip_intro_watch(),
-        (MarkerKind::Intro, true) => plx_platform::i18n::msg::widgets_skip_intro(),
-        (MarkerKind::Recap, true) => plx_platform::i18n::msg::widgets_skip_recap_action(),
-        _ => pr.label(),
-    };
+    let label = label_for(pr.kind, countdown_cancelled);
     let Ok(label) = CString::new(label) else {
         return;
     };
@@ -199,4 +194,30 @@ pub fn draw_at(
         // so it wears their ground as well as their pop — see `ControlGround`.
         .ground(ControlGround::Unkeyed)
         .draw(&Env::inert(), p);
+}
+
+fn label_for(kind: MarkerKind, countdown_cancelled: bool) -> &'static str {
+    match (kind, countdown_cancelled) {
+        (MarkerKind::Intro, false) => plx_platform::i18n::msg::widgets_skip_intro_watch(),
+        (MarkerKind::Intro, true) => plx_platform::i18n::msg::widgets_skip_intro(),
+        (MarkerKind::Recap, false) => plx_platform::i18n::msg::widgets_skip_recap(),
+        (MarkerKind::Recap, true) => plx_platform::i18n::msg::widgets_skip_recap_action(),
+        _ => match kind {
+            MarkerKind::Intro => plx_platform::i18n::msg::widgets_skip_intro(),
+            MarkerKind::Credits => plx_platform::i18n::msg::widgets_skip_credits(),
+            MarkerKind::Recap => plx_platform::i18n::msg::widgets_skip_recap(),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recap_countdown_says_watch_until_the_viewer_cancels_it() {
+        use plx_platform::i18n::msg;
+        assert_eq!(label_for(MarkerKind::Recap, false), msg::widgets_skip_recap());
+        assert_eq!(label_for(MarkerKind::Recap, true), msg::widgets_skip_recap_action());
+    }
 }

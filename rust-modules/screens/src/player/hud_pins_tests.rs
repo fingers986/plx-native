@@ -253,14 +253,6 @@ impl Seen {
         )
     }
 
-    fn is(&self, pin: &Pin) -> bool {
-        self.region == pin.region
-            && self.btn == pin.btn
-            && self.tab == pin.tab
-            && self.flags == pin.flags
-            && self.reqs == pin.reqs
-            && self.scrub_ns == -1
-    }
 }
 
 /// One mounted player page in a real dispatcher.
@@ -502,8 +494,27 @@ fn check_case(case: &Case) {
         let mut run = Run::boot(case.occupant);
         run.walk(pin.keys);
         let got = run.seen();
+        // These pins were captured when the Classic row still included Previous/Next. The app
+        // keeps those commands available to custom HUD packages, but the built-in row now starts
+        // at Subtitles and has only Subtitles, Audio and More. Translate the old row index to the
+        // same visible control; stand-in rows (Skip and Up Next) keep their own indices.
+        let removed_before = match case.occupant {
+            Occupant::Plain | Occupant::Episode => 2,
+            Occupant::NextOnly | Occupant::PreviousOnly => 1,
+            Occupant::SkipIntro | Occupant::SkipCredits | Occupant::UpNext => 0,
+        };
+        let expected_btn = if pin.region == 1 {
+            (pin.btn - removed_before).max(0)
+        } else {
+            pin.btn
+        };
         assert!(
-            got.is(pin),
+            got.region == pin.region
+                && got.btn == expected_btn
+                && got.tab == pin.tab
+                && got.flags == pin.flags
+                && got.reqs == pin.reqs
+                && got.scrub_ns == -1,
             "{} ({:?}, chapters={}) after \"{}\":\n  expected {}\n  actual   {}",
             case.name,
             case.occupant,
@@ -511,7 +522,7 @@ fn check_case(case: &Case) {
             pin.keys,
             Seen {
                 region: pin.region,
-                btn: pin.btn,
+                btn: expected_btn,
                 tab: pin.tab,
                 flags: pin.flags.into(),
                 reqs: pin.reqs.into(),

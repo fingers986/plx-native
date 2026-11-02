@@ -387,7 +387,7 @@ fn classic_names_its_nodes() {
         .lookup(0, Slot::Discs, true, true, false)
         .expect("the compact state");
     let more = root.controls.iter().position(|c| c.id == "more").expect("classic places More");
-    assert_eq!(root.control_pointer(more), "/layout/block/0/cells/1/segment/items/4");
+    assert_eq!(root.control_pointer(more), "/layout/block/0/cells/1/segment/items/2");
 }
 
 #[test]
@@ -423,7 +423,7 @@ fn a_vstack_names_the_rect_it_was_laid_out_in() {
 const SUPPORT_CASE: InvalidCase = InvalidCase {
     name: "support: an unknown command",
     code: "HUD-E0301",
-    pointer: "/layout/block/0/cells/1/segment/items/4/command",
+    pointer: "/layout/block/0/cells/1/segment/items/2/command",
     base: Base::Classic,
     edits: &[(r#""command": "open_more""#, r#""command": "open_mor""#)],
     langs: &["en", "de"],
@@ -642,9 +642,9 @@ fn a_report_with_findings_at_several_pointers_reads_in_document_order() {
 /// compare, `/block/2` before `/block/10`, is `report`'s own test; this pins a real lint's order.)
 const EXPECTED_POINTERS: [&str; 5] = [
     "/layout/block/0/cells/0/vstack/cells/0/text",
+    "/layout/block/0/cells/1/segment/items/0",
+    "/layout/block/0/cells/1/segment/items/1",
     "/layout/block/0/cells/1/segment/items/2",
-    "/layout/block/0/cells/1/segment/items/3",
-    "/layout/block/0/cells/1/segment/items/4",
     "/layout/up_next",
 ];
 
