@@ -4569,7 +4569,11 @@ mod lifecycle_regression_tests {
                 Tick { ms: 1_000 + index as u32 * 500, dt_us: 16_000 }, vec![input]);
             let reqs = app.bridge.take_player_reqs();
             if index < 3 {
-                assert!(reqs.is_empty(), "a held drag previews without any transport request");
+                if index == 0 {
+                    assert_eq!(reqs, vec![PlayerReq::BeginScrubPreview], "pointer-down begins the scrub preview");
+                } else {
+                    assert!(reqs.is_empty(), "continued drag motion only updates the preview");
+                }
                 let page = super::super::bridge::player(&app.pages).unwrap();
                 assert!(page.scrub.drag);
                 assert!(page.scrub.ns > 0);
