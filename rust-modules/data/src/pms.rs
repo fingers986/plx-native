@@ -1983,6 +1983,43 @@ pub(crate) fn shelf_card(it: &plx_plex::plex::Metadata, sid: ServerId) -> Option
     (!m.thumb.is_empty()).then_some(m)
 }
 
+/// A Home Recently Added TV episode is represented by its season. Keep the episode's `addedAt`
+/// as the season card's recency so a new episode moves its season to the front, while the card's
+/// identity and artwork come from the parent season. This is intentionally only used for the
+/// Home TV recent hubs; library episode shelves continue to show episodes.
+fn recent_tv_season_card(it: &plx_plex::plex::Metadata, sid: ServerId) -> Option<PmsMovie> {
+    match it.kind.as_str() {
+        "season" => shelf_card(it, sid),
+        "episode" => {
+            let season_key = clean(&it.parent_rating_key);
+            let show_key = clean(&it.grandparent_rating_key);
+            let season_index = it.parent_index?;
+            if season_key.is_empty() || show_key.is_empty() { return None; }
+
+            let mut card = parse_item(it, sid);
+            card.kind = KIND_SEASON;
+            card.rk = season_key;
+            card.guid = None;
+            card.title = clean(&it.parent_title);
+            card.thumb = if it.parent_thumb.is_empty() { clean(&it.grandparent_thumb) }
+                else { clean(&it.parent_thumb) };
+            card.still.clear();
+            card.summary.clear();
+            card.aired.clear();
+            card.dur_ns = 0;
+            card.resume_ms = 0;
+            card.show_rk = show_key;
+            card.season_index = season_index as c_int;
+            card.show_title = clean(&it.grandparent_title);
+            card.ep_index = 0;
+            card.unwatched = false;
+            card.watched = false;
+            (!card.thumb.is_empty()).then_some(card)
+        }
+        _ => None,
+    }
+}
+
 /// The Continue Watching deck of `out`, from the dedicated hub.
 fn project_deck(out: &mut SourceBuild, cw: &plx_plex::plex::MediaContainer, sid: ServerId) {
     // Continue Watching comes from the **dedicated** `/hubs/continueWatching` hub, and `/hubs`'s own
@@ -2085,20 +2122,38 @@ impl<'a> Projection<'a> {
             }
             // A key the preview lists twice is one card, at its first position; `end` below stays the
             // listing's own, so the next page is asked for from where the listing ends.
+            let recent_tv = is_home_recent_tv(&hub.hub_identifier);
             let mut seen = std::collections::HashSet::new();
-            let (positions, items): (Vec<usize>, Vec<Arc<PmsMovie>>) = hub.metadata.iter().enumerate()
-                .filter_map(|(i, item)| shelf_card(item, self.sid).map(|item| (i, Arc::new(item))))
-                .filter(|(_, item)| seen.insert(item.rk.clone())).unzip();
+            let mut cards: Vec<(usize, PmsMovie)> = hub.metadata.iter().enumerate()
+                .filter_map(|(i, item)| {
+                    let card = if recent_tv { recent_tv_season_card(item, self.sid) }
+                        else { shelf_card(item, self.sid) }?;
+                    Some((i, card))
+                })
+                .collect();
+            if recent_tv {
+                // Plex orders Recently Added TV by the newest episode. Make that recency explicit
+                // when several episodes collapse to one season card, then give this transformed
+                // preview local positions: the season keys are not keys in Plex's episode listing.
+                cards.sort_by(|(a_pos, a), (b_pos, b)| {
+                    b.added_at.unwrap_or_default().cmp(&a.added_at.unwrap_or_default())
+                        .then_with(|| a_pos.cmp(b_pos))
+                });
+            }
+            cards.retain(|(_, item)| seen.insert((item.sec, item.rk.clone())));
+            let items: Vec<Arc<PmsMovie>> = cards.into_iter().map(|(_, item)| Arc::new(item)).collect();
+            let positions: Vec<usize> = (0..items.len()).collect();
             if items.is_empty() {
                 continue;
             }
+            let item_count = items.len();
             let library = hub
                 .metadata
                 .iter()
                 .find(|m| !m.library_section_title.is_empty())
                 .map(|m| m.library_section_title.clone())
                 .unwrap_or_default();
-            if !plx_plex::plex::is_pageable_hub_key(&hub.key) && (hub.more || hub.total() > hub.metadata.len()) {
+            if !recent_tv && !plx_plex::plex::is_pageable_hub_key(&hub.key) && (hub.more || hub.total() > hub.metadata.len()) {
                 if let Some(line) = paging::unpaged_line(&hub.hub_identifier, &hub.key) { plx_base::eventlog::log(&line); }
             }
             window.push((Shelf { epoch: 0,
@@ -2106,10 +2161,10 @@ impl<'a> Projection<'a> {
                 hub_id: hub.hub_identifier.clone(),
                 key: hub.key.clone(),
                 items, positions,
-                total: hub.total(),
+                total: if recent_tv { item_count } else { hub.total() },
                 offset: 0,
-                end: hub.metadata.len(),
-                more: pages(&hub.key)
+                end: if recent_tv { item_count } else { hub.metadata.len() },
+                more: !recent_tv && pages(&hub.key)
                     && (hub.more || hub.total() > hub.metadata.len() || hub.metadata.len() >= HUB_FETCH_COUNT as usize),
                 shown: 0,
                 row: paging::preview_state(&hub.hub_identifier, &hub.key),
@@ -2149,6 +2204,12 @@ impl<'a> Projection<'a> {
         }
         self.out
     }
+}
+
+fn is_home_recent_tv(hub_identifier: &str) -> bool {
+    hub_identifier == "home.television.recent"
+        || hub_identifier.starts_with("tv.recentlyadded.")
+        || hub_identifier.starts_with("show.recentlyadded.")
 }
 
 // The most cards a refresh has held at once, as a test reads it back.
