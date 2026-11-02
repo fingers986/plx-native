@@ -1,4 +1,4 @@
-{"updated":"2026-11-02T08:17:03Z",
+{"updated":"2026-11-02T08:26:24Z",
 "ci":[
 {"id":41395664519,"at":"2026-11-02T05:43:22Z","sha":"de5f513cb","title":"Refine playback HUD, markers, subtitles, and navigation","pr":null,"conclusion":"failure","attempt":1,"jobs":{"which gates apply":5,"host harness tests":379,"armv7 cross-build and artifact assertions":430,"cross-build (armv7) + artifact assertions":3},"failed":["host checks (NOT a device gate)","host lint + type-checks","host python/shell/C gates","host unit tests (default features)","host unit tests (hostsim)"]},
 {"id":41398462805,"at":"2026-11-02T06:12:27Z","sha":"5f73d6f40","title":"Show seasons in Recently Added TV","pr":1,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"which gates apply":4,"host harness tests":373,"armv7 cross-build and artifact assertions":354,"cross-build (armv7) + artifact assertions":4},"failed":["host checks (NOT a device gate)","host lint + type-checks","host python/shell/C gates","host unit tests (default features)","host unit tests (hostsim)"]},
@@ -16,7 +16,8 @@
 {"id":41403976289,"at":"2026-11-02T07:05:00Z","sha":"4d6fc09cd","title":"Restore complete subtitle regression tests","pr":1,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":429,"Windows launcher syntax":23,"Linux simulator build + launch":292,"macOS simulator build + launch":518}},
 {"id":41407344428,"at":"2026-11-02T07:36:02Z","sha":"a6ec1826a","title":"Fix player and HUD CI regressions","pr":1,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":207,"Linux simulator build + launch":289,"macOS simulator build + launch":188,"Windows launcher syntax":18}},
 {"id":41409913841,"at":"2026-11-02T08:00:11Z","sha":"12763120e","title":"Align CI tests with current HUD and seek behavior","pr":1,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":226,"Windows launcher syntax":20,"macOS tests against bundled FFmpeg and ASS":221,"Linux simulator build + launch":301}},
-{"id":41411150708,"at":"2026-11-02T08:10:48Z","sha":"1c7bdd0c4","title":"Update remaining HUD CI expectations","pr":1,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":277,"macOS tests against bundled FFmpeg and ASS":212,"Linux simulator build + launch":302,"Windows launcher syntax":19}}
+{"id":41411150708,"at":"2026-11-02T08:10:48Z","sha":"1c7bdd0c4","title":"Update remaining HUD CI expectations","pr":1,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":277,"macOS tests against bundled FFmpeg and ASS":212,"Linux simulator build + launch":302,"Windows launcher syntax":19}},
+{"id":41412378213,"at":"2026-11-02T08:20:48Z","sha":"38fba0eba","title":"Fix remaining CI unit test expectations","pr":1,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":150,"macOS tests against bundled FFmpeg and ASS":152,"Linux simulator build + launch":295,"Windows launcher syntax":20}}
 ],
 "nightly":[],
 "cancelled":{},
