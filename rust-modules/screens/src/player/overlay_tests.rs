@@ -863,22 +863,22 @@ fn timing_left_and_right_commit_subtitle_offset() {
     );
 }
 
-/// OK and BACK both close the capsule (`TimingCapsule::key`'s `Key::Ok | Key::Back` arm) —
-/// dismissing the surface with the offset kept: neither key raises a reset commit, and neither
-/// asks for anything else (the transport staying down is `PlayerScreen::set_hud_policy`'s, for
-/// every way the surface can close).
+/// OK toggles playback without closing Timing; BACK closes it and asks the app to resume playback.
 #[test]
-fn timing_ok_and_back_close_and_keep_the_offset() {
+fn timing_ok_toggles_in_place_and_back_closes_then_plays() {
     let _g = plx_base::testlock::serial();
     plx_media::player::sidecar::reset();
     plx_media::player::set_subtitle_offset(300);
     let ps = plx_media::route::PlaybackSession::IDLE;
-    for (sym, wcode) in [(SDLK_RETURN, 0), (0, WCODE_BACK)] {
+    for (sym, wcode, expected, closes) in [
+        (SDLK_RETURN, 0, PlayerReq::CapsuleTogglePlayback, false),
+        (0, WCODE_BACK, PlayerReq::CapsuleCloseAndPlay, true),
+    ] {
         let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Timing);
         let (handled, reqs, dismissed) = press(&mut page, sym, wcode, Edge::Down);
         assert_eq!(handled, Handled::Yes);
-        assert!(dismissed, "sym={sym} wcode={wcode}: closes the capsule");
-        assert_eq!(reqs, vec![], "sym={sym} wcode={wcode}: no offset reset alongside it");
+        assert_eq!(dismissed, closes, "sym={sym} wcode={wcode}");
+        assert_eq!(reqs, vec![expected], "sym={sym} wcode={wcode}");
     }
 }
 

@@ -630,6 +630,29 @@ pub(crate) fn player_requests(
                     apply_transport(pa, play, now, pages);
                 }
             }
+            PlayerReq::CapsuleTogglePlayback => {
+                let target_paused = super::lifecycle::transport_target(
+                    None,
+                    super::lifecycle::viewer_paused(),
+                );
+                if player.player_menu_was_playing.is_some() {
+                    // The capsule deliberately keeps the menu's pause lease while open, but OK is
+                    // an intentional transport toggle. Track the state the viewer now wants so
+                    // closing with BACK cannot overwrite a pause they chose here.
+                    player.player_menu_was_playing = Some(!target_paused);
+                    set_transport_paused(pa, target_paused);
+                } else {
+                    apply_transport(pa, None, now, pages);
+                }
+            }
+            PlayerReq::CapsuleCloseAndPlay => {
+                // The overlay queued Dismiss before this request. Retire its pause lease now and
+                // issue one-way PLAY; waiting for the HUD to become visible would leave a hidden
+                // capsule's playback paused indefinitely.
+                player.player_menu_was_playing = None;
+                player.player_menu_seen_open = false;
+                apply_transport(pa, Some(true), now, pages);
+            }
             PlayerReq::SeekTo(ns) => {
                 if player.player_menu_was_playing.is_some() {
                     // A chapter pick from a section reached through More can seek while the

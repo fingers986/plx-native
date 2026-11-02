@@ -3201,12 +3201,20 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         let menu_can_resume = hud_policy == plx_screens::player::HudPolicy::Normal
                             && !menu_open
                             && !super::bridge::player_section_up(&app.pages);
-                        let (restore_scrub, hud_shown) = if let Some(player) = super::bridge::player_mut(&mut app.pages) {
+                        let (restore_scrub, hud_shown, hud_just_hidden) = if let Some(player) = super::bridge::player_mut(&mut app.pages) {
                             player.busy = busy;
+                            let hud_was_up = player.hud_up(&app.player.session, fr.now);
                             let restore_scrub = player.set_hud_policy(hud_policy);
-                            let hud_shown = player.hud.visible(&app.player.session, fr.now, paused());
-                            (restore_scrub, hud_shown)
-                        } else { (false, false) };
+                            let hud_shown = player.hud_up(&app.player.session, fr.now);
+                            (restore_scrub, hud_shown, hud_was_up && !hud_shown)
+                        } else { (false, false, false) };
+                        if hud_just_hidden {
+                            // HUD policy changes (including Timing / Custom Position capsules)
+                            // can hide the transport without passing through HudState::hide.
+                            // Couple the actual visible-to-hidden edge to the pointer here, after
+                            // the dispatcher has mounted the surface and resolved its policy.
+                            unsafe { super::input::enter_dpad_mode(&mut app.ptr); }
+                        }
                         if restore_scrub {
                             super::playback::cancel_scrub_preview(&mut app.adapters.player, &mut app.player);
                         }
@@ -3879,6 +3887,18 @@ unsafe fn controlled_key_input(app: &mut App, event: plx_machine::machine::Input
         app.last_input=event.at.ms;
         app.ptr.last_motion=event.at.ms;
         app.ptr.cur_hidden=false;
+        let click_on_capsule = matches!(event.kind, InputKind::Click { .. })
+            && matches!(
+                super::bridge::player_overlay_kind(&app.pages),
+                Some(plx_screens::player::overlay::OverlayKind::Timing
+                    | plx_screens::player::overlay::OverlayKind::CustomDistance { .. })
+            );
+        if click_on_capsule {
+            // A scroll/wiggle may have brought the pointer back while a capsule was open. The
+            // click closes it and resumes playback, so hide the system cursor and synchronize
+            // the pointer state immediately instead of letting stale motion show it next frame.
+            unsafe { super::input::enter_dpad_mode(&mut app.ptr); }
+        }
         if matches!(event.kind,InputKind::Click{..}) { app.ptr.button_down=true; }
         plx_machine::idle::invalidate();
         app.inputs.push(event);

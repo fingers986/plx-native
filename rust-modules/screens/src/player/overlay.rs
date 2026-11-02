@@ -687,10 +687,13 @@ impl PlayerOverlayScreen {
                         PlayerReq::CommitTrack(plx_appkit::track_menu::TrackCommit::SubtitleOffset(v)),
                     );
                 }
-                // The transport stays down after the capsule leaves — not asked for here, since a
-                // pointer miss closes it without reaching this ladder; `PlayerScreen::set_hud_policy`
-                // turns ANY close into a dismissed HUD on the frame the surface is gone.
-                Some(CapsuleOut::Close) => self.dismiss(fx),
+                Some(CapsuleOut::TogglePlayback) => Self::ask(fx, PlayerReq::CapsuleTogglePlayback),
+                // Back closes first, then resumes the film; `CapsuleCloseAndPlay` also retires the
+                // temporary menu pause, which would otherwise wait for the hidden HUD to return.
+                Some(CapsuleOut::CloseAndPlay) => {
+                    self.dismiss(fx);
+                    Self::ask(fx, PlayerReq::CapsuleCloseAndPlay);
+                }
                 Some(CapsuleOut::Bump) | None => {}
             }
             return Handled::Yes;
@@ -710,7 +713,10 @@ impl PlayerOverlayScreen {
                         ),
                     ));
                 }
-                Some(plx_appkit::timing_capsule::DistanceCapsuleOut::Close) => self.dismiss(fx),
+                Some(plx_appkit::timing_capsule::DistanceCapsuleOut::CloseAndPlay) => {
+                    self.dismiss(fx);
+                    Self::ask(fx, PlayerReq::CapsuleCloseAndPlay);
+                }
                 None => {}
             }
             return Handled::Yes;
@@ -791,6 +797,16 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Machine<H> 
                 // answered `HitSource::Engine` since phase 12's contract freeze, and the property
                 // it relies on was never the Legacy answer but the delivery.)
                 if let InputKind::Click { .. } | InputKind::Pointer { .. } = input.kind {
+                    if matches!(&self.panel, Panel::Timing(_) | Panel::CustomDistance(_))
+                        && matches!(input.kind, InputKind::Click { .. })
+                    {
+                        // Capsules intentionally have no cursor stops: every cursor click, on the
+                        // capsule or elsewhere on the video, closes through the same path as BACK
+                        // and releases the temporary menu pause before issuing one-way PLAY.
+                        self.dismiss(fx);
+                        Self::ask(fx, PlayerReq::CapsuleCloseAndPlay);
+                        return Handled::Yes;
+                    }
                     // The Engine's own hit map now resolves every row (`Focusable::place` below,
                     // `DrawFrame::stop` registered in `draw`): a hit delivers `Activate` directly
                     // (§7.5-7.6, spent by `Self::activate` the same as a key OK), a hover parks

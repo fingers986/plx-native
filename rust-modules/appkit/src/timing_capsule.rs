@@ -89,13 +89,15 @@ fn text_in(offset_ms: i64, locale: &plx_platform::i18n::LocaleContext) -> String
 }
 
 /// What a key did to the capsule, for the caller to act on — [`Step`](CapsuleOut::Step) commits a
-/// new offset through the ordinary `TrackCommit::SubtitleOffset` path, [`Close`](CapsuleOut::Close)
-/// asks the overlay to dismiss, and [`Bump`](CapsuleOut::Bump) is a pure animation cue: the value
-/// did not move, only the shake did.
+/// new offset through the ordinary `TrackCommit::SubtitleOffset` path, [`TogglePlayback`](CapsuleOut::TogglePlayback)
+/// toggles the film while keeping the timing capsule open, [`CloseAndPlay`](CapsuleOut::CloseAndPlay)
+/// asks the overlay to close before resuming playback, and [`Bump`](CapsuleOut::Bump) is a pure
+/// animation cue: the value did not move, only the shake did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapsuleOut {
     Step(i64),
-    Close,
+    TogglePlayback,
+    CloseAndPlay,
     Bump,
 }
 
@@ -171,7 +173,8 @@ impl TimingCapsule {
                 self.set_offset(0);
                 Some(CapsuleOut::Step(0))
             }
-            Key::Ok | Key::Back if edge == Edge::Down => Some(CapsuleOut::Close),
+            Key::Ok if edge == Edge::Down => Some(CapsuleOut::TogglePlayback),
+            Key::Back if edge == Edge::Down => Some(CapsuleOut::CloseAndPlay),
             _ => None,
         }
     }
@@ -296,7 +299,7 @@ pub struct CustomDistanceCapsule {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DistanceCapsuleOut {
     Step(u8),
-    Close,
+    CloseAndPlay,
 }
 
 impl CustomDistanceCapsule {
@@ -318,7 +321,7 @@ impl CustomDistanceCapsule {
                 self.gap_px = next;
                 Some(DistanceCapsuleOut::Step(next))
             }
-            Key::Ok | Key::Back if edge == Edge::Down => Some(DistanceCapsuleOut::Close),
+            Key::Ok | Key::Back if edge == Edge::Down => Some(DistanceCapsuleOut::CloseAndPlay),
             _ => None,
         }
     }
@@ -433,10 +436,10 @@ mod tests {
     }
 
     #[test]
-    fn ok_and_back_close() {
+    fn ok_toggles_playback_while_back_closes_and_plays() {
         let mut c = cap();
-        assert_eq!(c.key(Key::Ok, Edge::Down, 0), Some(CapsuleOut::Close));
-        assert_eq!(c.key(Key::Back, Edge::Down, 0), Some(CapsuleOut::Close));
+        assert_eq!(c.key(Key::Ok, Edge::Down, 0), Some(CapsuleOut::TogglePlayback));
+        assert_eq!(c.key(Key::Back, Edge::Down, 0), Some(CapsuleOut::CloseAndPlay));
     }
 
     #[test]
