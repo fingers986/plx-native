@@ -49,7 +49,7 @@ fn rich() -> Session {
     session.prefs.direct_play_mode = DirectPlayMode::Forced;
     session.prefs.subtitle_tone = SubtitleTone::Grey;
     session.prefs.subtitle_size = SubtitleSize::Large;
-    session.prefs.subtitle_position = SubtitlePosition::High;
+    session.prefs.subtitle_position = SubtitlePosition::TvScreen;
     session.prefs.next_episode_mode = NextEpisodeMode::AfterCredits;
     session.prefs.skip_interval = SkipInterval::Seconds30;
     session.prefs.deck_press = DeckPress::Play;

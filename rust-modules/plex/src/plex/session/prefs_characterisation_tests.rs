@@ -526,7 +526,7 @@ fn skip_rows() -> Vec<SkipRow> {
     vec![
         SkipRow { key: "subtitle_size", set: |s| s.prefs.subtitle_size = SubtitleSize::Large,
             reset: |s| s.prefs.subtitle_size = SubtitleSize::default() },
-        SkipRow { key: "subtitle_position", set: |s| s.prefs.subtitle_position = SubtitlePosition::High,
+        SkipRow { key: "subtitle_position", set: |s| s.prefs.subtitle_position = SubtitlePosition::TvScreen,
             reset: |s| s.prefs.subtitle_position = SubtitlePosition::default() },
         SkipRow { key: "next_episode_mode", set: |s| s.prefs.next_episode_mode = NextEpisodeMode::Off,
             reset: |s| s.prefs.next_episode_mode = NextEpisodeMode::default() },

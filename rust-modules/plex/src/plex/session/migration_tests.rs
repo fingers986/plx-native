@@ -832,7 +832,7 @@ fn a_preference_returned_to_its_default_is_not_resurrected_by_the_public_rewrite
     let session = Session {
         prefs: Preferences {
             subtitle_size: SubtitleSize::Large,
-            subtitle_position: SubtitlePosition::High,
+            subtitle_position: SubtitlePosition::TvScreen,
             skip_interval: SkipInterval::Seconds30,
             ..base.prefs.clone()
         },
