@@ -1027,7 +1027,7 @@ const EPISODE: &[Pin] = &[
     p("DULLLLL", 1, 0, 0, "vr", ""),
     p("DULLLLLL", 1, 0, 0, "vr", ""),
     p("DUR", 1, 3, 0, "vr", ""),
-    p("DURR", 1, 3, 0, "vr", ""),
+    p("DURR", 1, 4, 0, "vr", ""),
     p("DURRR", 1, 4, 0, "vr", ""),
     p("DURRRR", 1, 4, 0, "vr", ""),
     p("DURRRRR", 1, 4, 0, "vr", ""),
@@ -1116,7 +1116,7 @@ const NEXT_ONLY: &[Pin] = &[
     p("DURRRRRR", 1, 3, 0, "vr", ""),
     p("UURRRU", 0, 4, 0, "vd", ""),
     p("UURRRD", 0, 4, 0, "vr", ""),
-    p("UURRRL", 1, 4, 0, "vr", ""),
+    p("UURRRL", 1, 2, 0, "vr", ""),
     p("UURRRR", 1, 4, 0, "vr", ""),
     p("UURRRK", 1, 4, 0, "vr", "Command(OpenMore(Root))"),
 ];
@@ -1188,7 +1188,7 @@ const PREVIOUS_ONLY: &[Pin] = &[
     p("DURRRRRR", 1, 3, 0, "vr", ""),
     p("UURRRU", 0, 4, 0, "vd", ""),
     p("UURRRD", 0, 4, 0, "vr", ""),
-    p("UURRRL", 1, 4, 0, "vr", ""),
+    p("UURRRL", 1, 2, 0, "vr", ""),
     p("UURRRR", 1, 4, 0, "vr", ""),
     p("UURRRK", 1, 4, 0, "vr", "Command(OpenMore(Root))"),
 ];
