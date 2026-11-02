@@ -418,7 +418,7 @@ mod tests {
                 192,
                 "the centered margin is independent of {size:?}"
             );
-            assert_eq!(2 * side_margin(s) as f32 + wrap_width(s), SCR_W);
+            assert_eq!(2.0 * side_margin(s) as f32 + wrap_width(s), SCR_W);
         }
         assert_eq!(wrap_width(3.0), 1536.0);
         assert_eq!(side_margin(3.0), 192);

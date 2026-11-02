@@ -3023,7 +3023,7 @@ mod sections {
             use plx_ui::screen::DrawFrame;
             let cx: Cx<'static, TestHost> = super::super::cx();
             let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
-            self.screen().record_stops(&mut f, true);
+            self.screen().record_stops(&mut f, true, false);
             let stops = f.into_stops();
             let r = stops.iter().find(|s| s.key.elem == elem).unwrap_or_else(|| panic!("no stop for element {elem}")).rect;
             self.d.input.hit.fill(stops);

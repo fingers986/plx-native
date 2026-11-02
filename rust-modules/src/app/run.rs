@@ -2351,11 +2351,10 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // Edge gliding is disabled. Pointer motion at every screen edge remains ordinary hover,
         // so it can move focus without scrolling the page or dragging a row.
         app.ptr.edge.stop();
-        if !matches!(app.route(), AppArg::Player) {
-            app.ptr.startup_motion_suppressed = false;
-        } else if app.ptr.startup_motion_suppressed
-            && app.ptr.last_motion != 0
-            && fr.now.wrapping_sub(app.ptr.last_motion) > 3000
+        if !matches!(app.route(), AppArg::Player)
+            || (app.ptr.startup_motion_suppressed
+                && app.ptr.last_motion != 0
+                && fr.now.wrapping_sub(app.ptr.last_motion) > 3000)
         {
             app.ptr.startup_motion_suppressed = false;
         }
