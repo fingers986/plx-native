@@ -110,14 +110,14 @@ pub(super) const INVALID: &[super::lint::testing::InvalidCase] = &[
     InvalidCase {
         name: "classic lifted: the control row's top is above the caption bound",
         code: "HUD-E1201",
-        pointer: "/layout/block/0/cells/1/segment/items/2",
+        pointer: "/layout/block/0/cells/1/segment/items/0",
         base: Base::Classic,
         edits: &[(r#""inset": 13,"#, r#""inset": 213,"#)],
         langs: &[],
         skew: 0.0,
         also: &[
-            ("HUD-E1303", "/layout/block/0/cells/1/segment/items/3"),
-            ("HUD-E1303", "/layout/block/0/cells/1/segment/items/4"),
+            ("HUD-E1303", "/layout/block/0/cells/1/segment/items/1"),
+            ("HUD-E1303", "/layout/block/0/cells/1/segment/items/2"),
         ],
     },
     // classic under `band: "block"` with a 354 px title: the band is the top of ANY drawn extent, and the
@@ -269,7 +269,7 @@ mod tests {
             };
             let extents = |slot| state(slot).band_extents(false).collect::<Vec<_>>();
             let discs = extents(Slot::Discs);
-            let more = discs.iter().find(|e| e.pointer == "/layout/block/0/cells/1/segment/items/4").expect("More");
+            let more = discs.iter().find(|e| e.pointer == "/layout/block/0/cells/1/segment/items/2").expect("More");
             assert_eq!((more.what, more.top), ("control", 792.0));
             let bar = discs.iter().find(|e| e.what == "scrub bar").expect("the bar");
             assert!(bar.pointer.starts_with("/layout/block/1/cells/0/playbar"), "{}", bar.pointer);

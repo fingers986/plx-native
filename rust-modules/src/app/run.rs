@@ -2351,11 +2351,10 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // Edge gliding is disabled. Pointer motion at every screen edge remains ordinary hover,
         // so it can move focus without scrolling the page or dragging a row.
         app.ptr.edge.stop();
-        if !matches!(app.route(), AppArg::Player) {
-            app.ptr.startup_motion_suppressed = false;
-        } else if app.ptr.startup_motion_suppressed
-            && app.ptr.last_motion != 0
-            && fr.now.wrapping_sub(app.ptr.last_motion) > 3000
+        if !matches!(app.route(), AppArg::Player)
+            || (app.ptr.startup_motion_suppressed
+                && app.ptr.last_motion != 0
+                && fr.now.wrapping_sub(app.ptr.last_motion) > 3000)
         {
             app.ptr.startup_motion_suppressed = false;
         }
@@ -4530,8 +4529,12 @@ mod lifecycle_regression_tests {
         }
         let _events = Events;
         let mut app = app();
-        super::super::bridge::show_page(&mut app.pages, AppArg::Player);
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
         frame(&mut app, 0);
+        // This is the established, post-startup pointer path. Startup motion is intentionally
+        // suppressed while buffering so it cannot reopen the HUD before the first frame plays.
+        super::super::bridge::player_mut(&mut app.pages).expect("the player page is mounted").hud.startup_until_playing = false;
+        app.ptr.startup_motion_suppressed = false;
         let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
         for (token, held) in [("pd:900,870", true), ("pm:1200,870", true),
             ("pm:1400,870", true), ("pu:1400,870", false)] {
@@ -4566,13 +4569,17 @@ mod lifecycle_regression_tests {
                 Tick { ms: 1_000 + index as u32 * 500, dt_us: 16_000 }, vec![input]);
             let reqs = app.bridge.take_player_reqs();
             if index < 3 {
-                assert!(reqs.is_empty(), "a held drag previews without any transport request");
+                if index == 0 {
+                    assert_eq!(reqs, vec![PlayerReq::BeginScrubPreview], "pointer-down begins the scrub preview");
+                } else {
+                    assert!(reqs.is_empty(), "continued drag motion only updates the preview");
+                }
                 let page = super::super::bridge::player(&app.pages).unwrap();
                 assert!(page.scrub.drag);
                 assert!(page.scrub.ns > 0);
             } else {
                 let expected = (geometry.scrub_frac(1400.0) as f64 * 100_000_000_000.0) as i64;
-                assert_eq!(reqs, vec![PlayerReq::CommitSeek(expected)], "release commits once at the final motion");
+                assert_eq!(reqs, vec![PlayerReq::ConfirmScrubSeek(expected)], "release confirms once at the final motion");
             }
         }
         // Neither the key's tap debounce nor a repeated pointer-up can replay this seek.
@@ -4583,11 +4590,7 @@ mod lifecycle_regression_tests {
         assert!(app.bridge.take_player_reqs().is_empty());
     }
 
-    /// **The pointer resting at Home's top edge glides the page, through the real loop.** The
-    /// glide runs in `playback_tick`, before the loop has worked out `Frame::dt`; a glide that took
-    /// that 0 as the frame's length sent a wheel of 0 on every frame, and the host rigs, which set
-    /// `dt` by hand, hid it. Here the frame is begun as the loop begins it (`dt` 0) and only the
-    /// clock moves.
+    /// A pointer resting at Home's top edge only hovers; it does not scroll the page.
     #[test]
     fn a_pointer_resting_at_the_top_edge_sends_the_page_a_glide_through_the_real_loop() {
         let _serial=plx_base::testlock::serial();
@@ -4611,12 +4614,10 @@ mod lifecycle_regression_tests {
                 if let plx_machine::machine::InputKind::Wheel { dy } = e.kind { wheels.push(dy); }
             }
         }
-        assert!(wheels.len() > 40 && wheels.iter().all(|&dy| dy > 0.0),
-            "the resting pointer glides the page up on every frame after the dwell: {wheels:?}");
+        assert!(wheels.is_empty(), "edge hover must not scroll the page: {wheels:?}");
     }
 
-    /// **The pointer resting at a side edge sends the row under it a sideways glide, through the
-    /// real loop**, frame after frame (`InputKind::Pan`, + at the right edge), at the pointer's place.
+    /// A pointer resting at a side edge keeps ordinary hover and does not pan the row.
     #[test]
     fn a_pointer_resting_at_the_right_edge_sends_a_sideways_glide_through_the_real_loop() {
         let _serial=plx_base::testlock::serial();
@@ -4641,13 +4642,10 @@ mod lifecycle_regression_tests {
                 assert!(!matches!(e.kind, plx_machine::machine::InputKind::Wheel { .. }), "no vertical glide mid-height");
             }
         }
-        assert!(pans.len() > 40 && pans.iter().all(|&(dx, x, y)| dx > 0.0 && x == 1910.0 && y == 600.0),
-            "the row under the pointer glides to show more on the right: {pans:?}");
+        assert!(pans.is_empty(), "edge hover must not pan the row: {pans:?}");
     }
 
-    /// **The glide stops on the top bar's buttons and goes on off them, through the real loop**
-    /// with Home's bar presented in the hit map, a pointer resting
-    /// on a tab sends no glide, and moved off it, still at the edge, the page glides again.
+    /// A top-edge hover never scrolls, whether it rests on a bar control or beside it.
     #[test]
     fn the_edge_glide_stops_on_a_bar_button_and_goes_on_off_it_through_the_real_loop() {
         let _serial=plx_base::testlock::serial();
@@ -4681,9 +4679,9 @@ mod lifecycle_regression_tests {
             }
             wheels
         };
-        assert!(glide(&mut app, off, row) > 30, "off the buttons, at the edge, the page glides");
+        assert_eq!(glide(&mut app, off, row), 0, "off the buttons, edge hover does not scroll");
         assert_eq!(glide(&mut app, tab.cx(), row), 0, "on a bar button the glide stops");
-        assert!(glide(&mut app, off, row) > 30, "off it again the glide goes on");
+        assert_eq!(glide(&mut app, off, row), 0, "moving away from the button still does not scroll");
     }
 
     /// **The HUD's per-frame snapshot carries each global its presentation used to read itself**

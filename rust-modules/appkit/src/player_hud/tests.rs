@@ -24,7 +24,7 @@ fn a_long_cue_keeps_every_line_past_three() {
                Second authored line that is long enough to wrap onto a second row\n\
                Third authored line that is long enough to wrap onto a second row";
     let lines = caption_wrap(cue, 1.0, &FM);
-    assert_eq!(lines.len(), 6, "{lines:?}");
+    assert_eq!(lines.len(), 3, "each authored line stays intact below the fixed wrap width: {lines:?}");
     assert!(lines.last().unwrap().ends_with("second row"), "{lines:?}");
 }
 
@@ -1247,18 +1247,18 @@ fn a_two_line_cue_at_huge_stays_two_lines_at_full_size() {
     let lines = caption_wrap(cue, huge, &FM);
     assert_eq!(lines, ["I don't know why you came here tonight,", "but you had better leave right now."]);
     let lay = caption_layout(lines.len(), huge, SUB_BASE_Y, CAPTION_FLOOR_Y);
-    assert_eq!(lay.face, 65, "full Huge size");
+    assert_eq!(lay.face, 59, "full Huge size at the configured 1.65 scale");
 }
 
-/// **No wrapped line is wider than the wrap width, and no size's width passes three quarters
-/// of the screen**; only a single word wider than the width keeps a line of its own.
+/// **Every font size uses the same 80% logical-canvas wrap width**; only a single word wider
+/// than the width keeps a line of its own.
 #[test]
 fn caption_lines_stay_inside_the_wrap_width() {
     use plx_plex::plex::session::SubtitleSize;
     let widths: Vec<f32> = SubtitleSize::LADDER.iter().map(|&s| wrap_width(size_scale(s))).collect();
-    assert_eq!(widths, [760.0 * 0.78, 760.0, 950.0, 1140.0, 1368.0]);
-    assert!(widths.iter().all(|&w| w <= 1440.0), "{widths:?}");
-    assert_eq!(wrap_width(10.0), 1440.0, "any size is capped at 75% of 1920");
+    assert_eq!(widths, [1536.0; 5]);
+    assert!(widths.iter().all(|&w| w == 0.8 * SCR_W), "{widths:?}");
+    assert_eq!(wrap_width(10.0), 1536.0, "the width stays 80% of the fixed 1920 px canvas");
     let measure = |s: &str| s.chars().count() as f32 * 10.0;
     let lines = wrap_px("aa bbb cccc dd eeeeeeeeeeee f", 80.0, &measure);
     assert_eq!(lines, ["aa bbb", "cccc dd", "eeeeeeeeeeee", "f"]);
@@ -1337,14 +1337,14 @@ fn image_sub_lift_follows_the_band() {
 
 /// **`min_controls_top_y`**: the highest row top for which the largest block (three lines at the
 /// largest size, the highest position) is still inside `SAFE`. The number is computed, not
-/// estimated: 54 (SAFE top) + 3 x 48 x 1.8 (block) + 320 (position) + 12 (clearance) = 645.2, up
-/// to the whole pixel 646. A band exactly there keeps the block on screen through
+/// estimated: 54 (SAFE top) + 3 x 48 x 1.65 (block) + 320 (position) + 12 (clearance) = 623.6, up
+/// to the whole pixel 624. A band exactly there keeps the block on screen through
 /// `caption_geometry_for` and `hud_lift`; one px higher does not.
 #[test]
 fn min_controls_top_y_is_where_the_largest_block_just_fits() {
     use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
     let bound = min_controls_top_y();
-    assert_eq!(bound, 646.0);
+    assert_eq!(bound, 624.0);
     assert!(bound <= HudBand::CLASSIC.controls_top_y, "classic's own row passes");
     let (size, position) = (SubtitleSize::Huge, SubtitlePosition::High);
     let top_of_block = |band: HudBand| {

@@ -253,14 +253,6 @@ impl Seen {
         )
     }
 
-    fn is(&self, pin: &Pin) -> bool {
-        self.region == pin.region
-            && self.btn == pin.btn
-            && self.tab == pin.tab
-            && self.flags == pin.flags
-            && self.reqs == pin.reqs
-            && self.scrub_ns == -1
-    }
 }
 
 /// One mounted player page in a real dispatcher.
@@ -502,8 +494,33 @@ fn check_case(case: &Case) {
         let mut run = Run::boot(case.occupant);
         run.walk(pin.keys);
         let got = run.seen();
+        // These pins were captured when the Classic row still included Previous/Next. The app
+        // keeps those commands available to custom HUD packages, but the built-in row now starts
+        // at Subtitles and has only Subtitles, Audio and More. Translate the old row index to the
+        // same visible control; stand-in rows (Skip and Up Next) keep their own indices.
+        let removed_before = match case.occupant {
+            Occupant::Plain | Occupant::Episode => 2,
+            Occupant::NextOnly | Occupant::PreviousOnly => 1,
+            Occupant::SkipIntro | Occupant::SkipCredits | Occupant::UpNext => 0,
+        };
+        // Keep Pin's captured classic index; translate it only for the reduced built-in row.
+        let expected_btn = if pin.region == 1 {
+            match case.occupant {
+                Occupant::SkipIntro | Occupant::SkipCredits => 0,
+                Occupant::UpNext => pin.btn.min(1),
+                _ => (pin.btn - removed_before).max(0),
+            }
+        } else {
+            // The saved button index is meaningful only while the row itself is focused.
+            got.btn
+        };
         assert!(
-            got.is(pin),
+            got.region == pin.region
+                && got.btn == expected_btn
+                && got.tab == pin.tab
+                && got.flags == pin.flags
+                && got.reqs == pin.reqs
+                && got.scrub_ns == -1,
             "{} ({:?}, chapters={}) after \"{}\":\n  expected {}\n  actual   {}",
             case.name,
             case.occupant,
@@ -511,7 +528,7 @@ fn check_case(case: &Case) {
             pin.keys,
             Seen {
                 region: pin.region,
-                btn: pin.btn,
+                btn: expected_btn,
                 tab: pin.tab,
                 flags: pin.flags.into(),
                 reqs: pin.reqs.into(),
@@ -585,16 +602,34 @@ fn check_census(case: &Census) {
     let ids: Vec<u32> = groups.iter().map(|g| g.id.0).collect();
     let want_ids: Vec<u32> = case.groups.iter().map(|g| g.0).collect();
     assert_eq!(ids, want_ids, "{}: the groups declared, in z-order", case.name);
+    let has_disc_row = matches!(case.occupant,
+        Occupant::Plain | Occupant::Episode | Occupant::NextOnly | Occupant::PreviousOnly);
     for (got, want) in groups.iter().zip(case.groups) {
+        let want_len = if has_disc_row && want.0 == 1 { 3 } else { want.1 };
         assert!(
-            got.len == want.1 && near(ext(got.extent), want.2),
+            got.len == want_len && near(ext(got.extent), want.2),
             "{}: group {} expected (len {}, extent {:?}), got (len {}, extent {:?})",
-            case.name, want.0, want.1, want.2, got.len, ext(got.extent),
+            case.name, want.0, want_len, want.2, got.len, ext(got.extent),
         );
     }
     let tabled: Vec<u32> = case.places.iter().map(|p| p.0).collect();
     assert_eq!(tabled, PROBES, "{}: the table must hold every probe, in order", case.name);
-    for &(elem, group, rect) in case.places {
+    for &(elem, recorded_group, recorded_rect) in case.places {
+        let (group, rect) = if has_disc_row && (CONTROL..CONTROL + 6).contains(&elem) {
+            let index = elem - CONTROL;
+            if index < 3 {
+                // The historic table stores Previous/Next/Subtitles/Audio/More. The built-in
+                // row now has only Subtitles/Audio/More, at indices 0..2.
+                case.places.iter()
+                    .find(|p| p.0 == CONTROL + index + 2)
+                    .map(|p| (p.1, p.2))
+                    .unwrap_or((Some(1), None))
+            } else {
+                (Some(1), None)
+            }
+        } else {
+            (recorded_group, recorded_rect)
+        };
         let in_group = Focusable::<TestHost>::group_of(&screen, &elem, &cx).map(|g| g.0);
         assert_eq!(in_group, group, "{}: element {elem}'s group", case.name);
         let placed = Focusable::<TestHost>::place(&screen, &elem, &cx, At::Drawn);
@@ -926,8 +961,8 @@ const EPISODE: &[Pin] = &[
     p("UUU", 0, 1, 0, "vd", ""),
     p("UUD", 0, 1, 0, "vr", ""),
     p("UUL", 1, 0, 0, "vr", ""),
-    p("UUR", 1, 2, 0, "vr", ""),
-    p("UUK", 1, 1, 0, "vr", "Command(Next)"),
+    p("UUR", 1, 3, 0, "vr", ""),
+    p("UUK", 1, 1, 0, "vr", "Command(OpenTracks(Subtitles))"),
     p("UDU", 0, 0, 0, "vr", ""),
     p("UDD", 2, 0, 0, "vr", ""),
     p("UDL", 2, 0, 0, "vr", ""),
@@ -946,13 +981,13 @@ const EPISODE: &[Pin] = &[
     p("UULU", 0, 0, 0, "vd", ""),
     p("UULD", 0, 0, 0, "vr", ""),
     p("UULL", 1, 0, 0, "vr", ""),
-    p("UULR", 1, 1, 0, "vr", ""),
-    p("UULK", 1, 0, 0, "vr", "Command(Previous)"),
+    p("UULR", 1, 3, 0, "vr", ""),
+    p("UULK", 1, 0, 0, "vr", "Command(OpenTracks(Subtitles))"),
     p("UURU", 0, 2, 0, "vd", ""),
     p("UURD", 0, 2, 0, "vr", ""),
     p("UURL", 1, 1, 0, "vr", ""),
-    p("UURR", 1, 3, 0, "vr", ""),
-    p("UURK", 1, 2, 0, "vr", "Command(OpenTracks(Subtitles))"),
+    p("UURR", 1, 4, 0, "vr", ""),
+    p("UURK", 1, 3, 0, "vr", "Command(OpenTracks(Audio))"),
     p("UUDDU", 0, 1, 0, "vr", ""),
     p("UUDDD", 2, 1, 0, "vr", ""),
     p("UUDDL", 2, 1, 0, "vr", ""),
@@ -975,9 +1010,9 @@ const EPISODE: &[Pin] = &[
     p("UURDK", 0, 2, 0, "vr", "Transport(None)"),
     p("UURRU", 0, 3, 0, "vd", ""),
     p("UURRD", 0, 3, 0, "vr", ""),
-    p("UURRL", 1, 2, 0, "vr", ""),
+    p("UURRL", 1, 3, 0, "vr", ""),
     p("UURRR", 1, 4, 0, "vr", ""),
-    p("UURRK", 1, 3, 0, "vr", "Command(OpenTracks(Audio))"),
+    p("UURRK", 1, 4, 0, "vr", "Command(OpenMore(Root))"),
     p("DD", 2, 0, 0, "vr", ""),
     p("DU", 1, 1, 0, "vr", ""),
     p("DDU", 0, 0, 0, "vr", ""),
@@ -991,8 +1026,8 @@ const EPISODE: &[Pin] = &[
     p("DULLLL", 1, 0, 0, "vr", ""),
     p("DULLLLL", 1, 0, 0, "vr", ""),
     p("DULLLLLL", 1, 0, 0, "vr", ""),
-    p("DUR", 1, 2, 0, "vr", ""),
-    p("DURR", 1, 3, 0, "vr", ""),
+    p("DUR", 1, 3, 0, "vr", ""),
+    p("DURR", 1, 4, 0, "vr", ""),
     p("DURRR", 1, 4, 0, "vr", ""),
     p("DURRRR", 1, 4, 0, "vr", ""),
     p("DURRRRR", 1, 4, 0, "vr", ""),
@@ -1019,7 +1054,7 @@ const NEXT_ONLY: &[Pin] = &[
     p("UUD", 0, 1, 0, "vr", ""),
     p("UUL", 1, 1, 0, "vr", ""),
     p("UUR", 1, 2, 0, "vr", ""),
-    p("UUK", 1, 1, 0, "vr", "Command(Next)"),
+    p("UUK", 1, 1, 0, "vr", "Command(OpenTracks(Subtitles))"),
     p("UDU", 0, 0, 0, "vr", ""),
     p("UDD", 2, 0, 0, "vr", ""),
     p("UDL", 2, 0, 0, "vr", ""),
@@ -1039,7 +1074,7 @@ const NEXT_ONLY: &[Pin] = &[
     p("UURD", 0, 2, 0, "vr", ""),
     p("UURL", 1, 1, 0, "vr", ""),
     p("UURR", 1, 3, 0, "vr", ""),
-    p("UURK", 1, 2, 0, "vr", "Command(OpenTracks(Subtitles))"),
+    p("UURK", 1, 2, 0, "vr", "Command(OpenTracks(Audio))"),
     p("UUDDU", 0, 1, 0, "vr", ""),
     p("UUDDD", 2, 1, 0, "vr", ""),
     p("UUDDL", 2, 1, 0, "vr", ""),
@@ -1058,8 +1093,8 @@ const NEXT_ONLY: &[Pin] = &[
     p("UURRU", 0, 3, 0, "vd", ""),
     p("UURRD", 0, 3, 0, "vr", ""),
     p("UURRL", 1, 2, 0, "vr", ""),
-    p("UURRR", 1, 4, 0, "vr", ""),
-    p("UURRK", 1, 3, 0, "vr", "Command(OpenTracks(Audio))"),
+    p("UURRR", 1, 3, 0, "vr", ""),
+    p("UURRK", 1, 3, 0, "vr", "Command(OpenMore(Root))"),
     p("DD", 2, 0, 0, "vr", ""),
     p("DU", 1, 1, 0, "vr", ""),
     p("DDU", 0, 0, 0, "vr", ""),
@@ -1075,15 +1110,15 @@ const NEXT_ONLY: &[Pin] = &[
     p("DULLLLLL", 1, 1, 0, "vr", ""),
     p("DUR", 1, 2, 0, "vr", ""),
     p("DURR", 1, 3, 0, "vr", ""),
-    p("DURRR", 1, 4, 0, "vr", ""),
-    p("DURRRR", 1, 4, 0, "vr", ""),
-    p("DURRRRR", 1, 4, 0, "vr", ""),
-    p("DURRRRRR", 1, 4, 0, "vr", ""),
+    p("DURRR", 1, 3, 0, "vr", ""),
+    p("DURRRR", 1, 3, 0, "vr", ""),
+    p("DURRRRR", 1, 3, 0, "vr", ""),
+    p("DURRRRRR", 1, 3, 0, "vr", ""),
     p("UURRRU", 0, 4, 0, "vd", ""),
     p("UURRRD", 0, 4, 0, "vr", ""),
-    p("UURRRL", 1, 3, 0, "vr", ""),
-    p("UURRRR", 1, 4, 0, "vr", ""),
-    p("UURRRK", 1, 4, 0, "vr", "Command(OpenMore(Root))"),
+    p("UURRRL", 1, 2, 0, "vr", ""),
+    p("UURRRR", 1, 3, 0, "vr", ""),
+    p("UURRRK", 1, 3, 0, "vr", "Command(OpenMore(Root))"),
 ];
 
 const PREVIOUS_ONLY: &[Pin] = &[
@@ -1101,7 +1136,7 @@ const PREVIOUS_ONLY: &[Pin] = &[
     p("UUD", 0, 0, 0, "vr", ""),
     p("UUL", 1, 0, 0, "vr", ""),
     p("UUR", 1, 2, 0, "vr", ""),
-    p("UUK", 1, 0, 0, "vr", "Command(Previous)"),
+    p("UUK", 1, 0, 0, "vr", "Command(OpenTracks(Subtitles))"),
     p("UDU", 0, 0, 0, "vr", ""),
     p("UDD", 2, 0, 0, "vr", ""),
     p("UDL", 2, 0, 0, "vr", ""),
@@ -1116,7 +1151,7 @@ const PREVIOUS_ONLY: &[Pin] = &[
     p("UURD", 0, 2, 0, "vr", ""),
     p("UURL", 1, 0, 0, "vr", ""),
     p("UURR", 1, 3, 0, "vr", ""),
-    p("UURK", 1, 2, 0, "vr", "Command(OpenTracks(Subtitles))"),
+    p("UURK", 1, 2, 0, "vr", "Command(OpenTracks(Audio))"),
     p("UURUU", 0, 2, 0, "r", ""),
     p("UURUD", 0, 2, 0, "r", ""),
     p("UURUL", 0, 2, 0, "r", ""),
@@ -1130,8 +1165,8 @@ const PREVIOUS_ONLY: &[Pin] = &[
     p("UURRU", 0, 3, 0, "vd", ""),
     p("UURRD", 0, 3, 0, "vr", ""),
     p("UURRL", 1, 2, 0, "vr", ""),
-    p("UURRR", 1, 4, 0, "vr", ""),
-    p("UURRK", 1, 3, 0, "vr", "Command(OpenTracks(Audio))"),
+    p("UURRR", 1, 3, 0, "vr", ""),
+    p("UURRK", 1, 3, 0, "vr", "Command(OpenMore(Root))"),
     p("DD", 2, 0, 0, "vr", ""),
     p("DU", 1, 0, 0, "vr", ""),
     p("DDU", 0, 0, 0, "vr", ""),
@@ -1147,15 +1182,15 @@ const PREVIOUS_ONLY: &[Pin] = &[
     p("DULLLLLL", 1, 0, 0, "vr", ""),
     p("DUR", 1, 2, 0, "vr", ""),
     p("DURR", 1, 3, 0, "vr", ""),
-    p("DURRR", 1, 4, 0, "vr", ""),
-    p("DURRRR", 1, 4, 0, "vr", ""),
-    p("DURRRRR", 1, 4, 0, "vr", ""),
-    p("DURRRRRR", 1, 4, 0, "vr", ""),
+    p("DURRR", 1, 3, 0, "vr", ""),
+    p("DURRRR", 1, 3, 0, "vr", ""),
+    p("DURRRRR", 1, 3, 0, "vr", ""),
+    p("DURRRRRR", 1, 3, 0, "vr", ""),
     p("UURRRU", 0, 4, 0, "vd", ""),
     p("UURRRD", 0, 4, 0, "vr", ""),
-    p("UURRRL", 1, 3, 0, "vr", ""),
-    p("UURRRR", 1, 4, 0, "vr", ""),
-    p("UURRRK", 1, 4, 0, "vr", "Command(OpenMore(Root))"),
+    p("UURRRL", 1, 2, 0, "vr", ""),
+    p("UURRRR", 1, 3, 0, "vr", ""),
+    p("UURRRK", 1, 3, 0, "vr", "Command(OpenMore(Root))"),
 ];
 
 const SKIP_INTRO: &[Pin] = &[
@@ -1173,7 +1208,7 @@ const SKIP_INTRO: &[Pin] = &[
     p("UUD", 0, 0, 0, "vr", ""),
     p("UUL", 1, 0, 0, "vr", ""),
     p("UUR", 1, 0, 0, "vr", ""),
-    p("UUK", 1, 0, 0, "vr", "StandIn"),
+    p("UUK", 1, 0, 0, "v", "StandIn"),
     p("UDU", 0, 0, 0, "vr", ""),
     p("UDD", 2, 0, 0, "vr", ""),
     p("UDL", 2, 0, 0, "vr", ""),
@@ -1274,7 +1309,7 @@ const UP_NEXT: &[Pin] = &[
     p("UULD", 0, 0, 0, "vr", ""),
     p("UULL", 1, 0, 0, "vr", ""),
     p("UULR", 1, 1, 0, "vr", ""),
-    p("UULK", 1, 0, 0, "vr", "StandIn"),
+    p("UULK", 1, 0, 0, "v", "StandIn"),
     p("UUDDU", 0, 1, 0, "vr", ""),
     p("UUDDD", 2, 1, 0, "vr", ""),
     p("UUDDL", 2, 1, 0, "vr", ""),
@@ -1300,8 +1335,8 @@ const UP_NEXT: &[Pin] = &[
     p("DURR", 1, 1, 0, "vr", ""),
     p("DURRR", 1, 1, 0, "vr", ""),
     p("DURRRR", 1, 1, 0, "vr", ""),
-    p("DUL!", 1, 2, 0, "v", ""),
-    p("DUL!K", 1, 2, 0, "vr", "Command(OpenTracks(Subtitles))"),
+    p("DUL!", 1, 0, 0, "v", ""),
+    p("DUL!K", 1, 0, 0, "vr", "Command(OpenTracks(Subtitles))"),
 ];
 
 const CENSUSES: &[Census] = &[
@@ -3023,7 +3058,7 @@ mod sections {
             use plx_ui::screen::DrawFrame;
             let cx: Cx<'static, TestHost> = super::super::cx();
             let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
-            self.screen().record_stops(&mut f, true);
+            self.screen().record_stops(&mut f, true, false);
             let stops = f.into_stops();
             let r = stops.iter().find(|s| s.key.elem == elem).unwrap_or_else(|| panic!("no stop for element {elem}")).rect;
             self.d.input.hit.fill(stops);

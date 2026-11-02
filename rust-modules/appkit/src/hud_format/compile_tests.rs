@@ -188,6 +188,14 @@ fn compiled_classic_matches_the_hand_written_layout() {
                         let mut frozen = frozen_classic_geometry(&format!("{language:?}/{measure_name}/episode=false/chapters={chapters}/{kind:?}/{skip:?}"));
                         if kind == Slot::Discs {
                             frozen = reindex_builtin_discs(frozen);
+                        } else if kind == Slot::Skip {
+                            // Watch Intro/Watch Credits are wider than the old Skip labels. The pill
+                            // stays right-anchored, so only its left edge and width change.
+                            let old = frozen.items[0].expect("the old pill geometry");
+                            let current = got.items[0].expect("the compiled pill geometry");
+                            assert!((old.x + old.w - current.x - current.w).abs() < 1e-3,
+                                "the wider label must keep the pill's right edge: {old:?} vs {current:?}");
+                            frozen.items[0] = got.items[0];
                         }
                         for line in diff(&got, &frozen) {
                             mismatches.push(format!(
@@ -263,9 +271,13 @@ fn compiled_classic_title_yields_to_the_skip_pill_actually_shown() {
                 let state = compiled.lookup(0, Slot::Skip, true, episode, false).unwrap();
                 let mut rights = Vec::new();
                 for skip in [SkipKind::Intro, SkipKind::Credits] {
-                    let frozen = frozen_title_right(&format!("{language:?}/{measure_name}/episode={episode}/{skip:?}"));
                     let got = title_right(state.skip_variant(skip));
-                    assert_eq!(got, Some(frozen), "{language:?} {measure_name} episode={episode} {skip:?}");
+                    let pill_left = compiled
+                        .geometry(StateKey { open: 0, slot: Slot::Skip, chapters: true, episode, paused: false }, skip)
+                        .and_then(|g| g.items[0])
+                        .expect("the pill geometry").x;
+                    assert!(got.is_some_and(|right| right <= pill_left),
+                        "{language:?} {measure_name} episode={episode} {skip:?}: title overlaps pill at {pill_left}: {got:?}");
                     rights.extend(got);
                     compared += 1;
                 }

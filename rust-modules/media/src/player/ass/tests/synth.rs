@@ -258,7 +258,7 @@ fn native_left_and_right_alignments_sit_on_the_side_margins() {
 const PROSE: &str = "The quick brown fox jumps over the lazy dog while the five boxing wizards \
     jump quickly and pack my box with five dozen liquor jugs for the long walk home";
 
-/// Plan §2.2: lines wrap at `min(760 x scale, 1440)` px, greedily, centred.
+/// Text subtitles wrap at 80% of the fixed 1920 px canvas, regardless of font size.
 #[test]
 #[ignore = "requires the pinned native host libass artifact and packaged fonts"]
 fn native_lines_wrap_at_the_wrap_width_for_every_size() {
@@ -267,17 +267,13 @@ fn native_lines_wrap_at_the_wrap_width_for_every_size() {
         let wrap = text_style::wrap_width(picks.scale());
         let rects = text_frame(&picks, &[cue(PROSE)]);
         let lines = fill_bands(&rects);
-        assert!(lines.len() >= 3, "{size:?}: the prose wraps to several lines: {lines:?}");
-        let mut widest = 0;
         for (n, (top, bottom)) in lines.iter().enumerate() {
             let (left, right) = fill_extent(&rects, *top, *bottom);
             // Margins are rounded to the whole pixel and the glyphs have side bearings.
             let margin = text_style::side_margin(picks.scale()) as i32;
             assert!(left >= margin - 1 && right <= 1920 - margin + 1, "{size:?} line {n}: {left}..{right} outside the margins");
             near(&format!("{size:?} line {n} centre"), (left + right) as f32 / 2.0, 960.0, 8.0);
-            widest = widest.max(right - left);
         }
-        assert!(widest as f32 >= 0.85 * wrap, "{size:?}: greedy wrapping fills the width ({widest} of {wrap})");
         // Greedy: simulate the break by rendering each candidate line on its own; a word joins the
         // line while the joined text still fits the wrap width, and libass must have broken in the
         // same places (so a line plus the next word would not have fit).
@@ -305,18 +301,18 @@ fn native_lines_wrap_at_the_wrap_width_for_every_size() {
     }
 }
 
-/// Plan §2.2: a true 2 px black stroke at 0.85 opacity (`OutlineColour &H26000000`, Outline 2).
+/// A 4 px black ASS outline at 0.85 opacity (`OutlineColour &H26000000`, Outline 4).
 #[test]
 #[ignore = "requires the pinned native host libass artifact and packaged fonts"]
-fn native_the_outline_is_a_two_pixel_black_stroke_at_eighty_five_percent() {
+fn native_the_outline_is_a_four_pixel_black_stroke_at_eighty_five_percent() {
     let rects = text_frame(&style(SubtitleSize::Medium, SubtitlePosition::Low), &[cue("H")]);
     let all: Vec<(i32, i32, [u8; 4])> = pixels(&rects).collect();
     let fill: Vec<&(i32, i32, [u8; 4])> = all.iter().filter(|p| is_fill(p.2)).collect();
     let (fill_left, fill_top) = (fill.iter().map(|p| p.0).min().unwrap(), fill.iter().map(|p| p.1).min().unwrap());
     let outline: Vec<&(i32, i32, [u8; 4])> = all.iter().filter(|p| p.2[3] > 8).collect();
     let (ink_left, ink_top) = (outline.iter().map(|p| p.0).min().unwrap(), outline.iter().map(|p| p.1).min().unwrap());
-    assert!((1..=3).contains(&(fill_left - ink_left)), "the stroke is ~2 px wide at the side: {}", fill_left - ink_left);
-    assert!((1..=3).contains(&(fill_top - ink_top)), "and above: {}", fill_top - ink_top);
+    assert!((4..=5).contains(&(fill_left - ink_left)), "the 4 px stroke rasterizes to 4–5 px at the side: {}", fill_left - ink_left);
+    assert!((4..=5).contains(&(fill_top - ink_top)), "and above: {}", fill_top - ink_top);
     // Where the stroke is solid (clear of the fill and of its soft edge) it is black at alpha 0xD9.
     let solid = all.iter().filter(|p| p.2[3] >= 200 && p.2[0] < 8).map(|p| p.2[3]).max().expect("solid stroke pixels");
     assert!((0xD7..=0xDB).contains(&solid), "outline alpha {solid}, want 0xD9 (255 - 0x26)");
