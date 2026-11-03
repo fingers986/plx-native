@@ -729,23 +729,18 @@ fn the_replay_canon_includes_the_page_path_and_return_ids() {
     let root = fp(&page);
     assert_eq!(root, fp(&PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 })));
     open_row(&mut page, TrackRow::Style);
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: TrackRow::OpenField(StyleField::Color).key().0 }, by: By::Dir });
     let style = fp(&page);
     assert_ne!(style, root, "a pushed page is not the root");
-    open_row(&mut page, TrackRow::OpenField(StyleField::Size));
+    open_row(&mut page, TrackRow::OpenField(StyleField::Color));
     let size = fp(&page);
-    open_row(&mut page, TrackRow::Choice(StyleField::Size, 0)); // inert re-pick keeps the page
-    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: TrackRow::Choice(StyleField::Size, 2).key().0 }, by: By::Dir });
+    open_row(&mut page, TrackRow::Choice(StyleField::Color, 0)); // inert re-pick keeps the page
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: TrackRow::Choice(StyleField::Color, 2).key().0 }, by: By::Dir });
     let moved = fp(&page);
     assert_ne!(moved, size, "the selected key is in the canon");
     press(&mut page, 0, WCODE_BACK, Edge::Down);
     assert_eq!(fp(&page), style, "popping returns to the Style page's own state");
 
-    // the same page reached from a different opener is a different state
-    let mut other = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
-    open_row(&mut other, TrackRow::Style);
-    open_row(&mut other, TrackRow::OpenField(StyleField::Color));
-    open_row(&mut page, TrackRow::OpenField(StyleField::Size));
-    assert_ne!(fp(&other), fp(&page));
 }
 
 /// **OK on the dim Timing row while subtitles are Off is inert — it neither opens the capsule
@@ -1124,7 +1119,8 @@ fn every_kind_is_listed_once() {
         OverlayKind::Tracks { .. }
         | OverlayKind::More { .. }
         | OverlayKind::Timing
-        | OverlayKind::CustomDistance { .. } => OverlayKind::ALL.iter().any(|a| a.slot() == k.slot()),
+        | OverlayKind::CustomDistance { .. }
+        | OverlayKind::SubtitleSize { .. } => OverlayKind::ALL.iter().any(|a| a.slot() == k.slot()),
     };
     let mut slots: Vec<u8> = OverlayKind::ALL.iter().map(|k| k.slot()).collect();
     slots.sort_unstable();

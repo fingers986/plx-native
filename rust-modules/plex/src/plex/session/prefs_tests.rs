@@ -106,7 +106,7 @@ fn every_marker_names_its_own_field() {
     check_row::<QualityPref>(PlaybackQuality::P720);
     check_row::<DirectPlayModePref>(DirectPlayMode::Forced);
     check_row::<SubtitleTonePref>(SubtitleTone::Grey);
-    check_row::<SubtitleSizePref>(SubtitleSize::Large);
+    check_row::<SubtitleSizePref>(SubtitleSize::from_percent(125));
     check_row::<SubtitlePositionPref>(SubtitlePosition::VideoFrame);
     check_row::<HdrOverlayBrightnessPref>(HdrOverlayBrightness::Half);
     check_row::<NextEpisodeModePref>(NextEpisodeMode::Off);
@@ -387,7 +387,7 @@ fn good_element(key: &str) -> Value {
         "subtitle_offsets" => json!({"user":"u1","items":[{"machine_id":"m","rating_key":"42","offset_ms":1500}]}),
         "track_memory" => json!({"user":"u1","account":"a","items":[{"machine_id":"m","show_rk":"42",
             "audio":{"lang":"eng","tag":"","commentary":false,"ad":false,"codec":"eac3","channels":6,"title":""}}]}),
-        "profile_prefs" => json!({"user":"u1","account":"a","prefs":{"subtitle_size":"large"}}),
+        "profile_prefs" => json!({"user":"u1","account":"a","prefs":{"subtitle_size":125}}),
         other => panic!("{other}: a SoftVec row needs a valid element in `good_element`"),
     }
 }
@@ -467,11 +467,11 @@ fn the_lists_outside_the_preferences_keep_their_soft_parse() {
 #[test]
 fn modelled_keys_never_reach_extensions_and_future_keys_still_do() {
     let canonical: CanonicalSessionPreferences = serde_json::from_value(json!({
-        "deck_press": "play", "subtitle_size": "large", "playback_quality": "auto", "a_future_key": {"n": 1},
+        "deck_press": "play", "subtitle_size": 125, "playback_quality": "auto", "a_future_key": {"n": 1},
     }))
     .unwrap();
     assert_eq!(canonical.prefs.deck_press, DeckPress::Play);
-    assert_eq!(canonical.prefs.subtitle_size, SubtitleSize::Large);
+    assert_eq!(canonical.prefs.subtitle_size, SubtitleSize::from_percent(125));
     assert_eq!(canonical.prefs.playback_quality, Some(PlaybackQuality::Auto));
     assert_eq!(canonical.extensions.keys().map(String::as_str).collect::<Vec<_>>(), ["a_future_key"]);
     let legacy: Session = serde_json::from_value(json!({

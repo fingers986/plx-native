@@ -163,13 +163,7 @@ pub const INTER_BOLD_HHEA_ASCENT_EM: f32 = 1984.0 / 2048.0;
 
 /// The face-size multiplier for the viewer's Settings > Playback size pick.
 pub fn size_scale(size: SubtitleSize) -> f32 {
-    match size {
-        SubtitleSize::Small => 0.78,
-        SubtitleSize::Medium => 1.0,
-        SubtitleSize::Large => 1.25,
-        SubtitleSize::ExtraLarge => 1.5,
-        SubtitleSize::Huge => 1.65,
-    }
+    size.percent() as f32 / 100.0
 }
 
 /// Both anchor modes use the same bottom gap; the video-frame offset is applied using the viewport.
@@ -227,7 +221,7 @@ pub struct TextStyle {
 
 impl Default for TextStyle {
     fn default() -> Self {
-        Self { size: SubtitleSize::Medium, position: SubtitlePosition::TvScreen,
+        Self { size: SubtitleSize::from_percent(100), position: SubtitlePosition::TvScreen,
         }
     }
 }
@@ -376,7 +370,7 @@ mod tests {
     #[test]
     fn scales_and_lifts_are_todays() {
         let scales: Vec<f32> = SubtitleSize::LADDER.iter().map(|s| size_scale(*s)).collect();
-        assert_eq!(scales, [0.78, 1.0, 1.25, 1.5, 1.65]);
+        assert_eq!(scales, (80..=180).step_by(5).map(|p| p as f32 / 100.0).collect::<Vec<_>>());
         let lifts: Vec<f32> = SubtitlePosition::LADDER.iter().map(|p| position_lift(*p)).collect();
         assert_eq!(lifts, [0.0; 3]);
         assert_eq!(SUB_BASE_Y, 1020.0);
@@ -522,7 +516,7 @@ mod tests {
                 assert!(seen.insert(TextStyle { size, position }.generation()), "{size:?} {position:?}");
             }
         }
-        assert_eq!(seen.len(), 15);
-        assert_eq!(TextStyle::default().generation(), TextStyle { size: SubtitleSize::Medium, position: SubtitlePosition::TvScreen }.generation());
+        assert_eq!(seen.len(), 63);
+        assert_eq!(TextStyle::default().generation(), TextStyle { size: SubtitleSize::from_percent(100), position: SubtitlePosition::TvScreen }.generation());
     }
 }

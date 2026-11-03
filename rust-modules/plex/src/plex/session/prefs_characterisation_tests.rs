@@ -29,7 +29,7 @@ fn all_non_default_json() -> Value {
             "unwatched":true,"genre":"g","listing":"seasons","listing_sort":"ls","listing_desc":true}]}],
         "subtitle_offsets":[{"user":"u1","items":[{"machine_id":"m1","rating_key":"9","offset_ms":-250}]}],
         "playback_quality":"720p_4_mbps","direct_play_mode":"forced","auto_sign_in":true,
-        "trailer_autoplay":false,"subtitle_tone":"grey_55","subtitle_size":"large",
+        "trailer_autoplay":false,"subtitle_tone":"grey_55","subtitle_size":125,
         "subtitle_position":"video_frame","subtitle_custom_distance":100,
         "subtitle_video_frame_distance":80,"subtitle_tv_screen_distance":120,
         "next_episode_mode":"off","skip_interval":"30s",
@@ -134,7 +134,7 @@ fn legacy_json_of_an_all_non_default_session() {
             "subtitle_offsets":[{"user":"u1","items":[{"machine_id":"m1","rating_key":"9","offset_ms":-250}]}],
             "profiles":[],"playback_quality":"720p_4_mbps","direct_play_mode":"forced",
             "auto_sign_in":true,"trailer_autoplay":false,"subtitle_tone":"grey_55",
-            "subtitle_size":"large","subtitle_position":"video_frame",
+            "subtitle_size":125,"subtitle_position":"video_frame",
             "subtitle_custom_distance":100,"subtitle_video_frame_distance":80,
             "subtitle_tv_screen_distance":120,"next_episode_mode":"off",
             "skip_interval":"30s","deck_press":"play",
@@ -166,7 +166,7 @@ fn canonical_public_json_of_an_all_non_default_session() {
                 "skip_interval":"30s",
                 "subtitle_offsets":[{"items":[{"machine_id":"m1","offset_ms":-250,"rating_key":"9"}],"user":"u1"}],
                 "subtitle_custom_distance":100,"subtitle_position":"video_frame",
-                "subtitle_size":"large","subtitle_tone":"grey_55",
+                "subtitle_size":125,"subtitle_tone":"grey_55",
                 "subtitle_tv_screen_distance":120,"subtitle_video_frame_distance":80,
                 "trailer_autoplay":false
             },
@@ -412,7 +412,7 @@ fn a_canonical_preferences_value_that_is_not_an_object_falls_back_to_the_manual_
     let s = canonical_from(json!({"subtitle_size":"gigantic","auto_sign_in":true,"skip_interval":"60s"}));
     assert!(s.prefs.auto_sign_in, "a sibling of a bad key is kept");
     assert_eq!(s.prefs.skip_interval, SkipInterval::Seconds60);
-    assert_eq!(s.prefs.subtitle_size, SubtitleSize::Medium);
+    assert_eq!(s.prefs.subtitle_size, SubtitleSize::from_percent(100));
 }
 
 // ---- item 3: unknown keys, and #582 -----------------------------------------------------------------
@@ -530,7 +530,7 @@ struct SkipRow {
 
 fn skip_rows() -> Vec<SkipRow> {
     vec![
-        SkipRow { key: "subtitle_size", set: |s| s.prefs.subtitle_size = SubtitleSize::Large,
+        SkipRow { key: "subtitle_size", set: |s| s.prefs.subtitle_size = SubtitleSize::from_percent(125),
             reset: |s| s.prefs.subtitle_size = SubtitleSize::default() },
         SkipRow { key: "subtitle_position", set: |s| s.prefs.subtitle_position = SubtitlePosition::VideoFrame,
             reset: |s| s.prefs.subtitle_position = SubtitlePosition::default() },
@@ -696,7 +696,7 @@ fn the_file_backend_keeps_only_the_language_and_resolution_at_sign_out() {
     redirect_candidates_for_test(Some(vec![root.dir.join("legacy-auth.json")]));
 
     save(&all_non_default().with_ui_resolution(UiResolution::Hd720));
-    assert_eq!(peek().prefs.subtitle_size, SubtitleSize::Large, "setup: the non-default preferences are stored");
+    assert_eq!(peek().prefs.subtitle_size, SubtitleSize::from_percent(125), "setup: the non-default preferences are stored");
     assert_eq!(peek().language, Preference::Be);
     assert_eq!(peek().ui_resolution(), UiResolution::Hd720);
     assert!(matches!(clear(), ClearOutcome::Durable { .. }));
@@ -736,10 +736,10 @@ fn file_backend_sign_out_then_in_reads_the_defaults() {
 
     let mut session = all_non_default();
     let stamp = crate::plex::grant::account_key(&session.account_token);
-    assert!(put_own::<SubtitleSizePref>(&mut session.prefs.profile_prefs, "u1", &stamp, SubtitleSize::Small));
+    assert!(put_own::<SubtitleSizePref>(&mut session.prefs.profile_prefs, "u1", &stamp, SubtitleSize::from_percent(80)));
     save(&session);
     assert_eq!(peek().prefs.profile_prefs.len(), 1, "setup: the profile's pick is stored");
-    assert_eq!(peek().prefs.subtitle_size, SubtitleSize::Large, "setup: and so is the legacy key");
+    assert_eq!(peek().prefs.subtitle_size, SubtitleSize::from_percent(125), "setup: and so is the legacy key");
     assert!(matches!(clear(), ClearOutcome::Durable { .. }));
 
     redirect_for_test(None);
@@ -749,6 +749,6 @@ fn file_backend_sign_out_then_in_reads_the_defaults() {
 
     assert!(fresh.prefs.profile_prefs.is_empty(), "the profile's own picks did not survive");
     let seat = Seat::Seated { user: "u1".into(), stamp: crate::plex::grant::account_key("another-account") };
-    assert_eq!(stored_effective::<SubtitleSizePref>(&fresh, &seat), SubtitleSize::Medium,
+    assert_eq!(stored_effective::<SubtitleSizePref>(&fresh, &seat), SubtitleSize::from_percent(100),
         "the profile reads the default: neither its pick nor the legacy Large is left");
 }

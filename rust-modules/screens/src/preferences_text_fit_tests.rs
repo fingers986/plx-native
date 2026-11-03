@@ -72,7 +72,7 @@ fn every_field_readout_and_detail_fits_its_column_in_every_language() {
             plx_media::route::restore_subtitle_size(size);
             check_field_section(&format!("{tag} subtitle_size={size:?}"), &playback(Quality::Original, DirectPlayMode::Auto), &mut out);
         }
-        plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Medium);
+        plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::from_percent(100));
         for position in plx_media::route::SubtitlePosition::LADDER {
             plx_media::route::restore_subtitle_position(position);
             check_field_section(&format!("{tag} subtitle_position={position:?}"), &playback(Quality::Original, DirectPlayMode::Auto), &mut out);

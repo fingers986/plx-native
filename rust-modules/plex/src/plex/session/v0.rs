@@ -227,7 +227,7 @@ impl Default for CanonicalSessionPreferences {
             last_hero_blur: None,
             trailer_autoplay: true,
             subtitle_tone: SubtitleTone::White,
-            subtitle_size: SubtitleSize::Medium,
+            subtitle_size: SubtitleSize::from_percent(100),
             subtitle_position: SubtitlePosition::TvScreen,
             next_episode_mode: NextEpisodeMode::Countdown,
             skip_interval: SkipInterval::Seconds10,

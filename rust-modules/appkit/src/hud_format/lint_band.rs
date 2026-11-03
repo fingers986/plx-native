@@ -115,10 +115,7 @@ pub(super) const INVALID: &[super::lint::testing::InvalidCase] = &[
         skew: 0.0,
         also: &[("HUD-E1102", "/layout/up_next")],
     },
-    // classic under `band: "block"` with a 554 px title: the band is the top of ANY drawn extent, and the
-    // title block (a 34 px kicker over a 400 px title, bottom-aligned in its band) now rises to y 268, above
-    // every language's Up Next still (about 550), while the control row stays at 792: only the kicker's text
-    // sets the band and is named
+    // classic under `band: "block"`: a valid but tall title reaches above the Up Next extent.
     InvalidCase {
         name: "classic with a block band and a tall title: a text rises above the caption bound",
         code: "HUD-E1201",

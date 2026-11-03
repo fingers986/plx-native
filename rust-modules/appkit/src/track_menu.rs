@@ -226,12 +226,12 @@ impl StyleField {
         }
     }
 
-    /// The localized name of rung `i` of this field's ladder.
-    fn rung_label(self, i: usize) -> &'static str {
+    /// The displayed name of rung `i` of this field's ladder.
+    fn rung_label(self, i: usize) -> String {
         match self {
             Self::Size => subtitle_size_label(SubtitleSize::from_index(i as u8)),
-            Self::Position => subtitle_position_label(SubtitlePosition::from_index(i as u8)),
-            Self::Color => tone_label(SubtitleTone::from_index(i as u8)),
+            Self::Position => subtitle_position_label(SubtitlePosition::from_index(i as u8)).into(),
+            Self::Color => tone_label(SubtitleTone::from_index(i as u8)).into(),
         }
     }
 }
@@ -658,6 +658,8 @@ pub enum TrackOk {
     OpenTiming,
     /// Open the Custom subtitle-distance capsule after publishing this anchor choice.
     OpenCustomDistance(SubtitlePosition),
+    /// Open the live subtitle-size capsule from Style > Size.
+    OpenSubtitleSize(SubtitleSize),
     /// OK does nothing and must not close the panel either: the dim Timing row while subtitles are
     /// Off, a locked Timing / Style row, a disabled Size / Position row, and a re-pick of the
     /// rung that is already checked.
@@ -1242,6 +1244,13 @@ impl TrackMenuState {
         }
 
         let Some(id) = focused else { return TrackOk::Inert };
+        if id == TrackRow::OpenField(StyleField::Size) {
+            return if self.renderer == SubRenderer::Text {
+                TrackOk::OpenSubtitleSize(self.size)
+            } else {
+                TrackOk::Inert
+            };
+        }
         match self.form.activate(sel.max(0) as usize) {
             // M7 follow-up: while the live route is actually burning a subtitle into the picture,
             // Timing and Style are declared disabled (`Self::layout`) — the text is already in
@@ -1751,7 +1760,7 @@ impl TrackMenuState {
             let row = if field == StyleField::Position
                 && matches!(position, SubtitlePosition::Custom(_))
             {
-                Row::new(field.rung_label(rung)).value(plx_platform::i18n::msg::settings_playback_subtitle_position_distance_px(self.custom_position_distance() as i64))
+                Row::new(field.rung_label(rung)).value(plx_platform::i18n::msg::settings_playback_subtitle_position_distance_px(self.custom_position_distance() as i64)).chevron(true)
             } else {
                 Row::new(field.rung_label(rung))
             };
@@ -1843,14 +1852,35 @@ impl TrackMenuState {
 
     /// **RIGHT**: on a Nav row it enters — the same as OK, and inert on a disabled one at the form
     /// layer — else the tab switch as before.
-    pub fn on_right(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
+    pub fn on_right(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> TrackOk {
         let sel = self.form.table.sel.max(0) as usize;
+        if self.form.selected_id() == Some(&TrackRow::OpenField(StyleField::Size)) {
+            return if self.renderer == SubRenderer::Text {
+                TrackOk::OpenSubtitleSize(self.size)
+            } else {
+                TrackOk::Inert
+            };
+        }
+        if self.renderer == SubRenderer::Text
+            && matches!(
+                self.form.selected_id(),
+                Some(TrackRow::Choice(StyleField::Position, rung))
+                    if SubtitlePosition::from_index(*rung as u8).custom_gap().is_some()
+            )
+        {
+            // The Custom choice advertises a drill-in with its chevron. Route RIGHT through the
+            // same picker action as OK so it selects/persists the Custom anchor before opening the
+            // distance capsule.
+            return self.on_ok(meta);
+        }
         if matches!(self.form.binding_at(sel).map(|b| &b.kind), Some(RowKind::Nav(_))) {
             if let Some(Activation::Push(dest)) = self.form.activate(sel) {
                 self.push(dest);
             }
+            TrackOk::Navigated
         } else {
             self.focus_tab(ps, meta, 1);
+            TrackOk::Navigated
         }
     }
 
@@ -2423,17 +2453,9 @@ fn tone_label(tone: SubtitleTone) -> &'static str {
     }
 }
 
-/// The localized name of a caption size rung — the one place both the player's Style pages and
-/// Settings' Playback read it.
-pub fn subtitle_size_label(size: SubtitleSize) -> &'static str {
-    use plx_platform::i18n::msg;
-    match size {
-        SubtitleSize::Small => msg::settings_playback_subtitle_size_small(),
-        SubtitleSize::Medium => msg::settings_playback_subtitle_size_medium(),
-        SubtitleSize::Large => msg::settings_playback_subtitle_size_large(),
-        SubtitleSize::ExtraLarge => msg::settings_playback_subtitle_size_extra_large(),
-        SubtitleSize::Huge => msg::settings_playback_subtitle_size_huge(),
-    }
+/// The percent read-out shared by the player's Style row and Settings' Playback list.
+pub fn subtitle_size_label(size: SubtitleSize) -> String {
+    format!("{}%", size.percent())
 }
 
 /// The localized name of a caption position rung, shared like [`subtitle_size_label`].
@@ -3164,9 +3186,8 @@ mod tests {
         // Style -> Color -> the second tone: a Nav row pushes, a choice commits and the panel stays
         menu.focus_row(5);
         assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated, "Size is first and live for a text subtitle");
-        assert_eq!(menu.page_path(), [TrackPage::Style, TrackPage::Picker(StyleField::Size)]);
-        assert!(menu.pop(&ps, store.view()));
+        assert!(matches!(menu.on_ok(store.view()), TrackOk::OpenSubtitleSize(_)), "Size opens its live capsule");
+        assert_eq!(menu.page_path(), [TrackPage::Style]);
         menu.focus_key(TrackRow::OpenField(StyleField::Color).key().0);
         assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
         menu.focus_key(TrackRow::Choice(StyleField::Color, 1).key().0);
@@ -5530,7 +5551,7 @@ mod focus_tests {
             form,
             offset_ms: 0,
             tone: SubtitleTone::White,
-            size: SubtitleSize::Medium,
+            size: SubtitleSize::from_percent(100),
             position: SubtitlePosition::TvScreen,
             pages: PageStack::new(),
             renderer: SubRenderer::Text,
@@ -5979,23 +6000,24 @@ mod style_page_tests {
         let (mut menu, ps, store) = open_text();
         focus_id(&mut menu, TrackRow::Style);
         assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated, "Size");
-        let current = menu.current_rung(StyleField::Size);
-        assert!(row_of(&menu, TrackRow::Choice(StyleField::Size, current)).checked);
+        focus_id(&mut menu, TrackRow::OpenField(StyleField::Color));
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated, "Color");
+        let current = menu.current_rung(StyleField::Color);
+        assert!(row_of(&menu, TrackRow::Choice(StyleField::Color, current)).checked);
         assert_eq!(menu.on_ok(store.view()), TrackOk::Inert, "the focused rung is the checked one");
 
-        let other = (current + 1) % StyleField::Size.rungs();
-        focus_id(&mut menu, TrackRow::Choice(StyleField::Size, other));
+        let other = (current + 1) % StyleField::Color.rungs();
+        focus_id(&mut menu, TrackRow::Choice(StyleField::Color, other));
         assert_eq!(
             menu.on_ok(store.view()),
             TrackOk::Commit {
-                commit: TrackCommit::SubtitleSize(SubtitleSize::from_index(other as u8)),
+                commit: TrackCommit::SubtitleTone(SubtitleTone::from_index(other as u8)),
                 keep_open: true
             }
         );
         assert_eq!(menu.page_path().len(), 2, "the page stays");
-        assert!(row_of(&menu, TrackRow::Choice(StyleField::Size, other)).checked);
-        assert!(!row_of(&menu, TrackRow::Choice(StyleField::Size, current)).checked);
+        assert!(row_of(&menu, TrackRow::Choice(StyleField::Color, other)).checked);
+        assert!(!row_of(&menu, TrackRow::Choice(StyleField::Color, current)).checked);
         teardown(&ps);
     }
 
@@ -6009,7 +6031,8 @@ mod style_page_tests {
         for field in StyleField::ALL {
             let row = row_of(&menu, TrackRow::OpenField(field));
             assert_eq!(row.label, field.label());
-            assert_eq!(row.value.as_deref(), Some(field.rung_label(menu.current_rung(field))));
+            let expected = field.rung_label(menu.current_rung(field));
+            assert_eq!(row.value.as_deref(), Some(expected.as_str()));
         }
         teardown(&ps);
     }
@@ -6109,11 +6132,11 @@ mod style_page_tests {
         let (mut menu, ps, store) = open_text();
         focus_id(&mut menu, TrackRow::Style);
         menu.on_ok(store.view());
-        focus_id(&mut menu, TrackRow::OpenField(StyleField::Size));
+        focus_id(&mut menu, TrackRow::OpenField(StyleField::Color));
         menu.on_ok(store.view());
-        let picker = [TrackPage::Style, TrackPage::Picker(StyleField::Size)];
+        let picker = [TrackPage::Style, TrackPage::Picker(StyleField::Color)];
         assert_eq!(menu.page_path(), picker);
-        let focused = TrackRow::Choice(StyleField::Size, 0);
+        let focused = TrackRow::Choice(StyleField::Color, 0);
         focus_id(&mut menu, focused);
         let before = menu.sub_sig.clone();
 
@@ -6129,7 +6152,7 @@ mod style_page_tests {
         let (mut menu, ps, store) = open_text();
         focus_id(&mut menu, TrackRow::Style);
         menu.on_ok(store.view());
-        focus_id(&mut menu, TrackRow::OpenField(StyleField::Size));
+        focus_id(&mut menu, TrackRow::OpenField(StyleField::Color));
         menu.on_ok(store.view());
         focus_id(&mut menu, focused);
         let before = menu.sub_sig.clone();
@@ -6950,7 +6973,7 @@ mod motion_tests {
         let (old_leaving, live) = menu.motion.alphas();
         let dx = menu.motion.live_dx();
         assert!(live > 0.0 && live < 1.0, "mid-fade: {live}");
-        let i = menu.form.index_of(&TrackRow::OpenField(StyleField::Size)).expect("Size row");
+        let i = menu.form.index_of(&TrackRow::OpenField(StyleField::Color)).expect("Color row");
         menu.focus_row(i as c_int);
         assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
         let (leaving, new_live) = menu.motion.alphas();
@@ -6983,7 +7006,7 @@ mod motion_tests {
         // and a push that goes deeper while the first is still sliding
         push_style(&mut menu, &store);
         run(&mut menu, &ps, &store, 2);
-        let i = menu.form.index_of(&TrackRow::OpenField(StyleField::Size)).expect("Size row");
+        let i = menu.form.index_of(&TrackRow::OpenField(StyleField::Color)).expect("Color row");
         menu.focus_row(i as c_int);
         assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
         assert_eq!(menu.pages.len(), 2);

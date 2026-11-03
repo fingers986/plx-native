@@ -275,14 +275,24 @@ impl TimingCapsule {
 /// Draw the Player's Custom subtitle-distance control using the same capsule layout as Subtitle
 /// Timing. It is D-pad-only; `gap_px` changes in fixed 5 px steps without Timing's repeat acceleration.
 pub fn draw_custom_distance_capsule(gap_px: u8, bottom_y: f32, appear: f32) {
-    if appear <= 0.0 { return; }
     let caption = CString::new(plx_platform::i18n::msg::settings_playback_subtitle_position_distance_px(gap_px as i64)).unwrap_or_default();
+    draw_stepper_capsule(&caption, gap_px <= 40, gap_px >= 180, bottom_y, appear);
+}
+
+/// Draw Subtitle Size with the same value capsule, chevrons and secondary read-out styling.
+pub fn draw_subtitle_size_capsule(percent: u8, bottom_y: f32, appear: f32) {
+    let caption = CString::new(format!("{percent}%")).unwrap_or_default();
+    draw_stepper_capsule(&caption, percent <= 80, percent >= 180, bottom_y, appear);
+}
+
+fn draw_stepper_capsule(caption: &CString, at_min: bool, at_max: bool, bottom_y: f32, appear: f32) {
+    if appear <= 0.0 { return; }
     let p = Painter::root().alpha(appear);
     let cx = plx_ui::consts::SCR_W * 0.5;
     let (r, [left_x, text_x, right_x]) = TimingCapsule::geometry(cx, bottom_y);
     p.rect(r, CAPSULE_H * 0.5, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
-    let left_ink = if gap_px <= 40 { theme::INK_DISABLED } else { theme::TEXT_PRIMARY };
-    let right_ink = if gap_px >= 180 { theme::INK_DISABLED } else { theme::TEXT_PRIMARY };
+    let left_ink = if at_min { theme::INK_DISABLED } else { theme::TEXT_PRIMARY };
+    let right_ink = if at_max { theme::INK_DISABLED } else { theme::TEXT_PRIMARY };
     let chevron_at = |x: f32| Rect::new(x, r.y + (CAPSULE_H - CHEVRON_SZ) * 0.5, CHEVRON_SZ, CHEVRON_SZ);
     icons::draw(p, Icon::ChevronLeft, chevron_at(left_x), left_ink);
     icons::draw(p, Icon::Chevron, chevron_at(right_x), right_ink);
@@ -328,6 +338,48 @@ impl CustomDistanceCapsule {
 
     pub fn draw(&self, bottom_y: f32, appear: f32) {
         draw_custom_distance_capsule(self.gap_px, bottom_y, appear);
+    }
+}
+
+/// The Player's Subtitle Size capsule. Each horizontal press is one 5% step; OK and BACK both
+/// close it through the same one-way Play path as the Custom subtitle-distance capsule.
+pub struct SubtitleSizeCapsule {
+    percent: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubtitleSizeCapsuleOut {
+    Step(u8),
+    CloseAndPlay,
+}
+
+impl SubtitleSizeCapsule {
+    pub fn new(percent: u8) -> Self {
+        let bounded = percent.clamp(80, 180);
+        Self { percent: 80 + ((bounded - 80 + 2) / 5) * 5 }
+    }
+
+    pub fn percent(&self) -> u8 { self.percent }
+
+    pub fn key(&mut self, key: Key, edge: Edge) -> Option<SubtitleSizeCapsuleOut> {
+        match key {
+            Key::Left { .. } | Key::Right { .. } if edge != Edge::Up => {
+                let next = if matches!(key, Key::Left { .. }) {
+                    self.percent.saturating_sub(5).max(80)
+                } else {
+                    self.percent.saturating_add(5).min(180)
+                };
+                if next == self.percent { return None; }
+                self.percent = next;
+                Some(SubtitleSizeCapsuleOut::Step(next))
+            }
+            Key::Ok | Key::Back if edge == Edge::Down => Some(SubtitleSizeCapsuleOut::CloseAndPlay),
+            _ => None,
+        }
+    }
+
+    pub fn draw(&self, bottom_y: f32, appear: f32) {
+        draw_subtitle_size_capsule(self.percent, bottom_y, appear);
     }
 }
 
