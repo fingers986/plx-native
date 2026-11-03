@@ -1025,68 +1025,49 @@ impl SubtitleTone {
     }
 }
 
-/// A profile's subtitle size as a percentage of the 36 px face on the 1920×1080 logical canvas.
-/// An absent, legacy-string, or invalid value falls back to 100%; old named choices are not
-/// migrated, and the viewer can select a percentage again.
-#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(transparent)]
-pub struct SubtitleSize(u8);
+/// The persisted subtitle text sizes, smallest first — one per PROFILE, like [`SubtitleTone`]: a
+/// legible caption size is as much about the viewer's eyes as the panel and the couch distance, and
+/// two people on one couch differ. A profile that has not picked reads the install's older key.
+/// Absence is `Medium`, which is the caption face every build before this
+/// preference drew (`appkit::player_hud`'s hardcoded `sz = 36`). Spelling on disk is explicit, like
+/// every other persisted ladder here.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubtitleSize {
+    #[serde(rename = "small")]
+    Small,
+    #[default]
+    #[serde(rename = "medium")]
+    Medium,
+    #[serde(rename = "large")]
+    Large,
+    #[serde(rename = "extra_large")]
+    ExtraLarge,
+    /// Added on top of the ladder rather than by moving the other rungs up, so no saved pick
+    /// changes size. A build from before it reads `"huge"` as a value it cannot parse: the
+    /// per-profile field falls back to the install's older value and the install key to `Medium`
+    /// (both are parsed softly), never a failed load.
+    #[serde(rename = "huge")]
+    Huge,
+}
 
 impl SubtitleSize {
-    pub const MIN_PERCENT: u8 = 80;
-    pub const MAX_PERCENT: u8 = 180;
-    pub const STEP_PERCENT: u8 = 5;
-    pub const DEFAULT_PERCENT: u8 = 100;
-    pub const COUNT: usize = 21;
-
-    /// Every offered percentage, ascending.
-    pub const LADDER: [SubtitleSize; Self::COUNT] = [
-        Self(80), Self(85), Self(90), Self(95), Self(100), Self(105), Self(110),
-        Self(115), Self(120), Self(125), Self(130), Self(135), Self(140), Self(145),
-        Self(150), Self(155), Self(160), Self(165), Self(170), Self(175), Self(180),
+    /// Every rung, smallest first — the order the picker lists them in.
+    pub const LADDER: [SubtitleSize; 5] = [
+        SubtitleSize::Small,
+        SubtitleSize::Medium,
+        SubtitleSize::Large,
+        SubtitleSize::ExtraLarge,
+        SubtitleSize::Huge,
     ];
 
-    /// Make a valid offered size, clamping to the range and snapping to its nearest 5% step.
-    pub const fn from_percent(percent: u8) -> Self {
-        let bounded = if percent < Self::MIN_PERCENT {
-            Self::MIN_PERCENT
-        } else if percent > Self::MAX_PERCENT {
-            Self::MAX_PERCENT
-        } else {
-            percent
-        };
-        let steps = (bounded - Self::MIN_PERCENT + Self::STEP_PERCENT / 2) / Self::STEP_PERCENT;
-        Self(Self::MIN_PERCENT + steps * Self::STEP_PERCENT)
-    }
-
-    pub const fn percent(self) -> u8 { self.0 }
-
-    /// An in-memory index; out of range selects the default rather than a neighbouring rung.
+    /// An in-memory index back to a rung — out of range is `Medium`, never a neighbouring rung,
+    /// for the reason [`SubtitleTone::from_index`] gives: the ladder can grow or shrink.
     pub fn from_index(i: u8) -> SubtitleSize {
-        Self::LADDER.get(i as usize).copied().unwrap_or_default()
+        Self::LADDER.get(i as usize).copied().unwrap_or(SubtitleSize::Medium)
     }
 
-    pub const fn index(self) -> u8 {
-        (self.0 - Self::MIN_PERCENT) / Self::STEP_PERCENT
-    }
-}
-
-impl Default for SubtitleSize {
-    fn default() -> Self { Self(Self::DEFAULT_PERCENT) }
-}
-
-impl<'de> Deserialize<'de> for SubtitleSize {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let percent = u8::deserialize(deserializer)?;
-        if !(Self::MIN_PERCENT..=Self::MAX_PERCENT).contains(&percent)
-            || (percent - Self::MIN_PERCENT) % Self::STEP_PERCENT != 0
-        {
-            return Err(serde::de::Error::custom("subtitle size must be 80–180 in 5% steps"));
-        }
-        Ok(Self(percent))
+    pub fn index(self) -> u8 {
+        Self::LADDER.iter().position(|&s| s == self).unwrap_or(1) as u8
     }
 }
 

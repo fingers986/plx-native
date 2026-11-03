@@ -1230,7 +1230,7 @@ fn a_six_line_cue_wraps_to_six_lines() {
 /// It must stay two lines, drawn at the full Extra large size.
 #[test]
 fn a_two_line_cue_at_extra_large_stays_two_lines_at_full_size() {
-    let xl = size_scale(plx_plex::plex::session::SubtitleSize::from_percent(150));
+    let xl = size_scale(plx_plex::plex::session::SubtitleSize::ExtraLarge);
     let cue = "I don't know why you came here tonight,\nbut you had better leave right now.";
     let lines = caption_wrap(cue, xl, &FM);
     assert_eq!(lines, ["I don't know why you came here tonight,", "but you had better leave right now."]);
@@ -1242,7 +1242,7 @@ fn a_two_line_cue_at_extra_large_stays_two_lines_at_full_size() {
 /// official client's largest caption reads about that size on the TV).
 #[test]
 fn a_two_line_cue_at_huge_stays_two_lines_at_full_size() {
-    let huge = size_scale(plx_plex::plex::session::SubtitleSize::from_percent(165));
+    let huge = size_scale(plx_plex::plex::session::SubtitleSize::Huge);
     let cue = "I don't know why you came here tonight,\nbut you had better leave right now.";
     let lines = caption_wrap(cue, huge, &FM);
     assert_eq!(lines, ["I don't know why you came here tonight,", "but you had better leave right now."]);
@@ -1285,7 +1285,19 @@ fn text_style_baseline_ties_to_caption_geometry_and_layout() {
                     for lines in 1..=CAPTION_ANCHOR_LINES {
                         let lay = caption_layout(lines, scale, baseline, floor);
                         let tl = today_layout(lines, scale, baseline);
-                        assert_eq!((tl.face, tl.pitch, tl.top), (lay.face, lay.pitch, lay.top), "{lines} lines");
+                        assert_eq!(tl.top, lay.top, "{position:?} {size:?} up={hud_up}: anchored top");
+                        let selected_face = (CAPTION_FACE * scale).round() as i32;
+                        let selected_pitch = CAPTION_LINE_PITCH * scale;
+                        assert_eq!((tl.face, tl.pitch), (selected_face, selected_pitch));
+                        let fits_at_selected_size =
+                            lay.top + lines as f32 * CAPTION_LINE_PITCH * scale <= floor;
+                        if fits_at_selected_size {
+                            assert_eq!((lay.face, lay.pitch), (tl.face, tl.pitch), "{position:?} {size:?} up={hud_up}");
+                        } else {
+                            // The bespoke HUD caption may step down to the minimum at the screen floor;
+                            // synthesized ASS keeps the viewer's selected size.
+                            assert!(lay.face <= tl.face, "{position:?} {size:?} up={hud_up}");
+                        }
                     }
                     n += 1;
                 }
@@ -1346,7 +1358,7 @@ fn min_controls_top_y_is_where_the_largest_block_just_fits() {
     let bound = min_controls_top_y();
     assert_eq!(bound, 424.0);
     assert!(bound <= HudBand::CLASSIC.controls_top_y, "classic's own row passes");
-    let (size, position) = (SubtitleSize::from_percent(165), SubtitlePosition::Custom(180));
+    let (size, position) = (SubtitleSize::Huge, SubtitlePosition::Custom(180));
     let top_of_block = |band: HudBand| {
         let (scale, baseline, floor) = caption_geometry_for(size, position, true, band);
         caption_layout(CAPTION_ANCHOR_LINES, scale, baseline, floor).top
@@ -1757,7 +1769,7 @@ mod caption_rise_pins {
         }
         /// The bottom limit the bespoke caption reader places a block at, for `p`.
         fn limit(&self, p: Pos) -> f32 {
-            caption_geometry_for(SubtitleSize::from_percent(100), p, true, self.band()).1
+            caption_geometry_for(SubtitleSize::Medium, p, true, self.band()).1
         }
         fn limits(&self) -> [f32; 3] {
             [Pos::VideoFrame, Pos::TvScreen, Pos::Custom(40)].map(|p| self.limit(p))
@@ -1824,8 +1836,8 @@ mod caption_rise_pins {
         assert!(close(1035.0 - lift, 656.0), "the lifted bottom stands on Info's limit: {lift}");
         assert_eq!(hud_lift([dialogue].into_iter(), false, rig.band()), 0.0, "the HUD down moves nothing");
         assert_eq!(
-            caption_geometry_for(SubtitleSize::from_percent(100), Pos::VideoFrame, false, rig.band()),
-            caption_geometry_for(SubtitleSize::from_percent(100), Pos::VideoFrame, false, HudBand::CLASSIC)
+            caption_geometry_for(SubtitleSize::Medium, Pos::VideoFrame, false, rig.band()),
+            caption_geometry_for(SubtitleSize::Medium, Pos::VideoFrame, false, HudBand::CLASSIC)
         );
     }
 
@@ -1917,7 +1929,7 @@ mod caption_rise_pins {
     /// overlaps the section at its own size.
     #[test]
     fn a_caption_that_would_cross_the_safe_area_stops_at_it_and_keeps_its_size() {
-        let size = SubtitleSize::from_percent(165);
+        let size = SubtitleSize::Huge;
         let scale = size_scale(size);
         let block_h = CAPTION_ANCHOR_LINES as f32 * CAPTION_LINE_PITCH * scale;
         // a section 880 px tall: its limit would leave the block 700 px above the top of the screen
@@ -1931,7 +1943,7 @@ mod caption_rise_pins {
         );
         assert_eq!((lay.face, lay.pitch), (rest.face, rest.pitch), "size never gives way");
         // a block that fits is not clamped
-        let (_, free, _) = caption_geometry_for_block(SubtitleSize::from_percent(100), Pos::VideoFrame, true, HudBand::CLASSIC.with_rise(HudBand::CLASSIC.rise_to_clear(668.0)), 144.0,
+        let (_, free, _) = caption_geometry_for_block(SubtitleSize::Medium, Pos::VideoFrame, true, HudBand::CLASSIC.with_rise(HudBand::CLASSIC.rise_to_clear(668.0)), 144.0,
         );
         assert!(close(free, 656.0), "{free}");
     }
@@ -1975,7 +1987,7 @@ mod caption_rise_pins {
         let now = rig.limit(Pos::VideoFrame);
         assert!(close(now, 780.0 - rise));
         for lines in 1..=CAPTION_ANCHOR_LINES {
-            let (scale, baseline, floor) = caption_geometry_for_block(SubtitleSize::from_percent(100), Pos::VideoFrame, true, rig.band(), anchored_height(lines, 1.0),
+            let (scale, baseline, floor) = caption_geometry_for_block(SubtitleSize::Medium, Pos::VideoFrame, true, rig.band(), anchored_height(lines, 1.0),
             );
             let lay = caption_layout(lines, scale, baseline, floor);
             assert!(close(lay.top + lines as f32 * lay.pitch, now), "{lines} lines end at the limit's current y");

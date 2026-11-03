@@ -48,7 +48,7 @@ fn rich() -> Session {
     session.prefs.playback_quality = Some(PlaybackQuality::P1080High);
     session.prefs.direct_play_mode = DirectPlayMode::Forced;
     session.prefs.subtitle_tone = SubtitleTone::Grey;
-    session.prefs.subtitle_size = SubtitleSize::from_percent(125);
+    session.prefs.subtitle_size = SubtitleSize::Large;
     session.prefs.subtitle_position = SubtitlePosition::VideoFrame;
     session.prefs.subtitle_custom_distance = Some(100);
     session.prefs.subtitle_video_frame_distance = Some(80);
@@ -173,7 +173,7 @@ fn sign_out_then_in_reads_the_legacy_values() {
     let mut transport = |request: Request| Ok(backend.dispatch(request));
     let mut session = rich();
     let stamp = crate::plex::grant::account_key(&session.account_token);
-    assert!(put_own::<SubtitleSizePref>(&mut session.prefs.profile_prefs, "u-7", &stamp, SubtitleSize::from_percent(80)));
+    assert!(put_own::<SubtitleSizePref>(&mut session.prefs.profile_prefs, "u-7", &stamp, SubtitleSize::Small));
     assert!(put_own::<SkipIntervalPref>(&mut session.prefs.profile_prefs, "u-7", &stamp, SkipInterval::Seconds5));
     assert!(matches!(
         persistence::commit_session_with(&session, false, SaveAuthority::FreshReauthentication, 4, &mut transport),
@@ -193,7 +193,7 @@ fn sign_out_then_in_reads_the_legacy_values() {
     let next = Session { account_token: "tier1-account-2".into(), prefs: kept.prefs, ..Default::default() };
     assert!(next.prefs.profile_prefs.is_empty());
     let seat = Seat::Seated { user: "u-7".into(), stamp: crate::plex::grant::account_key("tier1-account-2") };
-    assert_eq!(stored_effective::<SubtitleSizePref>(&next, &seat), SubtitleSize::from_percent(125),
+    assert_eq!(stored_effective::<SubtitleSizePref>(&next, &seat), SubtitleSize::Large,
         "the profile that picked Small reads the legacy Large");
     assert_eq!(stored_effective::<SkipIntervalPref>(&next, &seat), SkipInterval::Seconds30);
 }
@@ -518,7 +518,7 @@ fn tier1_legacy_file_extra_top_level_keys_leave_credentials_and_todays_keys_inta
 #[test]
 fn tier1_the_real_profile_prefs_shape_rides_through_the_previous_build() {
     let mut original = rich();
-    assert!(put_own::<SubtitleSizePref>(&mut original.prefs.profile_prefs, "", STAMP, SubtitleSize::from_percent(80)));
+    assert!(put_own::<SubtitleSizePref>(&mut original.prefs.profile_prefs, "", STAMP, SubtitleSize::Small));
     assert!(put_own::<SkipIntervalPref>(&mut original.prefs.profile_prefs, "u-7", STAMP, SkipInterval::Seconds10));
     assert!(put_own::<AudioEnhancementsPref>(&mut original.prefs.profile_prefs, "u-7", STAMP,
         crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true }));
@@ -534,7 +534,7 @@ fn tier1_the_real_profile_prefs_shape_rides_through_the_previous_build() {
         "skip_interval": "10s", "audio_enhancements": {"boost_dialog": false, "normalize_loudness": true},
         "trailer_autoplay": true}));
     // The top-level keys stay what they were: no pick wrote them.
-    assert_eq!(public.preferences["subtitle_size"], serde_json::to_value(SubtitleSize::from_percent(125)).unwrap());
+    assert_eq!(public.preferences["subtitle_size"], serde_json::to_value(SubtitleSize::Large).unwrap());
     assert_eq!(public.preferences["skip_interval"], serde_json::to_value(SkipInterval::Seconds30).unwrap());
     assert_eq!(public.preferences["trailer_autoplay"], serde_json::json!(original.prefs.trailer_autoplay),
         "and so is the TV's trailer key (off): the pick did not write it");
@@ -555,7 +555,7 @@ fn tier1_the_real_profile_prefs_shape_rides_through_the_previous_build() {
     let joined = join_canonical(&decoded.public, &auth).expect("the credentials still open");
     assert_credentials_intact(&joined, &original, "real shape");
     assert_eq!(joined.prefs.profile_prefs, original.prefs.profile_prefs);
-    assert_eq!(joined.prefs.subtitle_size, SubtitleSize::from_percent(125), "the TV-wide key is untouched");
+    assert_eq!(joined.prefs.subtitle_size, SubtitleSize::Large, "the TV-wide key is untouched");
 
     // The legacy file: the previous build's frozen `Session` carries it opaque and keeps the credentials.
     let file = serde_json::to_value(&original).unwrap();
