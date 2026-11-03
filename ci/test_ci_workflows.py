@@ -4,8 +4,7 @@
 * the site film refreshes after a stable release only, never blocks one, and holds its one write token in `publish` (`SiteVideoRelease`);
 * `cache-cleanup.yml` runs on `pull_request_target`, which is safe only while it never checks out
   or runs pull request code and holds nothing but `actions: write`;
-* the nightly's and the release candidate's Sentry debug-file upload is skipped on a pull
-  request's dry run and nowhere else (a release, the schedule and a dispatched dry run keep it);
+* the nightly and release-candidate Sentry debug-file uploads are skipped on pull-request dry runs; the release disables telemetry and explicitly skips Sentry upload;
 * the tests against the bundled FFmpeg and libass run in a job of their own, beside the replays,
   and still run;
 * the host FFmpeg and libass builds in the simulator jobs are CACHED where the build scripts really
@@ -88,7 +87,7 @@ class SentryUpload(unittest.TestCase):
         nightly = code("nightly.yml")
         self.assertEqual(re.findall(r"upload-debug-files: (.*)", nightly),
                          ["${{ github.event_name != 'pull_request' }}"])
-        self.assertNotIn("upload-debug-files", code("release.yml"))
+        self.assertEqual(re.findall(r"upload-debug-files: (.*)", code("release.yml")), ["false"])
 
     def test_only_a_pull_requests_candidate_run_skips_the_upload(self):
         self.assertEqual(re.findall(r"upload-debug-files: (.*)", code("rc.yml")),
