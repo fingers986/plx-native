@@ -52,7 +52,7 @@ on:
         type: string
         default: ''
       telemetry:
-        description: 'Which telemetry credential pair to compile in — production or development.'
+        description: 'Telemetry endpoints to compile in — production, development, or none.'
         type: string
         required: true
       artifact:
@@ -104,7 +104,7 @@ on:
         default: true
     secrets:
       SENTRY_AUTH_TOKEN:
-        required: true
+        required: false
     outputs:
       ipk:
         description: Path to the built .ipk inside the runner's workspace (pkg/*.ipk).
@@ -132,8 +132,8 @@ jobs:
             *) echo "::error::flavor must be stable, debug, or nightly, got '$FLAVOR'"; exit 1 ;;
           esac
           case "$TELEMETRY" in
-            production|development) ;;
-            *) echo "::error::telemetry must be production or development, got '$TELEMETRY'"; exit 1 ;;
+            production|development|none) ;;
+            *) echo "::error::telemetry must be production, development, or none, got '$TELEMETRY'"; exit 1 ;;
           esac
           # A manifest is keyed to the app id it was generated for, and only two installs have a
           # Homebrew Channel listing: stable (the webosbrew catalogue's) and nightly (the
@@ -311,12 +311,17 @@ jobs:
             echo "telemetry fingerprints (sha256, first 16):"
             printf '  sentry  %s\n' "$(printf %s "$PLX_SENTRY_DSN"  | sha256sum | cut -c1-16)"
             printf '  posthog %s\n' "$(printf %s "$PLX_POSTHOG_KEY" | sha256sum | cut -c1-16)"
-          else
+          elif [ "$TELEMETRY" = development ]; then
             [ -n "$PLX_SENTRY_DSN_DEV" ] || { echo '::error::PLX_SENTRY_DSN_DEV is required for a development-telemetry build.'; exit 1; }
             [ -n "$PLX_POSTHOG_KEY_DEV" ] || { echo '::error::PLX_POSTHOG_KEY_DEV is required for a development-telemetry build.'; exit 1; }
             [ -z "$PLX_SENTRY_DSN$PLX_POSTHOG_KEY" ] || { echo '::error::production telemetry is present in a development-telemetry build.'; exit 1; }
             grep -q 'tel:' pkg/.build-config
             python3 -c 'import os; b=open("pkg/plxnative","rb").read(); assert os.environ["PLX_SENTRY_DSN_DEV"].encode() in b; assert os.environ["PLX_POSTHOG_KEY_DEV"].encode() in b'
+          else
+          else
+            [ -z "$PLX_SENTRY_DSN$PLX_POSTHOG_KEY$PLX_SENTRY_DSN_DEV$PLX_POSTHOG_KEY_DEV" ] \
+              || { echo '::error::telemetry=none was selected but a telemetry endpoint reached the build'; exit 1; }
+            echo "Telemetry disabled: this binary carries no Sentry or PostHog endpoint."
           fi
           # ...and carry the stamp to the caller's downstream jobs under a NON-HIDDEN name:
           # upload-artifact silently drops dotfiles, so `pkg/.build-config` would never arrive and
