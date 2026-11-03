@@ -167,14 +167,14 @@ fn the_field_list_rereads_a_subtitle_look_picked_elsewhere() {
     let _serial = plx_base::testlock::serial();
     let _session = plx_plex::plex::session::TempSession::new("pref-parent-look");
     let (size, position) = (plx_media::route::subtitle_size(), plx_media::route::subtitle_position());
-    plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Medium);
+    plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::from_percent(100));
     plx_media::route::restore_subtitle_position(plx_media::route::SubtitlePosition::TvScreen);
     let mut parent = PreferencesPage::new(EntryId(0), Kind::Playback);
     let size_row = parent.form.index_of(&RowId::Field(PickerKind::SubtitleSize)).unwrap();
     let position_row = parent.form.index_of(&RowId::Field(PickerKind::SubtitlePosition)).unwrap();
     assert_eq!(parent.state.values[size_row], plx_platform::i18n::msg::settings_playback_subtitle_size_medium());
 
-    plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Large);
+    plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::from_percent(125));
     plx_media::route::restore_subtitle_position(plx_media::route::SubtitlePosition::TvScreen);
     drive(&mut parent, tick(), 0);
     assert_eq!(parent.state.values[size_row], plx_platform::i18n::msg::settings_playback_subtitle_size_large());

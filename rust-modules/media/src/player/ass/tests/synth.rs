@@ -305,7 +305,7 @@ fn native_lines_wrap_at_the_wrap_width_for_every_size() {
 #[test]
 #[ignore = "requires the pinned native host libass artifact and packaged fonts"]
 fn native_the_outline_is_a_four_pixel_black_stroke_at_eighty_five_percent() {
-    let rects = text_frame(&style(SubtitleSize::Medium, SubtitlePosition::TvScreen), &[cue("H")]);
+    let rects = text_frame(&style(SubtitleSize::from_percent(100), SubtitlePosition::TvScreen), &[cue("H")]);
     let all: Vec<(i32, i32, [u8; 4])> = pixels(&rects).collect();
     let fill: Vec<&(i32, i32, [u8; 4])> = all.iter().filter(|p| is_fill(p.2)).collect();
     let (fill_left, fill_top) = (fill.iter().map(|p| p.0).min().unwrap(), fill.iter().map(|p| p.1).min().unwrap());
@@ -343,7 +343,7 @@ const WHITE: &str = "{\\1c&HFFFFFF&}";
 #[test]
 #[ignore = "requires the pinned native host libass artifact and packaged fonts"]
 fn native_a_mixed_latin_and_arabic_line_takes_the_direction_of_its_first_letter() {
-    let picks = style(SubtitleSize::Large, SubtitlePosition::TvScreen);
+    let picks = style(SubtitleSize::from_percent(125), SubtitlePosition::TvScreen);
     let arabic = "مرحبا";
     let rtl = text_frame(&picks, &[raw(2, &format!("{RED}{arabic}{WHITE}.")) ]);
     assert!(
@@ -373,7 +373,7 @@ fn native_a_mixed_latin_and_arabic_line_takes_the_direction_of_its_first_letter(
 #[test]
 #[ignore = "requires the pinned native host libass artifact and packaged fonts"]
 fn native_escapes_show_what_the_subtitle_says() {
-    let picks = style(SubtitleSize::Large, SubtitlePosition::TvScreen);
+    let picks = style(SubtitleSize::from_percent(125), SubtitlePosition::TvScreen);
     let frame = |text: &str| text_frame(&picks, &[cue(text)]);
     let extent = |rects: &[Rect]| {
         let (l, r) = fill_extent(rects, 0, 1080);
@@ -445,7 +445,7 @@ fn native_hud_up_deep_marks_clear_the_transport_controls() {
                         "{script} {size:?} {position:?}: lifted ink ends at {lifted}, controls start at {}",
                         band.controls_top_y
                     );
-                    if position == SubtitlePosition::TvScreen && size == SubtitleSize::ExtraLarge {
+                    if position == SubtitlePosition::TvScreen && size == SubtitleSize::from_percent(150) {
                         assert!(depth > latin, "{script}: no deeper than Latin \"Hxg\" ({depth} vs {latin})");
                     }
                 }

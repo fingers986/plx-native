@@ -94,7 +94,7 @@ pub struct Preferences {
     #[serde(default, deserialize_with = "de_soft_subtitle_tone")]
     pub subtitle_tone: SubtitleTone,
     /// **The client-rendered subtitle caption's text size.** A frozen fallback like
-    /// [`Preferences::subtitle_tone`]. Absence is Medium — see [`SubtitleSize`]'s own doc. Skipped at
+    /// [`Preferences::subtitle_tone`]. Absence is 100% — see [`SubtitleSize`]'s own doc. Skipped at
     /// the default so a session predating this field — committed replay fixtures included —
     /// serializes exactly as it did before.
     #[serde(default, deserialize_with = "de_soft_subtitle_size", skip_serializing_if = "is_default_subtitle_size")]
@@ -1277,7 +1277,7 @@ where
     D: Deserializer<'de>,
 {
     let Ok(v) = serde_json::Value::deserialize(d) else {
-        return Ok(SubtitleSize::Medium);
+        return Ok(SubtitleSize::from_percent(100));
     };
     Ok(serde_json::from_value::<SubtitleSize>(v).unwrap_or_default())
 }
