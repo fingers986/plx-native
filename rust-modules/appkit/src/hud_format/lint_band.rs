@@ -116,7 +116,7 @@ pub(super) const INVALID: &[super::lint::testing::InvalidCase] = &[
         also: &[("HUD-E1102", "/layout/up_next")],
     },
     // classic under `band: "block"` with a 554 px title: the band is the top of ANY drawn extent, and the
-    // title block (a 34 px kicker over a 554 px title, bottom-aligned in its band) now rises to y 268, above
+    // title block (a 34 px kicker over a 400 px title, bottom-aligned in its band) now rises to y 268, above
     // every language's Up Next still (about 550), while the control row stays at 792: only the kicker's text
     // sets the band and is named
     InvalidCase {
@@ -124,7 +124,7 @@ pub(super) const INVALID: &[super::lint::testing::InvalidCase] = &[
         code: "HUD-E1201",
         pointer: "/layout/block/0/cells/0/vstack/cells/0/text",
         base: Base::Classic,
-        edits: &[(r#""band": "controls","#, r#""band": "block","#), (r#""leading": 54,"#, r#""leading": 554,"#)],
+        edits: &[(r#""band": "controls","#, r#""band": "block","#), (r#""leading": 54,"#, r#""leading": 400,"#)],
         langs: &[],
         skew: 0.0,
         also: &[],
