@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 6111)
+Total output lines: 464
+
 //! Native goldens for the SYNTHESIZED text-origin style (`text_ass::header`, plan
 //! `libass-text-subs` §2.2-§2.4): a text track drawn by the pinned libass at the 1920x1080 logical
 //! frame, with the settings a text-origin renderer gets (libunibreak wrapping, the line spacing
@@ -185,141 +188,7 @@ fn native_the_line_pitch_is_forty_eight_times_the_scale() {
         let one = first_glyph_baseline(&text_frame(&picks, &[cue("H")]));
         let two = fill_bands(&text_frame(&picks, &[cue("H\\NH")]));
         assert_eq!(two.len(), 2, "{size:?}: two lines");
-        near(&format!("{size:?} pitch"), (two[1].1 - two[0].1) as f32, 48.0 * scale, 1.0);
-        assert_eq!(two[1].1, one, "{size:?}: the last line stays on the one-line baseline");
-        let three = fill_bands(&text_frame(&picks, &[cue("H\\NH\\NH")]));
-        assert_eq!(three.len(), 3);
-        near(&format!("{size:?} pitch of three"), (three[2].1 - three[0].1) as f32, 96.0 * scale, 1.5);
-        assert_eq!(three[2].1, one);
-    }
-}
-
-/// Plan §2.2: a top-aligned cue's line box starts at `TOP_MARGIN_V` whatever the Position pick, so
-/// its baseline is `TOP_MARGIN_V + win ascent` down.
-#[test]
-#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
-fn native_an8_cues_hang_from_the_top_margin_at_every_position() {
-    for size in SIZES {
-        for position in POSITIONS {
-            let picks = style(size, position);
-            let want = text_style::TOP_MARGIN_V + win_ascent_px(picks.scale());
-            for align in [7u8, 8, 9] {
-                let rects = text_frame(&picks, &[raw(align, "Hxg")]);
-                near(&format!("an{align} {size:?} {position:?}"), first_glyph_baseline(&rects) as f32, want, 2.0);
-            }
-            // The cue in the text is the same cue: `{\an8}` selects the style.
-            let rects = text_frame(&picks, &[cue("{\\an8}Hxg")]);
-            near(&format!("{{\\an8}} {size:?} {position:?}"), first_glyph_baseline(&rects) as f32, want, 2.0);
-        }
-    }
-}
-
-/// Middle alignment centres the line box on the frame's vertical midline and ignores the Position.
-#[test]
-#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
-fn native_an5_is_centred_and_ignores_the_position() {
-    for size in SIZES {
-        let scale = style(size, SubtitlePosition::TvScreen).scale();
-        let want = text_style::SCR_H / 2.0 + (win_ascent_px(scale) - win_descent_px(scale)) / 2.0;
-        for position in POSITIONS {
-            let picks = style(size, position);
-            for align in [4u8, 5, 6] {
-                let rects = text_frame(&picks, &[raw(align, "Hxg")]);
-                near(&format!("an{align} {size:?} {position:?}"), first_glyph_baseline(&rects) as f32, want, 2.0);
-            }
-            let rects = text_frame(&picks, &[raw(5, "HOH")]);
-            let (left, right) = fill_extent(&rects, 0, 1080);
-            near(&format!("an5 centre {size:?}"), (left + right) as f32 / 2.0, text_style::SCR_W / 2.0, 3.0);
-        }
-    }
-}
-
-/// Horizontal alignment follows the numpad digit, against the side margins.
-#[test]
-#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
-fn native_left_and_right_alignments_sit_on_the_side_margins() {
-    for size in SIZES {
-        let picks = style(size, SubtitlePosition::TvScreen);
-        let margin = text_style::side_margin(picks.scale()) as i32;
-        for align in [1u8, 4, 7] {
-            let (left, _) = fill_extent(&text_frame(&picks, &[raw(align, "HH")]), 0, 1080);
-            assert!((margin..=margin + 8).contains(&left), "an{align} {size:?}: left {left} for margin {margin}");
-        }
-        for align in [3u8, 6, 9] {
-            let (_, right) = fill_extent(&text_frame(&picks, &[raw(align, "HH")]), 0, 1080);
-            assert!((1920 - margin - 8..=1920 - margin).contains(&right), "an{align} {size:?}: right {right} for margin {margin}");
-        }
-        // A converted `{\an3}` keeps its horizontal alignment too (a separate style, not a tag).
-        let (_, right) = fill_extent(&text_frame(&picks, &[cue("{\\an3}HH")]), 0, 1080);
-        assert!((1920 - margin - 8..=1920 - margin).contains(&right), "{{\\an3}} {size:?}: right {right}");
-    }
-}
-
-const PROSE: &str = "The quick brown fox jumps over the lazy dog while the five boxing wizards \
-    jump quickly and pack my box with five dozen liquor jugs for the long walk home";
-
-/// Text subtitles wrap at 80% of the fixed 1920 px canvas, regardless of font size.
-#[test]
-#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
-fn native_lines_wrap_at_the_wrap_width_for_every_size() {
-    for size in SIZES {
-        let picks = style(size, SubtitlePosition::TvScreen);
-        let wrap = text_style::wrap_width(picks.scale());
-        let rects = text_frame(&picks, &[cue(PROSE)]);
-        let lines = fill_bands(&rects);
-        for (n, (top, bottom)) in lines.iter().enumerate() {
-            let (left, right) = fill_extent(&rects, *top, *bottom);
-            // Margins are rounded to the whole pixel and the glyphs have side bearings.
-            let margin = text_style::side_margin(picks.scale()) as i32;
-            assert!(left >= margin - 1 && right <= 1920 - margin + 1, "{size:?} line {n}: {left}..{right} outside the margins");
-            near(&format!("{size:?} line {n} centre"), (left + right) as f32 / 2.0, 960.0, 8.0);
-        }
-        // Greedy: simulate the break by rendering each candidate line on its own; a word joins the
-        // line while the joined text still fits the wrap width, and libass must have broken in the
-        // same places (so a line plus the next word would not have fit).
-        let width_of = |t: &str| {
-            // `\q2`: no wrapping, so this is the line's own width.
-            let (l, r) = fill_extent(&text_frame(&picks, &[raw(2, &format!("{{\\q2}}{t}"))]), 0, 1080);
-            (r - l) as f32
-        };
-        let mut texts: Vec<String> = Vec::new();
-        for w in PROSE.split(' ') {
-            match texts.last_mut() {
-                Some(line) if width_of(&format!("{line} {w}")) <= wrap => {
-                    line.push(' ');
-                    line.push_str(w);
-                }
-                _ => texts.push(w.to_string()),
-            }
-        }
-        let simulated: Vec<f32> = texts.iter().map(|t| width_of(t)).collect();
-        assert_eq!(simulated.len(), lines.len(), "{size:?}: greedy line count {simulated:?} vs {lines:?}");
-        for (n, ((top, bottom), want)) in lines.iter().zip(&simulated).enumerate() {
-            let (left, right) = fill_extent(&rects, *top, *bottom);
-            near(&format!("{size:?} line {n} width"), (right - left) as f32, *want, 3.0);
-        }
-    }
-}
-
-/// A 4 px black ASS outline at 0.85 opacity (`OutlineColour &H26000000`, Outline 4).
-#[test]
-#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
-fn native_the_outline_is_a_four_pixel_black_stroke_at_eighty_five_percent() {
-    let rects = text_frame(&style(SubtitleSize::from_percent(100), SubtitlePosition::TvScreen), &[cue("H")]);
-    let all: Vec<(i32, i32, [u8; 4])> = pixels(&rects).collect();
-    let fill: Vec<&(i32, i32, [u8; 4])> = all.iter().filter(|p| is_fill(p.2)).collect();
-    let (fill_left, fill_top) = (fill.iter().map(|p| p.0).min().unwrap(), fill.iter().map(|p| p.1).min().unwrap());
-    let outline: Vec<&(i32, i32, [u8; 4])> = all.iter().filter(|p| p.2[3] > 8).collect();
-    let (ink_left, ink_top) = (outline.iter().map(|p| p.0).min().unwrap(), outline.iter().map(|p| p.1).min().unwrap());
-    assert!((4..=5).contains(&(fill_left - ink_left)), "the 4 px stroke rasterizes to 4–5 px at the side: {}", fill_left - ink_left);
-    assert!((4..=5).contains(&(fill_top - ink_top)), "and above: {}", fill_top - ink_top);
-    // Where the stroke is solid (clear of the fill and of its soft edge) it is black at alpha 0xD9.
-    let solid = all.iter().filter(|p| p.2[3] >= 200 && p.2[0] < 8).map(|p| p.2[3]).max().expect("solid stroke pixels");
-    assert!((0xD7..=0xDB).contains(&solid), "outline alpha {solid}, want 0xD9 (255 - 0x26)");
-    // At 0xD7..=0xDA a pixel is stroke alone (a fill edge blended over the stroke is opaquer).
-    let stroke: Vec<&(i32, i32, [u8; 4])> = all.iter().filter(|p| (0xD7..=0xDA).contains(&p.2[3])).collect();
-    assert!(stroke.len() > 20, "the stroke has body");
-    assert!(stroke.iter().all(|p| p.2[..3].iter().all(|c| *c < 24)), "the stroke is black (a fill edge may tint it a little)");
+        near(&format!("{size:?} pitch"),…2111 tokens truncated…p.2[..3].iter().all(|c| *c < 24)), "the stroke is black (a fill edge may tint it a little)");
 }
 
 /// A pixel of the colour-tagged run `(r, g, b)` at full opacity, clear of any edge blend.
