@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 15599)
-Total output lines: 1183
-
 //! **Issue 28, restated against the surface that now answers it.**
 //!
 //! Until phase 9 this was `app::playback::overlay_swallows_key` — a pure predicate over
@@ -568,7 +565,49 @@ fn a_style_pick_commits_without_dismissing_the_tracks_panel() {
     plx_media::player::restore_subtitle_tone(plx_plex::plex::session::SubtitleTone::White);
     let ps = plx_media::route::PlaybackSession::IDLE;
     let meta = plx_data::stores::metadata::MetadataStore::default();
-    let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 })…599 tokens truncated…sKey { entry: ENTRY, elem: TrackRow::Style.key().0 }, by: By::Dir });
+    let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
+    // no playing item: Off, then the headerless Timing + Style section; the element is the row's KEY
+    let (_, reqs, dismissed) = open_row(&mut page, TrackRow::Style);
+    assert!(!dismissed, "a Nav row keeps the panel open");
+    assert!(!reqs.iter().any(|r| matches!(r, PlayerReq::CommitTrack(_))), "and commits nothing: {reqs:?}");
+    assert_eq!(tracks_path(&page), [TrackPage::Style]);
+    let (_, _, dismissed) = open_row(&mut page, TrackRow::OpenField(StyleField::Color));
+    assert!(!dismissed);
+    assert_eq!(tracks_path(&page), [TrackPage::Style, TrackPage::Picker(StyleField::Color)]);
+    assert_eq!(tracks_selected(&page), Some(TrackRow::Choice(StyleField::Color, 0)), "opens on the checked tone");
+
+    let (_, reqs, dismissed) = open_row(&mut page, TrackRow::Choice(StyleField::Color, 1));
+    assert!(!dismissed, "a Style pick keeps the panel open");
+    assert!(reqs.iter().any(|r| matches!(
+        r,
+        PlayerReq::CommitTrack(plx_appkit::track_menu::TrackCommit::SubtitleTone(
+            plx_plex::plex::session::SubtitleTone::Silver
+        ))
+    )));
+    assert!(reqs.iter().any(|r| matches!(r, PlayerReq::ExtendHud(_))));
+    assert_eq!(tracks_path(&page).len(), 2, "and stays on the picker page");
+
+    // BACK twice returns to the root, where Off still commits and closes
+    press(&mut page, 0, WCODE_BACK, Edge::Down);
+    press(&mut page, 0, WCODE_BACK, Edge::Down);
+    assert!(tracks_path(&page).is_empty());
+    let (_, _, dismissed) = open_row(&mut page, TrackRow::SubOff);
+    assert!(dismissed, "Off still commits and closes");
+}
+
+/// **Nav keys through the surface**: BACK and LEFT pop a sub-page (focus returns to the opener by
+/// id), BACK on the root dismisses, LEFT on the root is still the tab switch, and RIGHT on a Nav row
+/// enters it (and on anything else is the tab switch, as before).
+#[test]
+fn back_and_left_pop_a_sub_page_and_right_enters_a_nav_row() {
+    use plx_ui::consts::{SDLK_LEFT, SDLK_RIGHT};
+    let _g = plx_base::testlock::serial();
+    let ps = plx_media::route::PlaybackSession::IDLE;
+    let meta = plx_data::stores::metadata::MetadataStore::default();
+    let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
+
+    // RIGHT on the Style row enters the page (an edge re-delivery, as the engine does)
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: TrackRow::Style.key().0 }, by: By::Dir });
     let (handled, _, dismissed) = press_at_edge(&mut page, SDLK_RIGHT);
     assert_eq!(handled, Handled::Yes);
     assert!(!dismissed);
