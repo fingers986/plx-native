@@ -49,7 +49,10 @@ fn rich() -> Session {
     session.prefs.direct_play_mode = DirectPlayMode::Forced;
     session.prefs.subtitle_tone = SubtitleTone::Grey;
     session.prefs.subtitle_size = SubtitleSize::Large;
-    session.prefs.subtitle_position = SubtitlePosition::TvScreen;
+    session.prefs.subtitle_position = SubtitlePosition::VideoFrame;
+    session.prefs.subtitle_custom_distance = Some(100);
+    session.prefs.subtitle_video_frame_distance = Some(80);
+    session.prefs.subtitle_tv_screen_distance = Some(120);
     session.prefs.next_episode_mode = NextEpisodeMode::AfterCredits;
     session.prefs.skip_interval = SkipInterval::Seconds30;
     session.prefs.deck_press = DeckPress::Play;
@@ -124,7 +127,8 @@ fn db8_signout_keeps_install_keys_but_not_pins_recents_or_account_bound_keys() {
     let before = stored_public(&mut transport);
     let stored = before.preferences.as_object().expect("preferences object");
     for key in ["language", "playback_quality", "direct_play_mode", "auto_sign_in", "trailer_autoplay",
-        "subtitle_tone", "subtitle_size", "subtitle_position", "next_episode_mode", "skip_interval",
+        "subtitle_tone", "subtitle_size", "subtitle_position", "subtitle_custom_distance",
+        "subtitle_video_frame_distance", "subtitle_tv_screen_distance", "next_episode_mode", "skip_interval",
         "deck_press", "audio_enhancements", "last_hero_blur", "last_library", "library_sorts",
         "subtitle_offsets", "plaintext_consent", "server_key_pins"] {
         assert!(stored.contains_key(key), "before sign-out `{key}` is stored: {stored:?}");
@@ -137,7 +141,8 @@ fn db8_signout_keeps_install_keys_but_not_pins_recents_or_account_bound_keys() {
 
     // Install keys survive, value for value.
     for key in ["language", "playback_quality", "direct_play_mode", "auto_sign_in", "trailer_autoplay",
-        "subtitle_tone", "subtitle_size", "subtitle_position", "next_episode_mode", "skip_interval",
+        "subtitle_tone", "subtitle_size", "subtitle_position", "subtitle_custom_distance",
+        "subtitle_video_frame_distance", "subtitle_tv_screen_distance", "next_episode_mode", "skip_interval",
         "deck_press", "audio_enhancements", "last_hero_blur"] {
         assert_eq!(after.preferences.get(key), before.preferences.get(key), "install key `{key}` survives sign-out");
     }

@@ -71,7 +71,7 @@ fn option_form(options: Vec<(String, Value)>, current: &Value, busy: bool, retry
             let distance = plx_media::route::subtitle_distance(anchor);
             choices = choices.item_keyed(OptionId::Choice(Value::SubtitlePosition(anchor)), RowKey(i as u32),
                 RowKind::Nav(SettingsPage::SubtitlePositionDistance(anchor)), PickAction::Pick(Value::SubtitlePosition(anchor)),
-                Row::new(&label).detail(format!("{distance} px")).chevron(true).dim(busy));
+                Row::new(&label).detail(plx_platform::i18n::msg::settings_playback_subtitle_position_distance_px(distance as i64)).chevron(true).dim(busy));
         } else {
             let row = Row::new(&label).checked(value == *current).dim(busy);
             choices = choices.item_keyed(OptionId::Choice(value.clone()), RowKey(i as u32), RowKind::Choice, PickAction::Pick(value), row);
@@ -102,6 +102,12 @@ impl PickerPage {
     fn current(&self) -> Value {
         if let Some(anchor) = self.state.distance_anchor {
             return Value::SubtitleDistance(anchor, plx_media::route::subtitle_distance(anchor));
+        }
+        if self.state.field == PickerKind::SubtitlePosition {
+            return Value::SubtitlePosition(match plx_media::route::subtitle_position() {
+                SubtitlePosition::Custom(_) => SubtitlePosition::Custom(40),
+                position => position,
+            });
         }
         resolve_value(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs())
     }

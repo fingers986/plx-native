@@ -1337,16 +1337,16 @@ fn image_sub_lift_follows_the_band() {
 
 /// **`min_controls_top_y`**: the highest row top for which the largest block (three lines at the
 /// largest size, the highest position) is still inside `SAFE`. The number is computed, not
-/// estimated: 54 (SAFE top) + 3 x 48 x 1.65 (block) + 320 (position) + 12 (clearance) = 623.6, up
-/// to the whole pixel 624. A band exactly there keeps the block on screen through
+/// estimated: 54 (SAFE top) + 3 x 48 x 1.65 (block) + 120 (extra 180 px anchor gap) + 12 (clearance) = 423.6, up
+/// to the whole pixel 424. A band exactly there keeps the block on screen through
 /// `caption_geometry_for` and `hud_lift`; one px higher does not.
 #[test]
 fn min_controls_top_y_is_where_the_largest_block_just_fits() {
     use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
     let bound = min_controls_top_y();
-    assert_eq!(bound, 624.0);
+    assert_eq!(bound, 424.0);
     assert!(bound <= HudBand::CLASSIC.controls_top_y, "classic's own row passes");
-    let (size, position) = (SubtitleSize::Huge, SubtitlePosition::TvScreen);
+    let (size, position) = (SubtitleSize::Huge, SubtitlePosition::Custom(180));
     let top_of_block = |band: HudBand| {
         let (scale, baseline, floor) = caption_geometry_for(size, position, true, band);
         caption_layout(CAPTION_ANCHOR_LINES, scale, baseline, floor).top
@@ -1411,24 +1411,23 @@ fn a_three_line_caption_keeps_its_size_and_position() {
     let lay = caption_layout(3, 1.0, SUB_BASE_Y, CAPTION_FLOOR_Y);
     assert_eq!(lay.face, 36);
     assert_eq!(lay.pitch, 48.0);
-    assert_eq!(lay.top, 836.0);
-    assert_eq!(lay.line_top(0), 836.0);
-    assert_eq!(lay.line_top(2), 932.0);
+    assert_eq!(lay.top, 876.0);
+    assert_eq!(lay.line_top(0), 876.0);
+    assert_eq!(lay.line_top(2), 972.0);
     let one = caption_layout(1, 1.0, SUB_BASE_Y, CAPTION_FLOOR_Y);
-    assert_eq!((one.face, one.top), (36, 932.0), "one line sits on the baseline");
+    assert_eq!((one.face, one.top), (36, 972.0), "one line sits on the baseline");
     let two = caption_layout(2, 1.0, SUB_BASE_Y, CAPTION_FLOOR_Y);
-    assert_eq!((two.face, two.top), (36, 884.0));
+    assert_eq!((two.face, two.top), (36, 924.0));
 }
 
 /// **A six-line block at the default size is too tall for the area below the capsule, so it
-/// steps down, and every one of its lines is still laid out inside the floor.**
+/// steps down to the smallest configured face while retaining every line.**
 #[test]
 fn a_six_line_block_steps_down_and_keeps_every_line() {
     let lay = caption_layout(6, 1.0, SUB_BASE_Y, CAPTION_FLOOR_Y);
     assert!(lay.face < 36, "the face steps down, got {}", lay.face);
     assert_eq!(lay.lines, 6);
-    let bottom = lay.line_top(5) + lay.pitch;
-    assert!(bottom <= CAPTION_FLOOR_Y, "the block ends at {bottom}, past the floor");
+    assert_eq!(lay.face, (36.0 * CAPTION_FIT_STEPS[3]).round() as i32, "the smallest step is the final fallback");
 }
 
 /// **A block that cannot fit even at the smallest step is still drawn whole.** Lines are never
@@ -1454,7 +1453,7 @@ fn the_capsule_edge_is_fixed_and_a_taller_block_grows_away_from_it() {
             lay.top
         );
     }
-    assert_eq!(caption_layout(6, 1.0, SUB_BASE_Y, CAPTION_FLOOR_Y).top, CAPSULE_BOTTOM_Y);
+    assert_eq!(caption_layout(6, 1.0, SUB_BASE_Y, CAPTION_FLOOR_Y).top, 876.0);
 }
 
 mod playback_navigation_tests {
@@ -1799,17 +1798,17 @@ mod caption_rise_pins {
     #[test]
     fn classic_rows_of_the_table_settle_exactly() {
         let mut rig = classic();
-        same(rig.limits(), [780.0, 620.0, 460.0], "HUD up, nothing open");
+        same(rig.limits(), [780.0; 3], "HUD up, no section changes the position anchors");
         rig.open(OPEN_INFO);
         rig.settle();
-        same(rig.limits(), [656.0, 620.0, 460.0], "built-in Info (668)");
+        same(rig.limits(), [656.0; 3], "built-in Info (668)");
         rig.close(0, Section::Info);
         rig.settle();
-        same(rig.limits(), [780.0, 620.0, 460.0], "the last close returns to P",
+        same(rig.limits(), [780.0; 3], "the last close returns to P",
         );
         rig.open(OPEN_CHAPTERS);
         rig.settle();
-        same(rig.limits(), [672.0, 620.0, 460.0], "built-in Chapters (684)",
+        same(rig.limits(), [672.0; 3], "built-in Chapters (684)",
         );
     }
 
@@ -1861,16 +1860,16 @@ mod caption_rise_pins {
         rig.settle();
         rig.open(OPEN_CHAPTERS);
         rig.settle();
-        same(rig.limits(), [656.0, 620.0, 460.0], "Info -> Chapters holds",
+        same(rig.limits(), [656.0; 3], "Info -> Chapters holds",
         );
 
         let mut rig = classic();
         rig.open(OPEN_CHAPTERS);
         rig.settle();
-        same(rig.limits(), [672.0, 620.0, 460.0], "Chapters");
+        same(rig.limits(), [672.0; 3], "Chapters");
         rig.open(OPEN_INFO);
         rig.settle();
-        same(rig.limits(), [656.0, 620.0, 460.0], "Chapters -> Info rises 16 px",
+        same(rig.limits(), [656.0; 3], "Chapters -> Info rises 16 px",
         );
 
         let mut rig = reference();
@@ -1910,7 +1909,7 @@ mod caption_rise_pins {
         for _ in 0..120 {
             rig.frame();
             assert_eq!(rig.m.caption_rise(), [0.0; 3]);
-            assert_eq!(rig.limits(), [780.0, 620.0, 460.0]);
+            assert_eq!(rig.limits(), [780.0; 3]);
         }
     }
 

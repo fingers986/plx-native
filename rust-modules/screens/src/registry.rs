@@ -2691,7 +2691,7 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // root, 1 Quality, 2 Speed) where it carried `More(quality:bool)`, so the Speed page can be
 // addressed. One bump; the three replay fixtures were re-recorded against it; the previous pin was
 // 0x9425_f33f_3f53_6aa5.
-const SCREEN_SHAPES_PIN: u64 = 0xb633_b65b_ed93_ca93;
+const SCREEN_SHAPES_PIN: u64 = 0x01_dab7_d72c_3f10_0b;
 
 #[cfg(test)]
 mod arg_tests {

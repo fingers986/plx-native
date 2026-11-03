@@ -32,6 +32,8 @@ pub const CAPTION_ANCHOR_LINES: usize = 3;
 /// the appkit draw places, which the Timing capsule is cleared against, so it is NOT the libass
 /// `MarginV` of the Low position: libass sets the same line on a different box ([`INK_TRIM`]).
 pub const BOTTOM_GAP: f32 = 60.0;
+/// Largest distance the settings picker offers for any subtitle anchor.
+pub const MAX_POSITION_DISTANCE: f32 = 180.0;
 
 /// How much nearer the frame's bottom libass's `MarginV` sits than [`BOTTOM_GAP`], so the ink
 /// baseline of a one-line cue lands where [`today_ink_baseline`] puts it. Fixed by the native
@@ -99,7 +101,7 @@ impl HudBand {
         }
     }
 
-    /// Classic's band: control row at 792, ceiling 780, lift 200 (`text_style::tests` pins them).
+    /// Classic's band: control row at 792, ceiling 780, lift 240 (`text_style::tests` pins them).
     pub const CLASSIC: Self = Self::from_controls_top(HUD_CONTROLS_TOP_Y);
 
     /// This band with the rise a section has lifted the captions by (one entry per Position).
@@ -109,7 +111,7 @@ impl HudBand {
 
     /// P: where the HUD-up limit of `position` sits with no section open.
     pub fn rest_limit(&self, position: SubtitlePosition) -> f32 {
-        self.ceil_y - position_lift(position)
+        self.ceil_y - position_lift(position) + BOTTOM_GAP - position_distance(position)
     }
 
     /// The rise of `position`'s limit, before the safe-area clamp ([`clear_rise`](Self::clear_rise)).
@@ -267,8 +269,10 @@ pub struct TodayBaseline {
 /// Port of `player_hud::caption_geometry_for` (with `hud_up` and a zero-height block) for a given `scale`, `position` and HUD `band`.
 pub fn today_baseline(position: SubtitlePosition, scale: f32, hud_up: bool, band: HudBand,
 ) -> TodayBaseline {
-    let rise = if hud_up { band.rise_for(position) } else { 0.0 };
-    let baseline = (if hud_up { band.ceil_y } else { SUB_BASE_Y }) - position_lift(position) - rise;
+    let custom_adjust = BOTTOM_GAP - position_distance(position);
+    let rest = band.rest_limit(position);
+    let rise = if hud_up { HudBand::clear_rise(band.rise_for(position), rest, 0.0) } else { 0.0 };
+    let baseline = (if hud_up { band.ceil_y } else { SUB_BASE_Y }) - position_lift(position) - rise + custom_adjust;
     let floor = if hud_up { band.ceil_y } else { CAPTION_FLOOR_Y };
     TodayBaseline { scale, baseline, floor,
     }

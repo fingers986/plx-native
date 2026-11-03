@@ -173,6 +173,7 @@
   "settings.playback.subtitle_position.middle": "Pośrodku",
   "settings.playback.subtitle_position.high": "Ekran TV",
   "settings.playback.subtitle_position.custom": "Własna",
+  "settings.playback.subtitle_position.distance_px": "{distance} px",
   "settings.playback.hdr_overlay": "Jasność nakładki HDR",
   "settings.playback.hdr_overlay.full": "100%",
   "settings.playback.hdr_overlay.three_quarters": "75%",

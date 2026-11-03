@@ -171,6 +171,7 @@
   "settings.playback.subtitle_position.middle": "Centrale",
   "settings.playback.subtitle_position.high": "Schermo TV",
   "settings.playback.subtitle_position.custom": "Personalizzata",
+  "settings.playback.subtitle_position.distance_px": "{distance} px",
   "settings.playback.hdr_overlay": "Luminosità dell’interfaccia in HDR",
   "settings.playback.hdr_overlay.full": "100%",
   "settings.playback.hdr_overlay.three_quarters": "75%",

@@ -190,7 +190,7 @@ impl LogicalState for SettingsPage {
             SettingsPage::Preview(_) => "preview",
             SettingsPage::ConsentStage(_) => "stage",
             SettingsPage::Picker(_) => "picker",
-            SettingsPage::SubtitlePositionDistance(_) => "subtitle-position-distance",
+            SettingsPage::SubtitlePositionDistance(_) => "subtitle_position_distance",
         });
         if let SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) = self {
             out.push_str(&format!("[{i}]"));

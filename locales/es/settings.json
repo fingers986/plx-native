@@ -171,6 +171,7 @@
   "settings.playback.subtitle_position.middle": "Media",
   "settings.playback.subtitle_position.high": "Pantalla del TV",
   "settings.playback.subtitle_position.custom": "Personalizada",
+  "settings.playback.subtitle_position.distance_px": "{distance} px",
   "settings.playback.hdr_overlay": "Brillo de la interfaz en HDR",
   "settings.playback.hdr_overlay.full": "100 %",
   "settings.playback.hdr_overlay.three_quarters": "75 %",

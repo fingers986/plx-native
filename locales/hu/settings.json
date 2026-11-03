@@ -169,6 +169,7 @@
   "settings.playback.subtitle_position.middle": "Középen",
   "settings.playback.subtitle_position.high": "TV-képernyő",
   "settings.playback.subtitle_position.custom": "Egyéni",
+  "settings.playback.subtitle_position.distance_px": "{distance} px",
   "settings.playback.hdr_overlay": "Kezelőfelület fényereje HDR-nél",
   "settings.playback.hdr_overlay.full": "100%",
   "settings.playback.hdr_overlay.three_quarters": "75%",

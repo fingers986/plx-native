@@ -276,7 +276,7 @@ impl TimingCapsule {
 /// Timing. It is D-pad-only; `gap_px` changes in fixed 5 px steps without Timing's repeat acceleration.
 pub fn draw_custom_distance_capsule(gap_px: u8, bottom_y: f32, appear: f32) {
     if appear <= 0.0 { return; }
-    let caption = CString::new(format!("{gap_px} px")).unwrap_or_default();
+    let caption = CString::new(plx_platform::i18n::msg::settings_playback_subtitle_position_distance_px(gap_px as i64)).unwrap_or_default();
     let p = Painter::root().alpha(appear);
     let cx = plx_ui::consts::SCR_W * 0.5;
     let (r, [left_x, text_x, right_x]) = TimingCapsule::geometry(cx, bottom_y);

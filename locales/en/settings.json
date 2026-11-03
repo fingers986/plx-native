@@ -699,6 +699,11 @@
     "value": "Custom",
     "description": "Subtitle position picker option: set a custom TV-screen bottom gap from 40 to 180 px in 5 px steps."
   },
+  "settings.playback.subtitle_position.distance_px": {
+    "value": "{distance} px",
+    "description": "Numeric subtitle-position distance with the pixel unit, shown in settings rows and the player's Custom position picker.",
+    "args": { "distance": "i64" }
+  },
   "settings.playback.hdr_overlay": {
     "value": "HDR overlay brightness",
     "description": "Settings row title and picker title: how bright the player's controls and subtitles are drawn while the picture is HDR or Dolby Vision."

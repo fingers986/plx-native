@@ -43,7 +43,7 @@ use plx_machine::machine::Measure;
 // shared with the synthesized ASS header (plan `libass-text-subs` §2.5, PR 5a).
 use model::HudModel;
 use plx_media::player::text_style::{
-    position_distance, position_lift, size_scale, wrap_width, BOTTOM_GAP, CAPTION_ANCHOR_LINES, CAPTION_FACE, CAPTION_FLOOR_Y,
+    position_distance, position_lift, size_scale, wrap_width, BOTTOM_GAP, MAX_POSITION_DISTANCE, CAPTION_ANCHOR_LINES, CAPTION_FACE, CAPTION_FLOOR_Y,
     CAPTION_INK_CLEARANCE, CAPTION_LINE_PITCH, CAPTION_TEXT_INSET, SUB_BASE_Y,
 };
 pub use plx_media::player::text_style::{HudBand, CAPSULE_BOTTOM_Y};
@@ -112,8 +112,8 @@ fn caption_geometry_for_block(
 ) -> (f32, f32, f32) {
     let scale = size_scale(size);
     let custom_adjust = BOTTOM_GAP - position_distance(position);
-    let rest = band.rest_limit(position) + custom_adjust;
-    let rise = if hud_up { HudBand::clear_rise((band.rise_for(position) + custom_adjust).max(0.0), rest, block_h) } else { 0.0 };
+    let rest = band.rest_limit(position);
+    let rise = if hud_up { HudBand::clear_rise(band.rise_for(position), rest, block_h) } else { 0.0 };
     let baseline = (if hud_up { band.ceil_y } else { SUB_BASE_Y }) - position_lift(position) - rise + custom_adjust;
     let floor = if hud_up { band.ceil_y } else { CAPTION_FLOOR_Y };
     (scale, baseline, floor)
@@ -227,7 +227,9 @@ fn caption_layout(lines: usize, scale: f32, baseline: f32, floor: f32) -> Captio
 pub fn min_controls_top_y() -> f32 {
     use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
     let scale = SubtitleSize::LADDER.iter().map(|&s| size_scale(s)).fold(0.0, f32::max);
-    let raise = SubtitlePosition::LADDER.iter().map(|&p| position_lift(p)).fold(0.0, f32::max);
+    let raise = SubtitlePosition::LADDER.iter().map(|&p| {
+        position_lift(p) + (MAX_POSITION_DISTANCE - BOTTOM_GAP).max(0.0)
+    }).fold(0.0, f32::max);
     // A block whose bottom is on y = 0 has its top at minus its height.
     let height = -caption_layout(CAPTION_ANCHOR_LINES, scale, 0.0, f32::MAX).top;
     (SAFE.y + height + raise + CAPTION_INK_CLEARANCE).ceil()

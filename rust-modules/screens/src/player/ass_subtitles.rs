@@ -290,11 +290,10 @@ fn lift_dys(
     let position = style.position;
     let height = (moving_bottom(regions, dys).unwrap_or(top) - top) as f32;
     let bottom = moving_bottom(regions, dys).unwrap_or(top) as f32;
-    let hud_rise = if lift { (bottom + frame_offset_y - band.ceil_y).max(0.0) } else { 0.0 };
     let custom_adjust = text_style::BOTTOM_GAP - text_style::position_distance(style.position);
-    let anchor_adjust = frame_offset_y + custom_adjust;
-    let rest = band.rest_limit(position) + anchor_adjust - hud_rise;
-    let section_rise = (band.rise_for(position) + anchor_adjust).max(0.0);
+    let hud_rise = if lift { (bottom + frame_offset_y - (band.ceil_y + custom_adjust)).max(0.0) } else { 0.0 };
+    let rest = band.rest_limit(position) + frame_offset_y - hud_rise;
+    let section_rise = (band.rise_for(position) + frame_offset_y).max(0.0);
     let rise = if lift { HudBand::clear_rise(section_rise, rest, height) } else { 0.0 };
     let shift = (frame_offset_y - hud_rise - rise).max(-top.max(0) as f32);
     for dy in dys.iter_mut().filter(|d| **d != 0.0) {
