@@ -1,4 +1,4 @@
-{"updated":"2026-11-03T01:05:14Z",
+{"updated":"2026-11-03T01:05:31Z",
 "ci":[
 {"id":41395664519,"at":"2026-11-02T05:43:22Z","sha":"de5f513cb","title":"Refine playback HUD, markers, subtitles, and navigation","pr":null,"conclusion":"failure","attempt":1,"jobs":{"which gates apply":5,"host harness tests":379,"armv7 cross-build and artifact assertions":430,"cross-build (armv7) + artifact assertions":3},"failed":["host checks (NOT a device gate)","host lint + type-checks","host python/shell/C gates","host unit tests (default features)","host unit tests (hostsim)"]},
 {"id":41398462805,"at":"2026-11-02T06:12:27Z","sha":"5f73d6f40","title":"Show seasons in Recently Added TV","pr":1,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"which gates apply":4,"host harness tests":373,"armv7 cross-build and artifact assertions":354,"cross-build (armv7) + artifact assertions":4},"failed":["host checks (NOT a device gate)","host lint + type-checks","host python/shell/C gates","host unit tests (default features)","host unit tests (hostsim)"]},
@@ -48,6 +48,6 @@
 {"id":41556582023,"at":"2026-11-03T00:58:22Z","sha":"11506c466","title":"Restore ASS lift test region assertion","pr":2,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":267,"Windows launcher syntax":21,"macOS simulator build + launch":194,"Linux simulator build + launch":220}}
 ],
 "nightly":[],
-"cancelled":{"2026-11-03":{"push":0,"pull_request":8}},
+"cancelled":{"2026-11-03":{"push":0,"pull_request":9}},
 "daily":[],
 "flaky":[]}
