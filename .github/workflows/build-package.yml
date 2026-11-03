@@ -318,7 +318,6 @@ jobs:
             grep -q 'tel:' pkg/.build-config
             python3 -c 'import os; b=open("pkg/plxnative","rb").read(); assert os.environ["PLX_SENTRY_DSN_DEV"].encode() in b; assert os.environ["PLX_POSTHOG_KEY_DEV"].encode() in b'
           else
-          else
             [ -z "$PLX_SENTRY_DSN$PLX_POSTHOG_KEY$PLX_SENTRY_DSN_DEV$PLX_POSTHOG_KEY_DEV" ] \
               || { echo '::error::telemetry=none was selected but a telemetry endpoint reached the build'; exit 1; }
             echo "Telemetry disabled: this binary carries no Sentry or PostHog endpoint."
