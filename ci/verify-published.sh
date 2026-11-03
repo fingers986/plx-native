@@ -85,7 +85,7 @@ PY
     && ok "the release note quotes this hash" || bad "the note's hash is not the published artifact's"
 
   # Who built it. A person's name here means the gates did not run.
-  REPO="${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"
+  REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
   UP=$(gh api "repos/$REPO/releases/tags/$TAG" --jq '[.assets[].uploader.login] | unique | join(",")' 2>/dev/null)
   [ "$UP" = "github-actions[bot]" ] && ok "assets uploaded by CI" \
     || bad "assets uploaded by '$UP' — hand-published, so the build/verify gates were skipped"
