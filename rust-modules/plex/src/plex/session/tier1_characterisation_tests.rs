@@ -49,7 +49,10 @@ fn rich() -> Session {
     session.prefs.direct_play_mode = DirectPlayMode::Forced;
     session.prefs.subtitle_tone = SubtitleTone::Grey;
     session.prefs.subtitle_size = SubtitleSize::Large;
-    session.prefs.subtitle_position = SubtitlePosition::High;
+    session.prefs.subtitle_position = SubtitlePosition::VideoFrame;
+    session.prefs.subtitle_custom_distance = Some(100);
+    session.prefs.subtitle_video_frame_distance = Some(80);
+    session.prefs.subtitle_tv_screen_distance = Some(120);
     session.prefs.next_episode_mode = NextEpisodeMode::AfterCredits;
     session.prefs.skip_interval = SkipInterval::Seconds30;
     session.prefs.deck_press = DeckPress::Play;
@@ -124,7 +127,8 @@ fn db8_signout_keeps_install_keys_but_not_pins_recents_or_account_bound_keys() {
     let before = stored_public(&mut transport);
     let stored = before.preferences.as_object().expect("preferences object");
     for key in ["language", "playback_quality", "direct_play_mode", "auto_sign_in", "trailer_autoplay",
-        "subtitle_tone", "subtitle_size", "subtitle_position", "next_episode_mode", "skip_interval",
+        "subtitle_tone", "subtitle_size", "subtitle_position", "subtitle_custom_distance",
+        "subtitle_video_frame_distance", "subtitle_tv_screen_distance", "next_episode_mode", "skip_interval",
         "deck_press", "audio_enhancements", "last_hero_blur", "last_library", "library_sorts",
         "subtitle_offsets", "plaintext_consent", "server_key_pins"] {
         assert!(stored.contains_key(key), "before sign-out `{key}` is stored: {stored:?}");
@@ -137,7 +141,8 @@ fn db8_signout_keeps_install_keys_but_not_pins_recents_or_account_bound_keys() {
 
     // Install keys survive, value for value.
     for key in ["language", "playback_quality", "direct_play_mode", "auto_sign_in", "trailer_autoplay",
-        "subtitle_tone", "subtitle_size", "subtitle_position", "next_episode_mode", "skip_interval",
+        "subtitle_tone", "subtitle_size", "subtitle_position", "subtitle_custom_distance",
+        "subtitle_video_frame_distance", "subtitle_tv_screen_distance", "next_episode_mode", "skip_interval",
         "deck_press", "audio_enhancements", "last_hero_blur"] {
         assert_eq!(after.preferences.get(key), before.preferences.get(key), "install key `{key}` survives sign-out");
     }
@@ -395,7 +400,10 @@ fn tier1_db8_extra_preference_keys_leave_credentials_and_todays_keys_intact() {
         assert_eq!(todays_keys(&parsed), baseline, "{case}: today's keys parse as before");
         assert_eq!(parsed.extensions.get("profile_prefs"), preferences.get("profile_prefs"), "{case}");
         assert_eq!(parsed.extensions.get("track_memory"), preferences.get("track_memory"), "{case}");
-        assert_eq!(parsed.extensions.len(), 2, "{case}: exactly the two new keys are opaque");
+        for key in ["subtitle_custom_distance", "subtitle_video_frame_distance", "subtitle_tv_screen_distance"] {
+            assert_eq!(parsed.extensions.get(key), preferences.get(key), "{case}: {key} is opaque to the previous build");
+        }
+        assert_eq!(parsed.extensions.len(), 5, "{case}: the five newer keys are opaque");
         for record in &parsed.subtitle_offsets {
             assert_eq!(record.extensions.0.get("account"), preferences["subtitle_offsets"][0].get("account"), "{case}");
             assert_eq!(record.items[0].extensions.0.get("account"), preferences["subtitle_offsets"][0]["items"][0].get("account"), "{case}");
@@ -482,7 +490,7 @@ fn tier1_legacy_file_extra_top_level_keys_leave_credentials_and_todays_keys_inta
         assert_eq!(parsed.subtitle_offsets[0].items[0].offset_ms, 1_500, "{case}");
         assert_eq!(parsed.extensions.0.get("profile_prefs"), file.get("profile_prefs"), "{case}");
         assert_eq!(parsed.extensions.0.get("track_memory"), file.get("track_memory"), "{case}");
-        assert_eq!(parsed.extensions.0.len(), 2, "{case}: exactly the two new keys are opaque");
+        assert_eq!(parsed.extensions.0.len(), 5, "{case}: the five newer keys are opaque");
         assert_eq!(parsed.subtitle_offsets[0].extensions.0.get("account"), file["subtitle_offsets"][0].get("account"), "{case}");
 
         // Main's own Session reads the same file the same way (what a restart of this build sees).
@@ -539,7 +547,7 @@ fn tier1_the_real_profile_prefs_shape_rides_through_the_previous_build() {
     let baseline = todays_keys(&v0::CanonicalSessionPreferences::parse(&split_canonical(&rich()).unwrap().0.preferences));
     let old = v0::CanonicalSessionPreferences::parse(&decoded.public.preferences);
     assert_eq!(todays_keys(&old), baseline, "today's keys parse as before");
-    assert_eq!(old.extensions.keys().collect::<Vec<_>>(), ["profile_prefs"], "exactly the new key is opaque");
+    assert_eq!(old.extensions.keys().collect::<Vec<_>>(), ["profile_prefs", "subtitle_custom_distance", "subtitle_tv_screen_distance", "subtitle_video_frame_distance"], "the previous build keeps the newer keys opaque");
     assert_eq!(old.extensions.get("profile_prefs"), Some(&real));
     assert_eq!(serde_json::to_value(&old).unwrap()["profile_prefs"], real, "its own rewrite keeps the value");
 

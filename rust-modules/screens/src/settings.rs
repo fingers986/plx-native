@@ -475,6 +475,9 @@ fn mount_page(
         }
         SettingsPage::Favourites => Box::new(super::onboard::OnboardScreen::settings(entry, cx.views)),
         SettingsPage::Picker(kind) => Box::new(super::preferences::PickerPage::new(entry, kind)),
+        SettingsPage::SubtitlePositionDistance(anchor) => Box::new(
+            super::preferences::PickerPage::new_subtitle_distance(entry, anchor),
+        ),
     }
 }
 

@@ -89,7 +89,7 @@ pub(super) fn defaults() {
     restore_deck_press(DeckPress::Details);
     restore_quality(Quality::Original);
     restore_subtitle_size(SubtitleSize::Medium);
-    restore_subtitle_position(SubtitlePosition::Low);
+    restore_subtitle_position(SubtitlePosition::TvScreen);
     crate::player::restore_subtitle_tone(SubtitleTone::White);
     crate::player::restore_audio_enhancements(AudioEnhancements::NONE);
 }
@@ -397,7 +397,7 @@ fn an_unchanged_confirm_or_size_position_pick_writes_nothing_and_reports_saved()
     assert!(writes(|| select_subtitle_size(SubtitleSize::Medium, Some(tx))), "size");
     assert!(recv(&rx));
     let (tx, rx) = mpsc::channel();
-    assert!(writes(|| select_subtitle_position(SubtitlePosition::Low, Some(tx))), "position");
+    assert!(writes(|| select_subtitle_position(SubtitlePosition::TvScreen, Some(tx))), "position");
     assert!(recv(&rx));
 
     assert!(!writes(|| assert!(set_direct_play_mode(DirectPlayMode::Auto))), "direct play");
@@ -409,7 +409,7 @@ fn an_unchanged_confirm_or_size_position_pick_writes_nothing_and_reports_saved()
     assert!(!writes(|| select_subtitle_size(SubtitleSize::Medium, Some(tx))), "size");
     assert!(recv(&rx));
     let (tx, rx) = mpsc::channel();
-    assert!(!writes(|| select_subtitle_position(SubtitlePosition::Low, Some(tx))), "position");
+    assert!(!writes(|| select_subtitle_position(SubtitlePosition::TvScreen, Some(tx))), "position");
     assert!(recv(&rx));
 }
 
@@ -432,16 +432,16 @@ fn optimistic_size_and_position_publish_before_the_write() {
     let (pos_tx, pos_rx) = mpsc::channel();
     session::with_io_for_test(|| {
         select_subtitle_size(SubtitleSize::Large, Some(size_tx));
-        select_subtitle_position(SubtitlePosition::High, Some(pos_tx));
+        select_subtitle_position(SubtitlePosition::TvScreen, Some(pos_tx));
         assert_eq!(subtitle_size(), SubtitleSize::Large);
-        assert_eq!(subtitle_position(), SubtitlePosition::High);
+        assert_eq!(subtitle_position(), SubtitlePosition::TvScreen);
         assert_eq!(size_rx.try_recv(), Err(mpsc::TryRecvError::Empty), "the write has not run");
         assert_eq!(pos_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
     });
     assert!(recv(&size_rx));
     assert!(recv(&pos_rx));
     assert_eq!(picked::<SubtitleSizePref>(), Some(SubtitleSize::Large));
-    assert_eq!(picked::<SubtitlePositionPref>(), Some(SubtitlePosition::High));
+    assert_eq!(picked::<SubtitlePositionPref>(), Some(SubtitlePosition::TvScreen));
 }
 
 /// The same for the three Optimistic rows that take no reply: tone, enhancements, and the player's
@@ -485,11 +485,11 @@ fn optimistic_failure_keeps_the_value_replies_false_and_logs() {
     select_subtitle_size(SubtitleSize::ExtraLarge, Some(tx));
     assert!(!recv(&rx));
     let (tx, rx) = mpsc::channel();
-    select_subtitle_position(SubtitlePosition::High, Some(tx));
+    select_subtitle_position(SubtitlePosition::TvScreen, Some(tx));
     assert!(!recv(&rx));
 
     assert_eq!(subtitle_size(), SubtitleSize::ExtraLarge, "the live pick stands");
-    assert_eq!(subtitle_position(), SubtitlePosition::High);
+    assert_eq!(subtitle_position(), SubtitlePosition::TvScreen);
     let log = mark.since();
     assert!(log.contains(&format!("subtitle size: {WRITE_FAILED}")), "{log}");
     assert!(log.contains(&format!("subtitle position: {WRITE_FAILED}")), "{log}");
@@ -561,14 +561,14 @@ fn optimistic_size_and_position_never_republish_over_a_newer_pick() {
     let (pos_tx, pos_rx) = mpsc::channel();
     session::with_io_for_test(|| {
         select_subtitle_size(SubtitleSize::Large, Some(size_tx));
-        select_subtitle_position(SubtitlePosition::High, Some(pos_tx));
+        select_subtitle_position(SubtitlePosition::TvScreen, Some(pos_tx));
         restore_subtitle_size(SubtitleSize::Small); // a newer pick, before the worker runs
-        restore_subtitle_position(SubtitlePosition::Low);
+        restore_subtitle_position(SubtitlePosition::TvScreen);
     });
     assert!(recv(&size_rx));
     assert!(recv(&pos_rx));
     assert_eq!(subtitle_size(), SubtitleSize::Small);
-    assert_eq!(subtitle_position(), SubtitlePosition::Low);
+    assert_eq!(subtitle_position(), SubtitlePosition::TvScreen);
     assert_eq!(picked::<SubtitleSizePref>(), Some(SubtitleSize::Large), "the older pick is what the record holds");
 }
 
@@ -781,11 +781,15 @@ fn live_cell_indices_are_pinned() {
         assert_eq!(SUBTITLE_SIZE.raw(), index, "{size:?}");
     }
     assert_eq!(SubtitleSize::from_index(250), SubtitleSize::Medium);
-    for (position, index) in [(SubtitlePosition::Low, 0), (SubtitlePosition::Middle, 1), (SubtitlePosition::High, 2)] {
+    for (position, index) in [
+        (SubtitlePosition::VideoFrame, 0),
+        (SubtitlePosition::TvScreen, 1),
+        (SubtitlePosition::Custom(40), 2),
+    ] {
         restore_subtitle_position(position);
         assert_eq!(SUBTITLE_POSITION.raw(), index, "{position:?}");
     }
-    assert_eq!(SubtitlePosition::from_index(250), SubtitlePosition::Low);
+    assert_eq!(SubtitlePosition::from_index(250), SubtitlePosition::TvScreen);
 
     // quality: the index is the rung's position in QUALITY_LADDER (Auto first, Original second)
     for (q, index) in [
@@ -865,7 +869,7 @@ fn unrestored_cells_hold_their_seeds() {
     assert_eq!(skip_interval(), SkipInterval::Seconds10);
     assert_eq!(deck_press(), DeckPress::Details);
     assert_eq!(subtitle_size(), SubtitleSize::Medium);
-    assert_eq!(subtitle_position(), SubtitlePosition::Low);
+    assert_eq!(subtitle_position(), SubtitlePosition::VideoFrame);
     assert_eq!(crate::player::subtitle_tone(), SubtitleTone::White);
     assert_eq!(crate::player::audio_enhancements(), AudioEnhancements::NONE);
 }

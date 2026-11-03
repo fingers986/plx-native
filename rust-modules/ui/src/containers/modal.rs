@@ -52,6 +52,9 @@ pub enum Style {
     Opaque { snapshot: bool },
     /// A panel over the player's video plane; `survives_failure` keeps it up over the read-out.
     PlayerPanel { survives_failure: bool },
+    /// The player's Timing / Custom Position capsule. Clicks miss its hit map by design, so they
+    /// must reach the owning screen, which closes the capsule and releases its playback pause.
+    PlayerCapsule,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -222,7 +225,7 @@ pub fn surface_policy(style: Style, phase: Phase, ground_ready: bool) -> (HostUp
             (U::Frozen, if ground_ready { R::Replaced } else { R::Live })
         }
         (Style::Opaque { snapshot: false }, Phase::Closing) => (U::Live, R::Live),
-        (Style::PlayerPanel { .. }, _) => (U::Live, R::Live),
+        (Style::PlayerPanel { .. } | Style::PlayerCapsule, _) => (U::Live, R::Live),
     }
 }
 
@@ -303,6 +306,7 @@ pub(crate) fn veil_of<H: Host>(surfaces: &[Surface<H>]) -> f32 {
 pub fn on_miss(style: Style) -> OnMiss {
     match style {
         Style::Compact | Style::Sheet | Style::PlayerPanel { .. } => OnMiss::Dismiss,
+        Style::PlayerCapsule => OnMiss::Swallow,
         Style::Alert => OnMiss::Nothing,
         Style::Opaque { .. } => OnMiss::Swallow,
     }

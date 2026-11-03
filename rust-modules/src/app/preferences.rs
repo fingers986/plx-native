@@ -60,6 +60,12 @@ pub(super) fn execute(command: PreferenceCmd) {
                 plx_machine::idle::invalidate();
             });
         }
+        PreferenceCmd::SubtitleDistance { position, distance, reply } => {
+            let _ = plx_base::storage_worker::submit_retained(move || {
+                let _ = reply.send(plx_plex::plex::session::set_subtitle_distance(position, distance));
+                plx_machine::idle::invalidate();
+            });
+        }
         PreferenceCmd::Language { language, reply } => {
             let _ = plx_base::storage_worker::submit_retained(move || {
                 let _ = reply.send(plx_plex::plex::session::set_language(language));

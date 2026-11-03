@@ -178,6 +178,14 @@ pub struct Preferences {
     /// unchanged. Soft-parsed: a spelling this build does not know costs the preference only.
     #[serde(default, deserialize_with = "de_soft_ui_resolution", skip_serializing_if = "is_default_ui_resolution")]
     pub ui_resolution: UiResolution,
+    /// The install-wide default distance for the Player's Custom subtitle position choice.
+    #[serde(default, deserialize_with = "de_soft_subtitle_custom_distance", skip_serializing_if = "Option::is_none")]
+    pub subtitle_custom_distance: Option<u8>,
+    /// Install defaults for the Video Frame and TV Screen anchors. Custom retains its historic key.
+    #[serde(default, deserialize_with = "de_soft_subtitle_custom_distance", skip_serializing_if = "Option::is_none")]
+    pub subtitle_video_frame_distance: Option<u8>,
+    #[serde(default, deserialize_with = "de_soft_subtitle_custom_distance", skip_serializing_if = "Option::is_none")]
+    pub subtitle_tv_screen_distance: Option<u8>,
     /// **Which "Hold [OK] for options" hints this install has been taught** ([`HoldHintTaught`],
     /// `plx_ui::hold_hint`): the self-appearing hint stands once per install per surface, so the
     /// flags survive relaunches. Install-wide, kept across sign-out, shared by every profile (it is
@@ -547,6 +555,12 @@ setting!(AutoSignInPref: bool = auto_sign_in, "auto_sign_in", Install,
     account false, live false, settings None, parse BoolOff);
 setting!(UiResolutionPref: UiResolution = ui_resolution, "ui_resolution", Install,
     account false, live false, settings None, parse Soft);
+setting!(SubtitleCustomDistancePref: Option<u8> = subtitle_custom_distance, "subtitle_custom_distance", Install,
+    account false, live false, settings None, parse Soft);
+setting!(SubtitleVideoFrameDistancePref: Option<u8> = subtitle_video_frame_distance, "subtitle_video_frame_distance", Install,
+    account false, live false, settings None, parse Soft);
+setting!(SubtitleTvScreenDistancePref: Option<u8> = subtitle_tv_screen_distance, "subtitle_tv_screen_distance", Install,
+    account false, live false, settings None, parse Soft);
 setting!(HoldHintTaughtPref: HoldHintTaught = hold_hint_taught, "hold_hint_taught", Install,
     account false, live false, settings None, parse Soft);
 setting!(LastHeroBlurPref: Option<[[f32; 3]; 4]> = last_hero_blur, "last_hero_blur", Install,
@@ -638,6 +652,9 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<TrailerAutoplayPref>(),
     Descriptor::of::<LastHeroBlurPref>(),
     Descriptor::of::<UiResolutionPref>(),
+    Descriptor::of::<SubtitleCustomDistancePref>(),
+    Descriptor::of::<SubtitleVideoFrameDistancePref>(),
+    Descriptor::of::<SubtitleTvScreenDistancePref>(),
     Descriptor::of::<HoldHintTaughtPref>(),
     Descriptor::of::<PlaintextConsentRow>(),
     Descriptor::of::<ServerKeyPinsRow>(),
@@ -1276,7 +1293,7 @@ where
     D: Deserializer<'de>,
 {
     let Ok(v) = serde_json::Value::deserialize(d) else {
-        return Ok(SubtitlePosition::Low);
+        return Ok(SubtitlePosition::TvScreen);
     };
     Ok(serde_json::from_value::<SubtitlePosition>(v).unwrap_or_default())
 }
@@ -1398,6 +1415,14 @@ where
         return Ok(UiResolution::default());
     };
     Ok(serde_json::from_value::<UiResolution>(v).unwrap_or_default())
+}
+
+fn de_soft_subtitle_custom_distance<'de, D>(d: D) -> Result<Option<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = u64::deserialize(d) else { return Ok(None); };
+    Ok(Some((v.clamp(40, 180) as u8 / 5) * 5))
 }
 
 /// The taught flags are a preference too: an unreadable shape is "not taught".

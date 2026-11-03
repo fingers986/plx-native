@@ -4,7 +4,8 @@ Settings has **Video & playback** and **Audio & subtitles** pages. The Video & p
 settings (quality, Direct Play, subtitle size and position, next episode, Continue Watching
 and skip interval) are saved on this television, **per profile**: each Plex Home profile keeps
 its own picks, and a profile that has not chosen yet starts from the value the television held
-before profiles had their own. The page names the profile it shows ("Playback settings for
+before profiles had their own. Subtitle distance defaults are install-wide and shared across
+profiles. The page names the profile it shows ("Playback settings for
 Maya") and follows a profile switch (Settings itself closes on one). Settings is reached
 through a profile, so a normal session always has one seated; where none is (a developer-token
 run or a controlled replay; `Seat` in `plex/session.rs` lists the unseated states) the rows show
@@ -12,6 +13,16 @@ those starting values read-only, with the line "Choose a profile to change this"
 nothing can be saved for nobody.
 Language preferences are saved to the active Plex profile and are shared with other Plex
 clients.
+
+The main Subtitle Position setting opens three configuration actions: **Video Frame**, **TV Screen**,
+and **Custom**. Each opens the same scrollable 40–180 px distance list in 5 px steps, and each keeps
+its own saved default distance. These Settings rows have no selected/check state; they configure the
+defaults used by the Player. In Player > Subtitle Style > Position, Video Frame and TV Screen simply
+select their configured anchor. Custom opens the Subtitle Timing-style control to adjust its own
+distance during playback. When the player HUD is visible, the subtitle is raised only enough to clear
+the HUD safe edge, with an additional rise when an open HUD section needs room.
+Existing saved `low`, `middle`, and `high` values load as the TV screen anchor. Image subtitles and
+authored ASS/SSA placement are controlled by their own subtitle data.
 
 ## Quality and Direct Play
 

@@ -656,6 +656,8 @@ pub enum TrackOk {
     /// Open the Timing capsule overlay: `screens::player::overlay`'s `activate` dismisses the
     /// Tracks panel and asks for `OverlayKind::Timing` in its place.
     OpenTiming,
+    /// Open the Custom subtitle-distance capsule after publishing this anchor choice.
+    OpenCustomDistance(SubtitlePosition),
     /// OK does nothing and must not close the panel either: the dim Timing row while subtitles are
     /// Off, a locked Timing / Style row, a disabled Size / Position row, and a re-pick of the
     /// rung that is already checked.
@@ -1392,11 +1394,21 @@ impl TrackMenuState {
                 TrackCommit::SubtitleSize(size)
             }
             StyleField::Position => {
-                let position = SubtitlePosition::from_index(rung as u8);
-                if position == self.position {
+                // `Custom` is an action in the player picker, not a default anchor. Its distance
+                // is stored separately from the profile's default position.
+                let position = match SubtitlePosition::from_index(rung as u8) {
+                    SubtitlePosition::Custom(_) => SubtitlePosition::Custom(
+                        plx_media::route::subtitle_custom_distance(),
+                    ),
+                    fixed => fixed,
+                };
+                if position == self.position && position.custom_gap().is_none() {
                     return TrackOk::Inert;
                 }
                 self.position = position;
+                if position.custom_gap().is_some() {
+                    return TrackOk::OpenCustomDistance(position);
+                }
                 TrackCommit::SubtitlePosition(position)
             }
             StyleField::Color => {
@@ -1685,9 +1697,23 @@ impl TrackMenuState {
     /// The Style page: one drill-in per field, each reading out its current value. Under an image
     /// or styled subtitle Size and Position are disabled (dim, focusable, inert) and one note names
     /// why; Color is live under every renderer — the subtitle ink tints bitmaps and ASS alike.
+    fn custom_position_distance(&self) -> u8 {
+        self.position.custom_gap()
+            .unwrap_or_else(plx_media::route::subtitle_custom_distance)
+    }
+
+    fn position_readout(&self) -> String {
+        subtitle_position_label(self.position).into()
+    }
+
     fn style_form(&self) -> TrackForm {
         let field_row = |field: StyleField| {
-            Row::new(field.label()).value(field.rung_label(self.current_rung(field)))
+            let value = if field == StyleField::Position {
+                self.position_readout()
+            } else {
+                field.rung_label(self.current_rung(field)).into()
+            };
+            Row::new(field.label()).value(value)
         };
         let reaches = self.renderer == SubRenderer::Text;
         let mut sec = FormSection::new("")
@@ -1721,7 +1747,15 @@ impl TrackMenuState {
     fn picker_form(&self, field: StyleField) -> TrackForm {
         let current = TrackRow::Choice(field, self.current_rung(field));
         let sec = (0..field.rungs()).fold(FormSection::new(""), |sec, rung| {
-            sec.choice(TrackRow::Choice(field, rung), (), Row::new(field.rung_label(rung)), |id| *id == current)
+            let position = SubtitlePosition::from_index(rung as u8);
+            let row = if field == StyleField::Position
+                && matches!(position, SubtitlePosition::Custom(_))
+            {
+                Row::new(field.rung_label(rung)).value(plx_platform::i18n::msg::settings_playback_subtitle_position_distance_px(self.custom_position_distance() as i64))
+            } else {
+                Row::new(field.rung_label(rung))
+            };
+            sec.choice(TrackRow::Choice(field, rung), (), row, |id| *id == current)
         });
         Form::new().section(sec)
     }
@@ -2406,9 +2440,9 @@ pub fn subtitle_size_label(size: SubtitleSize) -> &'static str {
 pub fn subtitle_position_label(position: SubtitlePosition) -> &'static str {
     use plx_platform::i18n::msg;
     match position {
-        SubtitlePosition::Low => msg::settings_playback_subtitle_position_low(),
-        SubtitlePosition::Middle => msg::settings_playback_subtitle_position_middle(),
-        SubtitlePosition::High => msg::settings_playback_subtitle_position_high(),
+        SubtitlePosition::VideoFrame => msg::settings_playback_subtitle_position_low(),
+        SubtitlePosition::TvScreen => msg::settings_playback_subtitle_position_high(),
+        SubtitlePosition::Custom(_) => msg::settings_playback_subtitle_position_custom(),
     }
 }
 
@@ -5497,7 +5531,7 @@ mod focus_tests {
             offset_ms: 0,
             tone: SubtitleTone::White,
             size: SubtitleSize::Medium,
-            position: SubtitlePosition::Low,
+            position: SubtitlePosition::TvScreen,
             pages: PageStack::new(),
             renderer: SubRenderer::Text,
             sub_sig: None,
@@ -7357,7 +7391,7 @@ mod classic_placement_tests {
             [
                 ("audio root (3 dubs)", [1824.0, 764.0, 468.0, 356.0]),
                 ("subtitles root (3 dubs)", [1824.0, 764.0, 447.0, 488.0]),
-                ("style page (3 dubs)", [1824.0, 764.0, 440.0, 296.0]),
+                ("style page (3 dubs)", [1824.0, 764.0, 450.0, 296.0]),
             ],
         );
     }

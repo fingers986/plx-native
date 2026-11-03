@@ -77,7 +77,7 @@ fn every_field_readout_and_detail_fits_its_column_in_every_language() {
             plx_media::route::restore_subtitle_position(position);
             check_field_section(&format!("{tag} subtitle_position={position:?}"), &playback(Quality::Original, DirectPlayMode::Auto), &mut out);
         }
-        plx_media::route::restore_subtitle_position(plx_media::route::SubtitlePosition::Low);
+        plx_media::route::restore_subtitle_position(plx_media::route::SubtitlePosition::TvScreen);
         for mode in plx_media::route::NextEpisodeMode::LADDER {
             plx_media::route::restore_next_episode_mode(mode);
             check_field_section(&format!("{tag} next_episode={mode:?}"), &playback(Quality::Original, DirectPlayMode::Auto), &mut out);

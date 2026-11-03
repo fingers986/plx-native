@@ -29,7 +29,7 @@ fn select_publishes_the_live_value_before_the_write_and_persists_it() {
     sign_in(&session);
     let _restore = Restore(subtitle_size(), subtitle_position());
     restore_subtitle_size(SubtitleSize::Medium);
-    restore_subtitle_position(SubtitlePosition::Low);
+    restore_subtitle_position(SubtitlePosition::TvScreen);
 
     let (tx, rx) = mpsc::channel();
     select_subtitle_size(SubtitleSize::Large, Some(tx));
@@ -38,10 +38,10 @@ fn select_publishes_the_live_value_before_the_write_and_persists_it() {
     assert_eq!(picked::<SubtitleSizePref>(), Some(SubtitleSize::Large));
 
     let (tx, rx) = mpsc::channel();
-    select_subtitle_position(SubtitlePosition::High, Some(tx));
-    assert_eq!(subtitle_position(), SubtitlePosition::High);
+    select_subtitle_position(SubtitlePosition::TvScreen, Some(tx));
+    assert_eq!(subtitle_position(), SubtitlePosition::TvScreen);
     assert!(recv(&rx));
-    assert_eq!(picked::<SubtitlePositionPref>(), Some(SubtitlePosition::High));
+    assert_eq!(picked::<SubtitlePositionPref>(), Some(SubtitlePosition::TvScreen));
     drop(session);
 }
 

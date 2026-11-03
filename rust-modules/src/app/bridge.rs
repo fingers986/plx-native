@@ -3799,8 +3799,12 @@ pub(crate) fn open_player_overlay(
         }
         return;
     }
-    d.nav.next_style = Style::PlayerPanel {
-        survives_failure: kind.survives_failure(),
+    d.nav.next_style = match kind {
+        plx_screens::player::overlay::OverlayKind::Timing
+        | plx_screens::player::overlay::OverlayKind::CustomDistance { .. } => Style::PlayerCapsule,
+        _ => Style::PlayerPanel {
+            survives_failure: kind.survives_failure(),
+        },
     };
     d.request(
         MachineId::Nav,
@@ -3850,7 +3854,7 @@ pub(crate) fn player_overlay_up(d: &Dispatcher<AppHost>) -> bool {
 /// miss that Tracks' own closing fade must not flash the transport either.
 ///
 /// [`HudPolicy::Hidden`] if ANY such player-overlay surface's kind says so
-/// (`OverlayKind::hud_policy` — today only `OverlayKind::Timing`); otherwise
+/// (`OverlayKind::hud_policy` — currently Timing and Custom Distance); otherwise
 /// [`HudPolicy::Lifted`] if ANY modal surface is up, a player panel or not (subtitles clear the
 /// transport while something is being read over them — the answer the loop read from
 /// `Dispatcher::surface_up` before the capsule existed); otherwise [`HudPolicy::Normal`]. So a

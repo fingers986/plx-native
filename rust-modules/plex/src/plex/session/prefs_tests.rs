@@ -12,6 +12,7 @@ use super::prefs::{Descriptor, Fallback, ListRow, Parse, ProfileMemory, Row, Sco
 use super::prefs::{DolbyVisionModePref, InstantDpadSeekingPref, AudioEnhancementsPref, AutoSignInPref, DeckPressPref, UnderPostersPref, DirectPlayModePref, LastHeroBlurPref,
     LastLibraryRow, LibraryViewsRow, NextEpisodeModePref, PlaintextConsentRow, QualityPref, ServerKeyPinsRow,
     HdrOverlayBrightnessPref, SkipIntervalPref, SubtitleOffsetsPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref,
+    SubtitleCustomDistancePref, SubtitleVideoFrameDistancePref, SubtitleTvScreenDistancePref,
     HoldHintTaughtPref, TrailerAutoplayPref, UiResolutionPref};
 use super::{
     DolbyVisionMode, InstantDpadSeeking, CanonicalSessionPreferences, DeckPress, UnderPosters, UnderPostersDetails, DirectPlayMode, LastLibrary, LibraryViews, NextEpisodeMode,
@@ -106,7 +107,7 @@ fn every_marker_names_its_own_field() {
     check_row::<DirectPlayModePref>(DirectPlayMode::Forced);
     check_row::<SubtitleTonePref>(SubtitleTone::Grey);
     check_row::<SubtitleSizePref>(SubtitleSize::Large);
-    check_row::<SubtitlePositionPref>(SubtitlePosition::High);
+    check_row::<SubtitlePositionPref>(SubtitlePosition::VideoFrame);
     check_row::<HdrOverlayBrightnessPref>(HdrOverlayBrightness::Half);
     check_row::<NextEpisodeModePref>(NextEpisodeMode::Off);
     check_row::<SkipIntervalPref>(SkipInterval::Seconds30);
@@ -127,7 +128,10 @@ fn every_marker_names_its_own_field() {
     // `the_subtitle_offsets_row_names_its_own_field`) and the per-profile record list
     // (`ProfilePrefsPref`, `profile_prefs_tests::nothing_picked_serializes_to_no_key`): a row needs
     // its line in one of the four places.
-    assert_eq!(DESCRIPTORS.len(), 18 + 5 + 2 + 1);
+    check_row::<SubtitleCustomDistancePref>(Some(100));
+    check_row::<SubtitleVideoFrameDistancePref>(Some(80));
+    check_row::<SubtitleTvScreenDistancePref>(Some(120));
+    assert_eq!(DESCRIPTORS.len(), 21 + 5 + 2 + 1);
 }
 
 /// The list rows do what `check_row` proves for the `Copy` ones: the marker names its own field
@@ -331,6 +335,9 @@ fn garbage_fixtures() -> Vec<(&'static str, Vec<Value>)> {
         ("subtitle_tone", generic()),
         ("subtitle_size", generic()),
         ("subtitle_position", generic()),
+        ("subtitle_custom_distance", soft_distance_garbage()),
+        ("subtitle_video_frame_distance", soft_distance_garbage()),
+        ("subtitle_tv_screen_distance", soft_distance_garbage()),
         ("hdr_overlay_brightness", generic()),
         ("next_episode_mode", generic()),
         ("skip_interval", generic()),
@@ -355,6 +362,10 @@ fn garbage_fixtures() -> Vec<(&'static str, Vec<Value>)> {
         ("subtitle_offsets", not_a_list()),
         ("profile_prefs", not_a_list()),
     ]
+}
+
+fn soft_distance_garbage() -> Vec<Value> {
+    vec![Value::Null, json!("zzz-not-a-distance"), json!(true), json!([1, "x"]), json!({"unexpected": 1})]
 }
 
 fn not_a_bool() -> Vec<Value> {

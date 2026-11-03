@@ -31,7 +31,9 @@ pub const CAPTION_ANCHOR_LINES: usize = 3;
 /// top of the first line of a top-aligned cue ([`TOP_MARGIN_V`]). It is the geometry of the block
 /// the appkit draw places, which the Timing capsule is cleared against, so it is NOT the libass
 /// `MarginV` of the Low position: libass sets the same line on a different box ([`INK_TRIM`]).
-pub const BOTTOM_GAP: f32 = 100.0;
+pub const BOTTOM_GAP: f32 = 60.0;
+/// Largest distance the settings picker offers for any subtitle anchor.
+pub const MAX_POSITION_DISTANCE: f32 = 180.0;
 
 /// How much nearer the frame's bottom libass's `MarginV` sits than [`BOTTOM_GAP`], so the ink
 /// baseline of a one-line cue lands where [`today_ink_baseline`] puts it. Fixed by the native
@@ -79,9 +81,8 @@ pub const SUB_BASE_Y: f32 = SCR_H - BOTTOM_GAP;
 /// **The rise** (`docs/hud-plugins.md`, "Captions"): a caption's bottom limit is the HUD-up limit P of
 /// the viewer's Position (`ceil_y - position_lift`) while no section is open, and
 /// `min(P, S - CAPTION_INK_CLEARANCE)` while one is, `S` being the resting top of everything the HUD
-/// has open. `rise[i]` is `P - limit` for Position `i` in [`SubtitlePosition::LADDER`] order (Low,
-/// Middle, High), so a Position that already clears the section has none, and the limit is `P - rise`
-/// exactly: a band with every `rise` zero leaves every reader's arithmetic as it was. The rise is
+/// has open. `rise[i]` is `P - limit` for Position `i` in [`SubtitlePosition::LADDER`] order
+/// (VideoFrame, TvScreen), so a Position that already clears the section has none. The rise is
 /// motion (a spring the HUD steps, `player_hud::motion`), which is why it is a field of the value
 /// the readers take and not something they compute.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -100,7 +101,7 @@ impl HudBand {
         }
     }
 
-    /// Classic's band: control row at 792, ceiling 780, lift 200 (`text_style::tests` pins them).
+    /// Classic's band: control row at 792, ceiling 780, lift 240 (`text_style::tests` pins them).
     pub const CLASSIC: Self = Self::from_controls_top(HUD_CONTROLS_TOP_Y);
 
     /// This band with the rise a section has lifted the captions by (one entry per Position).
@@ -110,7 +111,7 @@ impl HudBand {
 
     /// P: where the HUD-up limit of `position` sits with no section open.
     pub fn rest_limit(&self, position: SubtitlePosition) -> f32 {
-        self.ceil_y - position_lift(position)
+        self.ceil_y - position_lift(position) - (position_distance(position) - BOTTOM_GAP).max(0.0)
     }
 
     /// The rise of `position`'s limit, before the safe-area clamp ([`clear_rise`](Self::clear_rise)).
@@ -122,7 +123,11 @@ impl HudBand {
     /// `block_top`: `max(0, P - (block_top - CAPTION_INK_CLEARANCE))`. A Position already above that
     /// takes none (Position gives way first).
     pub fn rise_to_clear(&self, block_top: f32) -> [f32; 3] {
-        SubtitlePosition::LADDER.map(|p| (self.rest_limit(p) - (block_top - CAPTION_INK_CLEARANCE)).max(0.0))
+        let mut rises = [0.0; 3];
+        for position in SubtitlePosition::LADDER {
+            rises[position.index() as usize] = (self.rest_limit(position) - (block_top - CAPTION_INK_CLEARANCE)).max(0.0);
+        }
+        rises
     }
 
     /// **The safe-area clamp**: of the `rise` a caption of `height` px was given, the part that keeps
@@ -167,21 +172,23 @@ pub fn size_scale(size: SubtitleSize) -> f32 {
     }
 }
 
-/// How far ABOVE the Low baseline the viewer's Position pick lifts the caption. Low is the
-/// baseline every build before the preference drew, so it lifts nothing.
-pub fn position_lift(position: SubtitlePosition) -> f32 {
-    match position {
-        SubtitlePosition::Low => 0.0,
-        SubtitlePosition::Middle => 160.0,
-        SubtitlePosition::High => 320.0,
-    }
+/// Both anchor modes use the same bottom gap; the video-frame offset is applied using the viewport.
+pub fn position_lift(_position: SubtitlePosition) -> f32 {
+    0.0
+}
+
+/// The saved default distance for fixed anchors, or the selected gap for Custom.
+pub fn position_distance(position: SubtitlePosition) -> f32 {
+    position.custom_gap().map_or_else(
+        || f32::from(plx_plex::plex::session::peek().subtitle_distance(position)),
+        f32::from,
+    )
 }
 
 /// The fixed pixel width a text subtitle line wraps at. Font size changes glyph width, not this box.
 pub fn wrap_width(_scale: f32) -> f32 {
     CAPTION_WRAP_W
 }
-
 /// The fixed left and right margin of synthesized styles, centring the wrap box on the 1920 px canvas.
 pub fn side_margin(_scale: f32) -> u32 {
     ((SCR_W - CAPTION_WRAP_W) / 2.0).round().max(0.0) as u32
@@ -190,7 +197,7 @@ pub fn side_margin(_scale: f32) -> u32 {
 /// The `MarginV` of the bottom-aligned styles: the gap under the last line ([`BOTTOM_GAP`] less
 /// [`INK_TRIM`]) plus the Position lift.
 pub fn bottom_margin_v(position: SubtitlePosition) -> u32 {
-    (BOTTOM_GAP - INK_TRIM + position_lift(position)).round() as u32
+    (position_distance(position) - INK_TRIM + position_lift(position)).round() as u32
 }
 
 /// The y (frame pixels, from the top) of the bottom of the last line box of a bottom-aligned cue
@@ -220,7 +227,7 @@ pub struct TextStyle {
 
 impl Default for TextStyle {
     fn default() -> Self {
-        Self { size: SubtitleSize::Medium, position: SubtitlePosition::Low,
+        Self { size: SubtitleSize::Medium, position: SubtitlePosition::TvScreen,
         }
     }
 }
@@ -239,7 +246,9 @@ impl TextStyle {
     /// A number that differs for every distinct pair of picks, so a stored copy is stale exactly
     /// when the header it was built for no longer matches.
     pub fn generation(&self) -> u32 {
-        self.size.index() as u32 * SubtitlePosition::LADDER.len() as u32 + self.position.index() as u32
+        self.size.index() as u32 * 2048
+            + self.position.index() as u32 * 256
+            + position_distance(self.position).round() as u32
     }
 }
 
@@ -260,8 +269,12 @@ pub struct TodayBaseline {
 /// Port of `player_hud::caption_geometry_for` (with `hud_up` and a zero-height block) for a given `scale`, `position` and HUD `band`.
 pub fn today_baseline(position: SubtitlePosition, scale: f32, hud_up: bool, band: HudBand,
 ) -> TodayBaseline {
-    let rise = if hud_up { band.rise_for(position) } else { 0.0 };
-    let baseline = (if hud_up { band.ceil_y } else { SUB_BASE_Y }) - position_lift(position) - rise;
+    let custom_adjust = BOTTOM_GAP - position_distance(position);
+    let rest = band.rest_limit(position);
+    let rise = if hud_up {
+        HudBand::clear_rise(band.rise_for(position) + custom_adjust.max(0.0), rest, 0.0)
+    } else { 0.0 };
+    let baseline = (if hud_up { band.ceil_y } else { SUB_BASE_Y }) - position_lift(position) - rise + custom_adjust;
     let floor = if hud_up { band.ceil_y } else { CAPTION_FLOOR_Y };
     TodayBaseline { scale, baseline, floor,
     }
@@ -365,9 +378,9 @@ mod tests {
         let scales: Vec<f32> = SubtitleSize::LADDER.iter().map(|s| size_scale(*s)).collect();
         assert_eq!(scales, [0.78, 1.0, 1.25, 1.5, 1.65]);
         let lifts: Vec<f32> = SubtitlePosition::LADDER.iter().map(|p| position_lift(*p)).collect();
-        assert_eq!(lifts, [0.0, 160.0, 320.0]);
-        assert_eq!(SUB_BASE_Y, 980.0);
-        assert_eq!(CAPSULE_BOTTOM_Y, 836.0);
+        assert_eq!(lifts, [0.0; 3]);
+        assert_eq!(SUB_BASE_Y, 1020.0);
+        assert_eq!(CAPSULE_BOTTOM_Y, 876.0);
     }
 
     /// `CLASSIC` is the constructor's value for today's control row, and today's three numbers.
@@ -377,10 +390,10 @@ mod tests {
         assert_eq!(HudBand::CLASSIC, HudBand::from_controls_top(HUD_CONTROLS_TOP_Y));
         assert_eq!(
             HudBand::CLASSIC,
-            HudBand { ceil_y: 780.0, controls_top_y: 792.0, lift: 200.0, rise: [0.0; 3] }
+            HudBand { ceil_y: 780.0, controls_top_y: 792.0, lift: 240.0, rise: [0.0; 3] }
         );
         let band = HudBand::from_controls_top(700.0);
-        assert_eq!(band, HudBand { ceil_y: 688.0, controls_top_y: 700.0, lift: 292.0, rise: [0.0; 3] });
+        assert_eq!(band, HudBand { ceil_y: 688.0, controls_top_y: 700.0, lift: 332.0, rise: [0.0; 3] });
         assert_eq!(band.ceil_y, band.controls_top_y - CAPTION_INK_CLEARANCE);
         assert_eq!(band.lift, SUB_BASE_Y - band.ceil_y);
     }
@@ -392,12 +405,12 @@ mod tests {
         let band = HudBand::CLASSIC;
         let rise = |top: f32| band.rise_to_clear(top);
         assert_eq!(rise(1080.0), [0.0; 3], "no block");
-        assert_eq!(rise(668.0), [124.0, 0.0, 0.0], "built-in Info: only Low is in the way");
-        assert_eq!(rise(684.0), [108.0, 0.0, 0.0], "built-in Chapters");
-        assert_eq!(rise(600.0), [192.0, 32.0, 0.0], "a taller block reaches Middle too");
-        assert_eq!(rise(480.0), [312.0, 152.0, 0.0]);
-        assert_eq!(rise(300.0), [492.0, 332.0, 172.0], "…and High");
-        assert_eq!(band.with_rise(rise(668.0)).rise_for(SubtitlePosition::Low), 124.0);
+        assert_eq!(rise(668.0), [124.0; 3]);
+        assert_eq!(rise(684.0), [108.0; 3]);
+        assert_eq!(rise(600.0), [192.0; 3]);
+        assert_eq!(rise(480.0), [312.0; 3]);
+        assert_eq!(rise(300.0), [492.0; 3]);
+        assert_eq!(band.with_rise(rise(668.0)).rise_for(SubtitlePosition::TvScreen), 124.0);
         assert_eq!(HudBand::clear_rise(0.0, 780.0, 1000.0), 0.0, "no rise stays none, whatever the block");
         assert_eq!(HudBand::clear_rise(124.0, 780.0, 144.0), 124.0, "a block that fits keeps its rise");
         assert_eq!(HudBand::clear_rise(592.0, 780.0, 259.2), 780.0 - CAPTION_SAFE_TOP_Y - 259.2, "top stops on the safe area");
@@ -427,23 +440,25 @@ mod tests {
     #[test]
     fn bottom_anchor_follows_position() {
         // BOTTOM_GAP less INK_TRIM, plus the Position lift.
-        assert_eq!(bottom_margin_v(SubtitlePosition::Low), 97);
-        assert_eq!(bottom_margin_v(SubtitlePosition::Middle), 257);
-        assert_eq!(bottom_margin_v(SubtitlePosition::High), 417);
-        assert_eq!(bottom_anchor_y(SubtitlePosition::Low), SUB_BASE_Y + INK_TRIM);
-        assert_eq!(bottom_anchor_y(SubtitlePosition::High), 663.0);
+        assert_eq!(bottom_margin_v(SubtitlePosition::TvScreen), 57);
+        assert_eq!(bottom_margin_v(SubtitlePosition::VideoFrame), 57);
+        assert_eq!(bottom_margin_v(SubtitlePosition::Custom(180)), 177);
+        assert_eq!(bottom_anchor_y(SubtitlePosition::TvScreen), 1023.0);
+        assert_eq!(bottom_anchor_y(SubtitlePosition::Custom(180)), 903.0);
     }
 
     #[test]
-    fn today_baseline_is_the_old_geometry() {
+    fn today_baseline_matches_the_selected_distance_and_hud_clearance() {
         for position in SubtitlePosition::LADDER {
             let lift = position_lift(position);
+            let adjust = BOTTOM_GAP - position_distance(position);
             let down = today_baseline(position, 1.0, false, HudBand::CLASSIC);
-            assert_eq!((down.baseline, down.floor), (980.0 - lift, 1026.0));
+            assert_eq!((down.baseline, down.floor), (1020.0 - lift + adjust, 1026.0));
             let up = today_baseline(position, 1.0, true, HudBand::CLASSIC);
-            assert_eq!((up.baseline, up.floor), (780.0 - lift, 780.0));
-            // The HUD moves the baseline by the same 200 px at every position.
-            assert_eq!(down.baseline - up.baseline, HudBand::CLASSIC.lift);
+            assert_eq!((up.baseline, up.floor), (780.0 - lift + adjust.min(0.0), 780.0));
+            // A distance below the default gets an extra rise while the HUD is visible.
+            assert_eq!(down.baseline - up.baseline,
+                HudBand::CLASSIC.lift + adjust.max(0.0) - adjust.min(0.0));
         }
     }
 
@@ -472,27 +487,28 @@ mod tests {
                 );
             }
         }
-        let down = today_baseline(SubtitlePosition::Low, 1.0, false, band).baseline;
-        let up = today_baseline(SubtitlePosition::Low, 1.0, true, band).baseline;
+        let down = today_baseline(SubtitlePosition::TvScreen, 1.0, false, band).baseline;
+        let up = today_baseline(SubtitlePosition::TvScreen, 1.0, true, band).baseline;
         assert_eq!(down - up, band.lift);
     }
 
     #[test]
     fn today_ink_baseline_sits_under_the_block_top() {
         // 36 px face: line top 932, drawn at 936, baseline ceil(34.875) = 35 rows down.
-        assert_eq!(today_ink_baseline(SubtitlePosition::Low, 1.0, false, HudBand::CLASSIC), 971.0);
-        assert_eq!(today_ink_baseline(SubtitlePosition::Low, 1.0, true, HudBand::CLASSIC), 771.0);
-        assert_eq!(today_ink_baseline(SubtitlePosition::High, 1.0, false, HudBand::CLASSIC), 651.0);
+        assert_eq!(today_ink_baseline(SubtitlePosition::TvScreen, 1.0, false, HudBand::CLASSIC), 1011.0);
+        assert_eq!(today_ink_baseline(SubtitlePosition::TvScreen, 1.0, true, HudBand::CLASSIC), 771.0);
+        assert_eq!(today_ink_baseline(SubtitlePosition::VideoFrame, 1.0, false, HudBand::CLASSIC), 1011.0);
         // 28 / 45 / 54 px faces, pitch 37.44 / 60 / 72.
-        assert!((today_ink_baseline(SubtitlePosition::Low, 0.78, false, HudBand::CLASSIC) - 974.56).abs() < 1e-3);
-        assert_eq!(today_ink_baseline(SubtitlePosition::Low, 1.25, false, HudBand::CLASSIC), 968.0);
-        assert_eq!(today_ink_baseline(SubtitlePosition::Low, 1.5, false, HudBand::CLASSIC), 965.0);
+        let small_ink = today_ink_baseline(SubtitlePosition::TvScreen, 0.78, false, HudBand::CLASSIC);
+        assert!((small_ink - 1014.56).abs() < 1e-3, "{small_ink}");
+        assert_eq!(today_ink_baseline(SubtitlePosition::TvScreen, 1.25, false, HudBand::CLASSIC), 1008.0);
+        assert_eq!(today_ink_baseline(SubtitlePosition::TvScreen, 1.5, false, HudBand::CLASSIC), 1005.0);
     }
 
     #[test]
     fn today_layout_anchors_at_three_lines() {
         let lay = today_layout(1, 1.0, SUB_BASE_Y);
-        assert_eq!((lay.face, lay.pitch, lay.top), (36, 48.0, 932.0));
+        assert_eq!((lay.face, lay.pitch, lay.top), (36, 48.0, 972.0));
         assert_eq!(today_layout(3, 1.0, SUB_BASE_Y).top, CAPSULE_BOTTOM_Y);
         assert_eq!(today_layout(6, 1.0, SUB_BASE_Y).top, CAPSULE_BOTTOM_Y, "taller blocks keep the 3-line top");
         assert_eq!(today_layout(2, 1.5, SUB_BASE_Y).face, 54);
@@ -507,6 +523,6 @@ mod tests {
             }
         }
         assert_eq!(seen.len(), 15);
-        assert_eq!(TextStyle::default().generation(), TextStyle { size: SubtitleSize::Medium, position: SubtitlePosition::Low }.generation());
+        assert_eq!(TextStyle::default().generation(), TextStyle { size: SubtitleSize::Medium, position: SubtitlePosition::TvScreen }.generation());
     }
 }

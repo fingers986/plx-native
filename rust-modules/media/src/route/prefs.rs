@@ -270,6 +270,8 @@ live_cell!(
     /// moves with this; image (PGS/VobSub) captions and native ASS/SSA keep their own placement.
     pub(super) SUBTITLE_POSITION: SubtitlePosition, "subtitle position preference"
 );
+/// A player-session-only Custom anchor. It is deliberately separate from the saved default anchor.
+static PLAYER_SUBTITLE_POSITION_OVERRIDE: AtomicU8 = AtomicU8::new(u8::MAX);
 live_cell!(
     /// How bright the player's overlay and captions are drawn while the picture is HDR. Read once per
     /// frame by the app's player draw (`route::overlay_gain`).
@@ -330,7 +332,14 @@ live_setting!(DolbyVisionModePref, DOLBY_VISION_MODE, "Dolby Vision mode");
 live_setting!(DeckPressPref, DECK_PRESS, "deck press");
 live_setting!(UnderPostersPref, UNDER_POSTERS, "under posters");
 live_setting!(SubtitleSizePref, SUBTITLE_SIZE, "subtitle size");
-live_setting!(SubtitlePositionPref, SUBTITLE_POSITION, "subtitle position");
+live_setting!(SubtitlePositionPref, SUBTITLE_POSITION, "subtitle position",
+    fn normalize(position: SubtitlePosition) -> SubtitlePosition {
+        // The selected anchor is per profile; its distance remains the shared install preference.
+        // Keep a canonical Custom marker so a later distance edit cannot leave a stale px value in
+        // the saved style.
+        match position { SubtitlePosition::Custom(_) => SubtitlePosition::Custom(40), fixed => fixed }
+    }
+);
 live_setting!(HdrOverlayBrightnessPref, HDR_OVERLAY_BRIGHTNESS, "HDR overlay brightness");
 live_setting!(SubtitleTonePref, crate::player::SUBTITLE_TONE, "subtitle tone");
 live_setting!(AudioEnhancementsPref, crate::player::AUDIO_ENHANCEMENTS, "audio enhancements");
@@ -439,6 +448,7 @@ pub fn restore_install_rows(record: &Session) {
 /// or stamp moved; the profile's own values are read from the mirror, never from `record`, because
 /// the mirror is ahead of a file that still has writes queued.
 pub fn restore_profile_rows(record: &Session, seat: &Seat, ov: Overrides) {
+    PLAYER_SUBTITLE_POSITION_OVERRIDE.store(u8::MAX, Relaxed);
     PROFILE_PREFS.reseed(record);
     let own = PROFILE_PREFS.own(seat);
     for row in LIVE_ROWS {
@@ -923,11 +933,54 @@ pub fn select_subtitle_size(size: SubtitleSize, reply: Option<Sender<bool>>) {
     choose::<SubtitleSizePref>(size, How::Optimistic(reply));
 }
 
-pub fn subtitle_position() -> SubtitlePosition { SubtitlePositionPref::live() }
-pub fn restore_subtitle_position(position: SubtitlePosition) { restore_live::<SubtitlePositionPref>(position) }
+pub fn subtitle_position() -> SubtitlePosition {
+    let custom = PLAYER_SUBTITLE_POSITION_OVERRIDE.load(Relaxed);
+    if (40..=180).contains(&custom) {
+        SubtitlePosition::Custom(custom / 5 * 5)
+    } else {
+        match SubtitlePositionPref::live() {
+            SubtitlePosition::Custom(_) => SubtitlePosition::Custom(session::peek().subtitle_custom_distance()),
+            fixed => fixed,
+        }
+    }
+}
+/// The configured vertical distance for a subtitle position. Consumers in screens and appkit
+/// use the route adapter instead of reaching into the process session registry directly.
+pub fn subtitle_distance(position: SubtitlePosition) -> u8 {
+    session::peek().subtitle_distance(position)
+}
+/// The configured distance shown for the player's Custom subtitle position.
+pub fn subtitle_custom_distance() -> u8 {
+    subtitle_distance(SubtitlePosition::Custom(40))
+}
+pub fn restore_subtitle_position(position: SubtitlePosition) {
+    PLAYER_SUBTITLE_POSITION_OVERRIDE.store(u8::MAX, Relaxed);
+    restore_live::<SubtitlePositionPref>(position)
+}
+pub fn set_player_subtitle_position_custom(distance: u8) {
+    PLAYER_SUBTITLE_POSITION_OVERRIDE.store(distance.clamp(40, 180) / 5 * 5, Relaxed);
+}
+pub fn clear_player_subtitle_position_custom() {
+    PLAYER_SUBTITLE_POSITION_OVERRIDE.store(u8::MAX, Relaxed);
+}
 /// [`select_subtitle_size`] for the caption's vertical placement.
 pub fn select_subtitle_position(position: SubtitlePosition, reply: Option<Sender<bool>>) {
-    choose::<SubtitlePositionPref>(position, How::Optimistic(reply));
+    match position {
+        SubtitlePosition::Custom(distance) => {
+            set_player_subtitle_position_custom(distance);
+            // A Custom distance capsule can submit several steps. Persist the profile's selected
+            // anchor only when it changes, while every step keeps updating the shared px value.
+            if matches!(SubtitlePositionPref::live(), SubtitlePosition::Custom(_)) {
+                if let Some(reply) = reply { let _ = reply.send(true); }
+            } else {
+                choose::<SubtitlePositionPref>(SubtitlePosition::Custom(40), How::Optimistic(reply));
+            }
+        }
+        fixed => {
+            clear_player_subtitle_position_custom();
+            choose::<SubtitlePositionPref>(fixed, How::Optimistic(reply));
+        }
+    }
 }
 
 pub fn hdr_overlay_brightness() -> HdrOverlayBrightness { HdrOverlayBrightnessPref::live() }

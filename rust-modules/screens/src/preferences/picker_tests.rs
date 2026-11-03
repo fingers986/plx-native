@@ -2,7 +2,7 @@
 //! receipt, a failure keeps the page with its status and a Retry, Force is asked before it is
 //! persisted, and a stale request leaves rather than writing.
 use super::*;
-use super::super::tests::{drive, popped, preference_commands, tick, Account, context};
+use super::super::tests::{drive, popped, preference_commands, pushed, tick, Account, context};
 use plx_machine::machine::{Source, Stamped, Tick};
 
 fn save_reply(emitted: Vec<Stamped<InnerHost>>) -> mpsc::Sender<AccountPreferenceReply> {
@@ -194,26 +194,37 @@ fn the_subtitle_pickers_write_locally_and_pop_on_the_receipt() {
     let _session = plx_plex::plex::session::TempSession::new("picker-subtitle-local");
     let (size, position) = (plx_media::route::subtitle_size(), plx_media::route::subtitle_position());
     plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Medium);
-    plx_media::route::restore_subtitle_position(plx_media::route::SubtitlePosition::Low);
-    for field in [PickerKind::SubtitleSize, PickerKind::SubtitlePosition] {
-        let mut page = PickerPage::new(EntryId(0), field);
-        let checked = page.state.checked;
-        let emitted = drive(&mut page, ScreenEvent::Activate(checked), checked);
-        assert!(popped(&emitted), "{field:?}: the checked value pops");
-        assert_eq!(preference_commands(&emitted), 0, "{field:?}: and writes nothing");
+    plx_media::route::restore_subtitle_position(plx_media::route::SubtitlePosition::TvScreen);
+    let mut page = PickerPage::new(EntryId(0), PickerKind::SubtitleSize);
+    let checked = page.state.checked;
+    let emitted = drive(&mut page, ScreenEvent::Activate(checked), checked);
+    assert!(popped(&emitted), "the checked size pops");
+    assert_eq!(preference_commands(&emitted), 0, "and writes nothing");
 
-        let mut page = PickerPage::new(EntryId(0), field);
-        let other = if checked == 0 { 1 } else { 0 };
-        let emitted = drive(&mut page, ScreenEvent::Activate(other), other);
-        assert!(!popped(&emitted), "{field:?}: a write waits for its receipt");
-        let reply = emitted.into_iter().find_map(|e| match e.fx {
+    let mut page = PickerPage::new(EntryId(0), PickerKind::SubtitleSize);
+    let other = if checked == 0 { 1 } else { 0 };
+    let emitted = drive(&mut page, ScreenEvent::Activate(other), other);
+    assert!(!popped(&emitted), "a size write waits for its receipt");
+    let reply = emitted.into_iter().find_map(|e| match e.fx {
             Fx::App(AppFx::Preferences(PreferenceCmd::Choose(plx_media::route::Choice::SubtitleSize(_), reply)))
-            | Fx::App(AppFx::Preferences(PreferenceCmd::Choose(plx_media::route::Choice::SubtitlePosition(_), reply))) => Some(reply),
+                => Some(reply),
             _ => None,
-        }).expect("a local subtitle command");
-        reply.send(true).unwrap();
-        assert!(popped(&drive(&mut page, tick(), other)), "{field:?}: pops on the receipt");
-    }
+        }).expect("a local subtitle size command");
+    reply.send(true).unwrap();
+    assert!(popped(&drive(&mut page, tick(), other)), "size pops on the receipt");
+
+    let anchor = plx_media::route::SubtitlePosition::TvScreen;
+    let mut position_page = PickerPage::new(EntryId(0), PickerKind::SubtitlePosition);
+    let checked = position_page.state.checked;
+    let emitted = drive(&mut position_page, ScreenEvent::Activate(checked), checked);
+    assert_eq!(pushed(&emitted), [SettingsPage::SubtitlePositionDistance(anchor)], "even the current anchor opens its distance list");
+    assert_eq!(preference_commands(&emitted), 0, "the anchor row is navigation, not a position selection");
+
+    let mut distance = PickerPage::new_subtitle_distance(EntryId(0), anchor);
+    let checked = distance.state.checked;
+    let emitted = drive(&mut distance, ScreenEvent::Activate(checked), checked);
+    assert!(popped(&emitted), "keeping the current distance returns immediately");
+    assert_eq!(preference_commands(&emitted), 0, "a no-op distance does not write");
     plx_media::route::restore_subtitle_size(size);
     plx_media::route::restore_subtitle_position(position);
 }

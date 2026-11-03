@@ -35,19 +35,22 @@ struct PickerState {
     field: PickerKind, selected: u32, io: Io, quality: Quality, direct_play: DirectPlayMode,
     /// Position of the checked option (`u32::MAX` while none is).
     checked: u32, confirming: bool, affirmative: bool, alert_scroll: u32,
+    /// This page edits the selected anchor's default distance; its parent is the Subtitle Position list.
+    distance_anchor: Option<SubtitlePosition>,
 }
 impl LogicalState for PickerState {
     fn write(&self, c: &mut Canon) {
         c.u8(self.field as u8).u32(self.selected).bool(self.io.busy).str(&self.io.status)
             .u8(self.quality as u8).u8(self.direct_play as u8).u32(self.checked)
-            .bool(self.confirming).bool(self.affirmative).u32(self.alert_scroll);
+            .bool(self.confirming).bool(self.affirmative).u32(self.alert_scroll)
+            .u8(self.distance_anchor.map_or(u8::MAX, |p| p.index()));
     }
     fn probe(&self, out: &mut String) {
         out.push_str(&format!("picker {:?} sel={} busy={} confirm={}", self.field, self.selected, self.io.busy, self.confirming));
     }
 }
 
-pub const SHAPE: &str = "PickerV2{field:u8,selection:u32,busy:bool,status:str,quality:u8,direct_play:u8,checked:u32,confirm:bool,affirm:bool,alert_scroll:u32}";
+pub const SHAPE: &str = "PickerV3{field:u8,selection:u32,busy:bool,status:str,quality:u8,direct_play:u8,checked:u32,confirm:bool,affirm:bool,alert_scroll:u32,distance_anchor:u8}";
 
 pub struct PickerPage {
     entry: EntryId,
@@ -58,13 +61,21 @@ pub struct PickerPage {
     alert: DecisionPrompt,
 }
 
-/// The picker's rows as a [`Form`], from plain inputs: one `Choice` per option (checked when it is
-/// `current`), then — only after a failed account write — the Retry button in its own section.
+/// The picker's rows as a [`Form`], from plain inputs: subtitle-anchor rows navigate to a distance
+/// picker page; ordinary values are `Choice` rows (checked when current), followed by Retry after
+/// a failed account write.
 fn option_form(options: Vec<(String, Value)>, current: &Value, busy: bool, retry: bool) -> Form<OptionId, PickAction, SettingsPage> {
     let mut choices = FormSection::new("");
     for (i, (label, value)) in options.into_iter().enumerate() {
-        let row = Row::new(&label).checked(value == *current).dim(busy);
-        choices = choices.item_keyed(OptionId::Choice(value.clone()), RowKey(i as u32), RowKind::Choice, PickAction::Pick(value), row);
+        if let Value::SubtitlePosition(anchor) = value {
+            let distance = plx_media::route::subtitle_distance(anchor);
+            choices = choices.item_keyed(OptionId::Choice(Value::SubtitlePosition(anchor)), RowKey(i as u32),
+                RowKind::Nav(SettingsPage::SubtitlePositionDistance(anchor)), PickAction::Pick(Value::SubtitlePosition(anchor)),
+                Row::new(&label).detail(plx_platform::i18n::msg::settings_playback_subtitle_position_distance_px(distance as i64)).chevron(true).dim(busy));
+        } else {
+            let row = Row::new(&label).checked(value == *current).dim(busy);
+            choices = choices.item_keyed(OptionId::Choice(value.clone()), RowKey(i as u32), RowKind::Choice, PickAction::Pick(value), row);
+        }
     }
     let retry = FormSection::new("").visible(retry).item_keyed(OptionId::Retry, RowKey(RETRY_KEY), RowKind::Button, PickAction::Retry,
         Row::new(plx_platform::i18n::msg::settings_audio_retry()).detail(plx_platform::i18n::msg::settings_audio_retry_detail()));
@@ -73,16 +84,31 @@ fn option_form(options: Vec<(String, Value)>, current: &Value, busy: bool, retry
 
 impl PickerPage {
     pub fn new(entry: EntryId, field: PickerKind) -> Self {
+        Self::build(entry, field, None)
+    }
+    pub fn new_subtitle_distance(entry: EntryId, anchor: SubtitlePosition) -> Self {
+        Self::build(entry, PickerKind::SubtitlePosition, Some(anchor))
+    }
+    fn build(entry: EntryId, field: PickerKind, distance_anchor: Option<SubtitlePosition>) -> Self {
         let mut s = Self { entry, form: FormTable::new(BAND),
             state: PickerState { field, selected: 0, io: Io { busy: false, status: String::new() },
                 quality: plx_media::route::quality(), direct_play: plx_media::route::direct_play_mode(),
-                checked: u32::MAX, confirming: false, affirmative: false, alert_scroll: 0 },
+                checked: u32::MAX, confirming: false, affirmative: false, alert_scroll: 0, distance_anchor },
             copy: String::new(), txn: Txn::new(true),
             alert: DecisionPrompt::new(ALERT_GROUP, ALERT, ALERT + 1, plx_platform::i18n::msg::settings_cancel_c(), plx_platform::i18n::msg::settings_playback_enable_force_c()) };
         s.rebuild(true);
         s
     }
     fn current(&self) -> Value {
+        if let Some(anchor) = self.state.distance_anchor {
+            return Value::SubtitleDistance(anchor, plx_media::route::subtitle_distance(anchor));
+        }
+        if self.state.field == PickerKind::SubtitlePosition {
+            return Value::SubtitlePosition(match plx_media::route::subtitle_position() {
+                SubtitlePosition::Custom(_) => SubtitlePosition::Custom(40),
+                position => position,
+            });
+        }
         resolve_value(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs())
     }
     /// Whether the STORED setting already is `value`, for the profile seated now. Only Size and
@@ -97,6 +123,7 @@ impl PickerPage {
             Value::SubtitleSize(v) => stored_effective::<SubtitleSizePref>(&peek(), &current_seat()) == *v,
             Value::SubtitlePosition(v) => stored_effective::<SubtitlePositionPref>(&peek(), &current_seat()) == *v,
             Value::HdrOverlay(v) => stored_effective::<HdrOverlayBrightnessPref>(&peek(), &current_seat()) == *v,
+            Value::SubtitleDistance(anchor, v) => plx_media::route::subtitle_distance(*anchor) == *v,
             _ => true,
         }
     }
@@ -104,12 +131,21 @@ impl PickerPage {
     /// moment a pick is made (before the write lands), so this can move without a receipt.
     fn checked_position(&self) -> u32 {
         let current = self.current();
-        field_options(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs())
+        let options = if let Some(anchor) = self.state.distance_anchor {
+            (40..=180).step_by(5).map(|distance| (String::new(), Value::SubtitleDistance(anchor, distance))).collect()
+        } else {
+            field_options(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs())
+        };
+        options
             .iter().position(|(_, v)| *v == current).map_or(u32::MAX, |i| i as u32)
     }
     fn view(&self) -> TableScreen<'_> {
-        TableScreen::new(Header::new(RouteLayout::screen(), Some(self.state.field.parent_title()),
-            self.state.field.title(), &self.copy), &self.form.table, GroupId(0), self.entry).keyed(&self.form)
+        let (crumb, title) = self.state.distance_anchor.map_or(
+            (self.state.field.parent_title(), self.state.field.title()),
+            |anchor| (plx_platform::i18n::msg::settings_playback_subtitle_position(), subtitle_position_label(anchor)),
+        );
+        TableScreen::new(Header::new(RouteLayout::screen(), Some(crumb), title, &self.copy),
+            &self.form.table, GroupId(0), self.entry).keyed(&self.form)
     }
     fn focus(&self, fx: &mut Effects<'_, InnerHost>, group: GroupId) {
         fx.push(Fx::Deliver(MachineId::Instance(InstanceId(0)),
@@ -134,7 +170,11 @@ impl PickerPage {
         self.state.confirming = self.alert.is_open(); self.state.affirmative = self.alert.choice();
         self.state.alert_scroll = self.alert.scroll_target_bits();
         let current = self.current();
-        let options = field_options(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs());
+        let options = if let Some(anchor) = self.state.distance_anchor {
+            (40..=180).step_by(5).map(|distance| (format!("{distance} px"), Value::SubtitleDistance(anchor, distance))).collect()
+        } else {
+            field_options(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs())
+        };
         self.state.checked = options.iter().position(|(_, v)| *v == current).map_or(u32::MAX, |i| i as u32);
         let keep = if seat_current { OptionId::Choice(current.clone()) } else {
             self.form.selected_id().cloned().unwrap_or_else(|| OptionId::Choice(current.clone())) };
@@ -161,6 +201,18 @@ impl PickerPage {
         }
     }
     fn pick(&mut self, value: Value, fx: &mut Effects<'_, InnerHost>) {
+        if matches!(&value, Value::SubtitleDistance(_, _)) {
+            // The distance list opens focused on the saved value. OK there means "keep this
+            // distance": return immediately without scheduling a redundant storage write.
+            if self.current() == value {
+                self.pop(fx);
+                return;
+            }
+            self.commit(value, fx);
+            self.rebuild(false);
+            fx.invalidate(plx_machine::present::Provenance::Input);
+            return;
+        }
         // OK on the checked row is not a change. Compared against the CANONICAL current value, so a
         // stored deprecated code (`pb`) is not rewritten to `pt-BR` on the user's account by a pick
         // that changed nothing.
@@ -178,6 +230,12 @@ impl PickerPage {
     }
     fn commit(&mut self, value: Value, fx: &mut Effects<'_, InnerHost>) {
         match value {
+            Value::SubtitleDistance(position, distance) => {
+                let (reply, rx) = mpsc::channel();
+                self.txn.pending = Some(Pending::Local(rx)); self.state.io.busy = true; self.txn.saving = true;
+                self.state.io.status = plx_platform::i18n::msg::settings_playback_saving().into();
+                fx.push(Fx::App(AppFx::Preferences(PreferenceCmd::SubtitleDistance { position, distance, reply })));
+            }
             Value::InstantDpadSeeking(_) | Value::DolbyVision(_) | Value::Quality(_) | Value::DirectPlay(_) | Value::NextEpisode(_) | Value::DeckPress(_) | Value::SkipInterval(_) | Value::UiResolution(_) | Value::SubtitleSize(_) | Value::SubtitlePosition(_) | Value::HdrOverlay(_) => self.txn.save_local(&mut self.state.io, value, fx),
             value => {
                 let mut update = PreferenceUpdate::default();
@@ -224,6 +282,15 @@ impl Machine<InnerHost> for PickerPage {
             }
         }
         match ev {
+            ScreenEvent::Enter(Enter::Restored)
+                if self.state.distance_anchor.is_none() && self.state.field == PickerKind::SubtitlePosition =>
+            {
+                // A distance child writes the install preference, then pops back to this retained
+                // page. Rebuild its three readouts from the newly durable session snapshot.
+                self.rebuild(false);
+                fx.invalidate(plx_machine::present::Provenance::Input);
+                Handled::No
+            }
             ScreenEvent::Enter(_) => {
                 if self.start_initial_load(fx) { self.rebuild(true); fx.invalidate(plx_machine::present::Provenance::Input); }
                 Handled::No
@@ -241,6 +308,7 @@ impl Machine<InnerHost> for PickerPage {
                 let had_rows = self.form.table.n_rows() > 0;
                 let landed = self.txn.poll(&mut self.state.io, fx);
                 match landed {
+                    Landed::Saved if self.state.distance_anchor.is_some() => { self.pop(fx); }
                     Landed::Saved => { self.pop(fx); }
                     Landed::Changed => {
                         let failed = !self.state.io.status.is_empty();
@@ -270,6 +338,14 @@ impl Machine<InnerHost> for PickerPage {
                 Handled::Yes
             }
             ScreenEvent::Activate(key) => { self.activate(*key, fx); Handled::Yes }
+            ScreenEvent::Input(InputEvent { kind: InputKind::Key { key: Key::Right, at_edge: true, .. }, .. })
+                if self.state.distance_anchor.is_none() && self.state.field == PickerKind::SubtitlePosition =>
+            {
+                if let Some(key) = cx.focus.current.and_then(|k| form_right_target(&self.form, k.elem)) {
+                    self.activate(key, fx);
+                }
+                Handled::Yes
+            }
             ScreenEvent::Input(InputEvent { kind: InputKind::Key { key: Key::Back, edge: Edge::Down, .. }, .. }) if self.writing_account() => Handled::Yes,
             _ => Handled::No,
         }

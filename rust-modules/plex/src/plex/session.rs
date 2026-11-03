@@ -1071,38 +1071,53 @@ impl SubtitleSize {
     }
 }
 
-/// The persisted subtitle vertical placements, lowest first — one per profile, like [`SubtitleTone`].
-/// Absence is `Low`, which is where every build before this preference drew the caption
-/// (`media::player::text_style`'s fixed `SUB_BASE_Y` baseline, lifted to the HUD's `HudBand` ceiling). Only the plain-text caption draw
-/// moves with this; image (PGS/VobSub) captions and native ASS/SSA keep their own placement
-/// (`docs/ass-subtitles.md`).
+/// Where client-rendered text subtitles are anchored: relative to the video picture or the TV
+/// screen. Legacy `low`/`middle`/`high` values remain accepted as the screen anchor.
+/// Image subtitles and authored ASS/SSA keep their own placement (`docs/ass-subtitles.md`).
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SubtitlePosition {
     #[default]
-    #[serde(rename = "low")]
-    Low,
-    #[serde(rename = "middle")]
-    Middle,
-    #[serde(rename = "high")]
-    High,
+    #[serde(rename = "tv_screen", alias = "low", alias = "middle", alias = "high")]
+    TvScreen,
+    #[serde(rename = "video_frame")]
+    VideoFrame,
+    /// The viewer-set distance from the TV screen's lower edge, in pixels (40–180, step 5).
+    #[serde(rename = "custom")]
+    Custom(u8),
 }
 
 impl SubtitlePosition {
-    /// Every rung, lowest first — the order the picker lists them in.
+    /// Every anchor in the order the picker lists them in.
     pub const LADDER: [SubtitlePosition; 3] = [
-        SubtitlePosition::Low,
-        SubtitlePosition::Middle,
-        SubtitlePosition::High,
+        SubtitlePosition::VideoFrame,
+        SubtitlePosition::TvScreen,
+        SubtitlePosition::Custom(40),
     ];
 
-    /// An in-memory index back to a rung — out of range is `Low`, never a neighbouring rung, for
-    /// the reason [`SubtitleTone::from_index`] gives: the ladder can grow or shrink.
+    /// An in-memory index back to an anchor; invalid values use the stable screen default.
     pub fn from_index(i: u8) -> SubtitlePosition {
-        Self::LADDER.get(i as usize).copied().unwrap_or(SubtitlePosition::Low)
+        Self::LADDER.get(i as usize).copied().unwrap_or(SubtitlePosition::default())
     }
 
     pub fn index(self) -> u8 {
-        Self::LADDER.iter().position(|&p| p == self).unwrap_or(0) as u8
+        match self {
+            Self::VideoFrame => 0,
+            Self::TvScreen => 1,
+            Self::Custom(_) => 2,
+        }
+    }
+
+    pub fn custom_gap(self) -> Option<u8> {
+        if let Self::Custom(px) = self { Some(px.clamp(40, 180) / 5 * 5) } else { None }
+    }
+
+    /// A cache key distinct for every supported custom distance as well as both fixed anchors.
+    pub fn style_index(self) -> u8 {
+        match self {
+            Self::VideoFrame => 0,
+            Self::TvScreen => 1,
+            Self::Custom(px) => 2 + (px.clamp(40, 180).saturating_sub(40) / 5),
+        }
     }
 }
 
@@ -2452,6 +2467,21 @@ impl Session {
         self.prefs.ui_resolution
     }
 
+    /// The configured default distance for the Custom entry in the player's Style menu.
+    pub fn subtitle_custom_distance(&self) -> u8 {
+        self.subtitle_distance(SubtitlePosition::Custom(40))
+    }
+
+    /// The configured default gap for one of the three player position choices.
+    pub fn subtitle_distance(&self, position: SubtitlePosition) -> u8 {
+        let value = match position {
+            SubtitlePosition::VideoFrame => self.prefs.subtitle_video_frame_distance,
+            SubtitlePosition::TvScreen => self.prefs.subtitle_tv_screen_distance,
+            SubtitlePosition::Custom(_) => self.prefs.subtitle_custom_distance,
+        };
+        value.unwrap_or(60).clamp(40, 180) / 5 * 5
+    }
+
     /// Which hold hints this install has been taught; see [`HoldHintTaught`].
     pub fn hold_hint_taught(&self) -> HoldHintTaught {
         self.prefs.hold_hint_taught
@@ -2467,6 +2497,21 @@ impl Session {
     pub fn with_ui_resolution(&self, mode: UiResolution) -> Self {
         let mut next = self.clone();
         next.prefs.ui_resolution = mode;
+        next
+    }
+
+    pub fn with_subtitle_custom_distance(&self, distance: u8) -> Self {
+        self.with_subtitle_distance(SubtitlePosition::Custom(40), distance)
+    }
+
+    pub fn with_subtitle_distance(&self, position: SubtitlePosition, distance: u8) -> Self {
+        let mut next = self.clone();
+        let distance = distance.clamp(40, 180) / 5 * 5;
+        match position {
+            SubtitlePosition::VideoFrame => next.prefs.subtitle_video_frame_distance = Some(distance),
+            SubtitlePosition::TvScreen => next.prefs.subtitle_tv_screen_distance = Some(distance),
+            SubtitlePosition::Custom(_) => next.prefs.subtitle_custom_distance = Some(distance),
+        }
         next
     }
 
@@ -4312,6 +4357,21 @@ pub fn set_ui_resolution(mode: UiResolution) -> bool {
         (!already).then(|| current.with_ui_resolution(mode))
     });
     // Already the stored choice is a pick that landed; an unreadable or refused record is not.
+    already || write.is_some_and(|write| matches!(write.classify(), async_persistence::CompletionOutcome::Durable(_)))
+}
+
+/// Persist the reusable Custom subtitle distance without selecting it as the profile's default anchor.
+pub fn set_subtitle_custom_distance(distance: u8) -> bool {
+    set_subtitle_distance(SubtitlePosition::Custom(40), distance)
+}
+
+pub fn set_subtitle_distance(position: SubtitlePosition, distance: u8) -> bool {
+    let distance = distance.clamp(40, 180) / 5 * 5;
+    let mut already = false;
+    let write = update_with_outcome(|current| {
+        already = current.subtitle_distance(position) == distance;
+        (!already).then(|| current.with_subtitle_distance(position, distance))
+    });
     already || write.is_some_and(|write| matches!(write.classify(), async_persistence::CompletionOutcome::Durable(_)))
 }
 

@@ -102,26 +102,21 @@ fn finding(cx: &LangCtx<'_>, band_top: f32, limit: f32, found: Option<(BandExten
 /// exact-once edits, the code and pointer the edit must yield.
 #[cfg(test)]
 pub(super) const INVALID: &[super::lint::testing::InvalidCase] = &[
-    // classic with its whole block lifted 200 px (inset 13 -> 213): the control row's top, 792, becomes 592,
-    // above the highest top (about 645) a three-line caption at the largest size and position still fits under.
-    // A row whose top is above the bound has less than 600 px above it (the menus' `NEED_H`) however it got
-    // there, so its Audio and More menus leave the Above side and stop sharing an edge with the Subtitles one:
-    // the two `also` are that consequence (`lint_menus`, M4), not a second defect
+    // classic with its whole block lifted 500 px (inset 13 -> 513): the control row's top, 792, becomes 292,
+    // above the highest top (about 424) a three-line caption at the largest size still fits under. The
+    // resulting compact layout also puts Up Next below the screen; the second finding names that row.
     InvalidCase {
         name: "classic lifted: the control row's top is above the caption bound",
         code: "HUD-E1201",
         pointer: "/layout/block/0/cells/1/segment/items/0",
         base: Base::Classic,
-        edits: &[(r#""inset": 13,"#, r#""inset": 213,"#)],
+        edits: &[(r#""inset": 13,"#, r#""inset": 513,"#)],
         langs: &[],
         skew: 0.0,
-        also: &[
-            ("HUD-E1303", "/layout/block/0/cells/1/segment/items/1"),
-            ("HUD-E1303", "/layout/block/0/cells/1/segment/items/2"),
-        ],
+        also: &[("HUD-E1102", "/layout/up_next")],
     },
-    // classic under `band: "block"` with a 354 px title: the band is the top of ANY drawn extent, and the
-    // title block (a 34 px kicker over a 354 px title, bottom-aligned in its band) now rises to y 468, above
+    // classic under `band: "block"` with a 554 px title: the band is the top of ANY drawn extent, and the
+    // title block (a 34 px kicker over a 400 px title, bottom-aligned in its band) now rises to y 268, above
     // every language's Up Next still (about 550), while the control row stays at 792: only the kicker's text
     // sets the band and is named
     InvalidCase {
@@ -129,7 +124,7 @@ pub(super) const INVALID: &[super::lint::testing::InvalidCase] = &[
         code: "HUD-E1201",
         pointer: "/layout/block/0/cells/0/vstack/cells/0/text",
         base: Base::Classic,
-        edits: &[(r#""band": "controls","#, r#""band": "block","#), (r#""leading": 54,"#, r#""leading": 354,"#)],
+        edits: &[(r#""band": "controls","#, r#""band": "block","#), (r#""leading": 54,"#, r#""leading": 400,"#)],
         langs: &[],
         skew: 0.0,
         also: &[],
@@ -297,11 +292,11 @@ mod tests {
         let names: Vec<&str> = ctx.rects.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, ["extent", "band", "limit"]);
         let limit = min_controls_top_y();
-        assert_eq!(ctx.rects[0].y, 592.0, "the control row, lifted 200 px from classic's 792");
-        assert_eq!(ctx.rects[1].y, 592.0, "the band starts where the extent does");
+        assert_eq!(ctx.rects[0].y, 292.0, "the control row, lifted 500 px from classic's 792");
+        assert_eq!(ctx.rects[1].y, 292.0, "the band starts where the extent does");
         assert_eq!(ctx.rects[2].y, limit);
         assert_eq!(ctx.rects[2].h, SCR_H - limit);
-        assert!(found[0].message.contains("592") && found[0].message.contains(&limit.to_string()), "{}", found[0].message);
+        assert!(found[0].message.contains("292") && found[0].message.contains(&limit.to_string()), "{}", found[0].message);
     }
 
     /// A scan that found no extent at the band's top still reports the violation, at the layout root.

@@ -2682,7 +2682,7 @@ mod sections {
         let mut run = classic_run(Occupant::Plain);
         let limit = |run: &mut Run| {
             let band = run.screen().caption_band();
-            band.ceil_y - band.rise_for(plx_plex::plex::session::SubtitlePosition::Low)
+            band.ceil_y - band.rise_for(plx_plex::plex::session::SubtitlePosition::TvScreen)
         };
         assert_eq!(limit(&mut run), 780.0, "nothing open: today's ceiling");
         run.toggle(Section::Info);

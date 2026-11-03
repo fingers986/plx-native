@@ -95,7 +95,7 @@ impl Kind {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Value { InstantDpadSeeking(InstantDpadSeeking), DolbyVision(DolbyVisionMode), Quality(Quality), DirectPlay(DirectPlayMode), SubtitleSize(SubtitleSize), SubtitlePosition(SubtitlePosition), HdrOverlay(HdrOverlayBrightness), NextEpisode(NextEpisodeMode), DeckPress(DeckPress), SkipInterval(SkipInterval), UiResolution(UiResolution), Language(String), Mode(i64), Forced(i64) }
+enum Value { InstantDpadSeeking(InstantDpadSeeking), DolbyVision(DolbyVisionMode), Quality(Quality), DirectPlay(DirectPlayMode), SubtitleSize(SubtitleSize), SubtitlePosition(SubtitlePosition), SubtitleDistance(SubtitlePosition, u8), HdrOverlay(HdrOverlayBrightness), NextEpisode(NextEpisodeMode), DeckPress(DeckPress), SkipInterval(SkipInterval), UiResolution(UiResolution), Language(String), Mode(i64), Forced(i64) }
 
 /// The hashed half of a transaction: what the page shows while a load or save is in flight.
 struct Io { busy: bool, status: String }
@@ -259,6 +259,7 @@ impl Txn {
             Value::DirectPlay(mode) => PreferenceCmd::Choose(Choice::DirectPlay(mode), reply),
             Value::SubtitleSize(size) => PreferenceCmd::Choose(Choice::SubtitleSize(size), reply),
             Value::SubtitlePosition(position) => PreferenceCmd::Choose(Choice::SubtitlePosition(position), reply),
+            Value::SubtitleDistance(position, distance) => PreferenceCmd::SubtitleDistance { position, distance, reply },
             Value::HdrOverlay(brightness) => PreferenceCmd::Choose(Choice::HdrOverlayBrightness(brightness), reply),
             Value::NextEpisode(mode) => PreferenceCmd::Choose(Choice::NextEpisode(mode), reply),
             Value::DeckPress(mode) => PreferenceCmd::Choose(Choice::DeckPress(mode), reply),
@@ -497,8 +498,8 @@ fn field_options(field: PickerKind, quality: Quality, direct_play: DirectPlayMod
             .into_iter().map(|m| (mode_label(m).into(), Value::DirectPlay(m))).collect(),
         PickerKind::SubtitleSize => SubtitleSize::LADDER.into_iter()
             .map(|s| (subtitle_size_label(s).into(), Value::SubtitleSize(s))).collect(),
-        PickerKind::SubtitlePosition => SubtitlePosition::LADDER.into_iter()
-            .map(|p| (subtitle_position_label(p).into(), Value::SubtitlePosition(p))).collect(),
+        PickerKind::SubtitlePosition => [SubtitlePosition::VideoFrame, SubtitlePosition::TvScreen, SubtitlePosition::Custom(40)]
+            .into_iter().map(|p| (subtitle_position_label(p).into(), Value::SubtitlePosition(p))).collect(),
         PickerKind::HdrOverlay => HdrOverlayBrightness::LADDER.into_iter()
             .map(|b| (hdr_overlay_label(b).into(), Value::HdrOverlay(b))).collect(),
         PickerKind::NextEpisode => NextEpisodeMode::LADDER.into_iter()
@@ -541,7 +542,13 @@ fn field_readout(field: PickerKind, quality: Quality, direct_play: DirectPlayMod
         // other two modes show the picker's own label.
         PickerKind::SubtitleMode if prefs.is_some_and(|p| p.subtitle_mode == 1) => plx_platform::i18n::msg::settings_audio_foreign_short().into(),
         PickerKind::SubtitleSize => subtitle_size_label(plx_media::route::subtitle_size()).into(),
-        PickerKind::SubtitlePosition => subtitle_position_label(plx_media::route::subtitle_position()).into(),
+        PickerKind::SubtitlePosition => {
+            let position = plx_media::route::subtitle_position();
+            match position.custom_gap() {
+                Some(px) => format!("{} ({px} px)", subtitle_position_label(position)),
+                None => subtitle_position_label(position).into(),
+            }
+        }
         PickerKind::HdrOverlay => hdr_overlay_label(plx_media::route::hdr_overlay_brightness()).into(),
         _ => {
             let current = resolve_value(field, quality, direct_play, prefs);

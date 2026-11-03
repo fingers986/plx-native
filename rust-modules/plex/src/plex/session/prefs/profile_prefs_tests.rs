@@ -52,7 +52,7 @@ fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
         direct_play_mode: Some(DirectPlayMode::Forced),
         subtitle_tone: Some(SubtitleTone::Silver),
         subtitle_size: Some(SubtitleSize::Large),
-        subtitle_position: Some(SubtitlePosition::High),
+        subtitle_position: Some(SubtitlePosition::TvScreen),
         hdr_overlay_brightness: Some(HdrOverlayBrightness::Half),
         next_episode_mode: Some(NextEpisodeMode::AfterCredits),
         skip_interval: Some(SkipInterval::Seconds30),
@@ -118,7 +118,7 @@ fn garbage_own_value_reads_the_legacy_value() {
     assert_eq!(effective::<AudioEnhancementsPref>(&legacy, own),
         AudioEnhancements { boost_dialog: true, normalize_loudness: false });
     assert_eq!(effective::<SkipIntervalPref>(&legacy, own), SkipInterval::Seconds10, "null reads legacy, which is the default");
-    assert_eq!(effective::<SubtitlePositionPref>(&legacy, own), SubtitlePosition::High, "a good neighbour survives");
+    assert_eq!(effective::<SubtitlePositionPref>(&legacy, own), SubtitlePosition::TvScreen, "a good neighbour survives");
 }
 
 /// **A size spelling this build does not know is read like a build before `Huge` reads `"huge"`**:
@@ -172,7 +172,7 @@ fn own_value_then_legacy_then_default() {
 
     tv.prefs.profile_prefs = prefs_with(json!([record("kid", STAMP, json!({ "subtitle_size": "small" }))])).profile_prefs;
     assert_eq!(stored_effective::<SubtitleSizePref>(&tv, &seat), SubtitleSize::Small, "its own value wins");
-    assert_eq!(stored_effective::<SubtitlePositionPref>(&tv, &seat), SubtitlePosition::Low, "an unpicked setting still falls back");
+    assert_eq!(stored_effective::<SubtitlePositionPref>(&tv, &seat), SubtitlePosition::TvScreen, "an unpicked setting still falls back");
     let other = Seat::Seated { user: "sibling".into(), stamp: STAMP.into() };
     assert_eq!(stored_effective::<SubtitleSizePref>(&tv, &other), SubtitleSize::Large, "another profile's pick is not seen");
     assert_eq!(stored_effective::<SubtitleSizePref>(&tv, &Seat::Unseated), SubtitleSize::Large,
@@ -213,7 +213,7 @@ fn put_own_records_prunes_and_skips() {
         "the first pick records an own value even when it equals the default");
     assert_eq!(records.len(), 1);
     assert!(!put_own::<SubtitleSizePref>(&mut records, "kid", STAMP, SubtitleSize::Medium), "equal: unchanged");
-    assert!(put_own::<SubtitlePositionPref>(&mut records, "kid", STAMP, SubtitlePosition::High), "another setting of the same record");
+    assert!(put_own::<SubtitlePositionPref>(&mut records, "kid", STAMP, SubtitlePosition::TvScreen), "another setting of the same record");
     assert!(put_own::<SubtitleSizePref>(&mut records, "sibling", STAMP, SubtitleSize::Small));
     assert_eq!(records.len(), 2, "two profiles, two records");
 
@@ -222,7 +222,7 @@ fn put_own_records_prunes_and_skips() {
     assert!(put_own::<SubtitleSizePref>(&mut records, "kid", STAMP, SubtitleSize::Large));
     assert!(records.iter().all(|r| r.account == STAMP), "the write pruned the previous sign-in's record");
     assert_eq!(records.len(), 2);
-    assert_eq!(own_prefs(&records, "kid", STAMP).unwrap().subtitle_position, Some(SubtitlePosition::High), "and kept the rest of its own");
+    assert_eq!(own_prefs(&records, "kid", STAMP).unwrap().subtitle_position, Some(SubtitlePosition::TvScreen), "and kept the rest of its own");
 }
 
 // ---- the seat ---------------------------------------------------------------------------------
@@ -351,7 +351,7 @@ fn profile_choose_never_writes_the_legacy_key() {
     assert!(persist_profile_pref::<SkipIntervalPref>(&w, SkipInterval::Seconds30));
     assert!(persist_profile_pref::<DeckPressPref>(&w, DeckPress::Play));
     assert!(persist_profile_pref::<SubtitleTonePref>(&w, SubtitleTone::Silver));
-    assert!(persist_profile_pref::<SubtitlePositionPref>(&w, SubtitlePosition::High));
+    assert!(persist_profile_pref::<SubtitlePositionPref>(&w, SubtitlePosition::TvScreen));
     assert!(persist_profile_pref::<AudioEnhancementsPref>(&w, AudioEnhancements { boost_dialog: true, normalize_loudness: false }));
     assert!(persist_profile_pref::<TrailerAutoplayPref>(&w, false), "turning trailers off records an own value");
 
@@ -435,7 +435,7 @@ fn a_pick_is_refused_across_a_credential_or_client_change() {
 
     // The client id moved.
     assert!(crate::plex::session::update(|cur| Some(Session { client_id: "another-client".into(), ..cur.clone() })));
-    assert!(!persist_profile_pref::<SubtitlePositionPref>(&w, SubtitlePosition::High), "the client id moved");
+    assert!(!persist_profile_pref::<SubtitlePositionPref>(&w, SubtitlePosition::TvScreen), "the client id moved");
     assert!(crate::plex::session::update(|cur| Some(Session { client_id: "cid-test".into(), ..cur.clone() })));
 
     assert_eq!(own_prefs(&stored().prefs.profile_prefs, "kid", &stamp).and_then(|o| o.subtitle_position), None,
@@ -467,7 +467,7 @@ fn relogin_without_clear_hides_and_prunes_profile_data() {
 
     // The first write under the new stamp prunes it.
     let w = ProfileWrite::capture().expect("seated under the new stamp");
-    assert!(persist_profile_pref::<SubtitlePositionPref>(&w, SubtitlePosition::High));
+    assert!(persist_profile_pref::<SubtitlePositionPref>(&w, SubtitlePosition::TvScreen));
     let after = stored().prefs.profile_prefs;
     assert_eq!(after.len(), 1, "{after:?}");
     assert_eq!(after[0].account, new_stamp, "only the new sign-in's record is left");

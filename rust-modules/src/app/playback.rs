@@ -564,6 +564,17 @@ pub(crate) fn commit_track(
         TrackCommit::SubtitleTone(tone) => plx_media::player::set_subtitle_tone(tone),
         // live first, persisted after, nothing republished on completion (`route::select_subtitle_size`)
         TrackCommit::SubtitleSize(size) => plx_media::route::select_subtitle_size(size, None),
+        TrackCommit::SubtitlePosition(plx_plex::plex::session::SubtitlePosition::Custom(distance)) => {
+            // Remember Custom as this profile's selected style, and keep its px distance in the
+            // shared install preference used by the main Settings page as well as the player.
+            plx_media::route::select_subtitle_position(
+                plx_plex::plex::session::SubtitlePosition::Custom(distance), None,
+            );
+            let _ = plx_base::storage_worker::submit_retained(move || {
+                let _ = plx_plex::plex::session::set_subtitle_custom_distance(distance);
+                plx_machine::idle::invalidate();
+            });
+        }
         TrackCommit::SubtitlePosition(position) => plx_media::route::select_subtitle_position(position, None),
         TrackCommit::SubtitleOffset(offset) => {
             plx_media::player::set_subtitle_offset(offset);
@@ -618,6 +629,29 @@ pub(crate) fn player_requests(
                 if player.player_menu_was_playing.is_none() {
                     apply_transport(pa, play, now, pages);
                 }
+            }
+            PlayerReq::CapsuleTogglePlayback => {
+                let target_paused = super::lifecycle::transport_target(
+                    None,
+                    super::lifecycle::viewer_paused(),
+                );
+                if player.player_menu_was_playing.is_some() {
+                    // The capsule deliberately keeps the menu's pause lease while open, but OK is
+                    // an intentional transport toggle. Track the state the viewer now wants so
+                    // closing with BACK cannot overwrite a pause they chose here.
+                    player.player_menu_was_playing = Some(!target_paused);
+                    set_transport_paused(pa, target_paused);
+                } else {
+                    apply_transport(pa, None, now, pages);
+                }
+            }
+            PlayerReq::CapsuleCloseAndPlay => {
+                // The overlay queued Dismiss before this request. Retire its pause lease now and
+                // issue one-way PLAY; waiting for the HUD to become visible would leave a hidden
+                // capsule's playback paused indefinitely.
+                player.player_menu_was_playing = None;
+                player.player_menu_seen_open = false;
+                apply_transport(pa, Some(true), now, pages);
             }
             PlayerReq::SeekTo(ns) => {
                 if player.player_menu_was_playing.is_some() {
@@ -743,6 +777,7 @@ pub(crate) fn exit_player(
     refresh_hubs: &mut bool,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
+    plx_media::route::clear_player_subtitle_position_custom();
     // The player menu's pause lease must not survive into a later playback session. Exiting
     // playback stops the engine below, so there is no temporary pause to restore here.
     player.player_menu_was_playing = None;

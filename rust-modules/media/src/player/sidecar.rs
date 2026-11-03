@@ -838,7 +838,7 @@ mod tests {
     fn other_picks(current: TextStyle) -> TextStyle {
         TextStyle {
             size: if current.size == SubtitleSize::Large { SubtitleSize::Small } else { SubtitleSize::Large },
-            position: if current.position == SubtitlePosition::High { SubtitlePosition::Low } else { SubtitlePosition::High },
+            position: if current.position == SubtitlePosition::TvScreen { SubtitlePosition::VideoFrame } else { SubtitlePosition::TvScreen },
         }
     }
 
