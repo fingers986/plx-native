@@ -70,7 +70,7 @@ fn cells() -> Cells {
 const DEFAULTS: Cells = Cells {
     quality: PlaybackQuality::Original,
     direct_play: DirectPlayMode::Auto,
-    size: SubtitleSize::Medium,
+    size: SubtitleSize::from_percent(100),
     position: SubtitlePosition::TvScreen,
     next_episode: NextEpisodeMode::Countdown,
     skip: SkipInterval::Seconds10,
@@ -83,7 +83,7 @@ const DEFAULTS: Cells = Cells {
 const STORED: Cells = Cells {
     quality: PlaybackQuality::P1080High,
     direct_play: DirectPlayMode::Forced,
-    size: SubtitleSize::Large,
+    size: SubtitleSize::from_percent(125),
     position: SubtitlePosition::TvScreen,
     next_episode: NextEpisodeMode::AfterCredits,
     skip: SkipInterval::Seconds30,
@@ -99,7 +99,7 @@ const STORED: Cells = Cells {
 const SCRAMBLED: Cells = Cells {
     quality: PlaybackQuality::P720Low,
     direct_play: DirectPlayMode::Disabled,
-    size: SubtitleSize::ExtraLarge,
+    size: SubtitleSize::from_percent(150),
     position: SubtitlePosition::TvScreen,
     next_episode: NextEpisodeMode::Off,
     skip: SkipInterval::Seconds60,
@@ -113,7 +113,7 @@ const SCRAMBLED: Cells = Cells {
 const OTHER: Cells = Cells {
     quality: PlaybackQuality::P1080,
     direct_play: DirectPlayMode::Disabled,
-    size: SubtitleSize::Small,
+    size: SubtitleSize::from_percent(80),
     position: SubtitlePosition::TvScreen,
     next_episode: NextEpisodeMode::Off,
     skip: SkipInterval::Seconds5,
@@ -364,7 +364,7 @@ fn stored_boot_restores_the_seated_profiles_own_values() {
     let _serial = plx_base::testlock::serial();
     let stored = with_own_values(record("managed-kid", &["managed-other"]), "managed-kid", STORED);
     let _fixture = Fixture::new("a0c-stored-boot-own", &stored);
-    assert_eq!(session::peek().prefs.subtitle_size, SubtitleSize::Medium, "the legacy key chose nothing");
+    assert_eq!(session::peek().prefs.subtitle_size, SubtitleSize::from_percent(100), "the legacy key chose nothing");
 
     crate::app::boot::restore_player_preferences(&session::load(), false);
     assert_eq!(cells(), DEFAULTS, "process start is unseated: the fallback, here the defaults");
@@ -486,13 +486,13 @@ fn profile_picks_are_each_profiles_own_and_play_automatically_on_b_leaves_a_alon
     assert_eq!(cells(), DEFAULTS, "A seated on a record that chose nothing");
 
     // Profile A picks Large and Force.
-    plx_media::route::select_subtitle_size(SubtitleSize::Large, None);
+    plx_media::route::select_subtitle_size(SubtitleSize::from_percent(125), None);
     plx_base::storage_worker::drain_for_test();
     assert!(plx_media::route::set_direct_play_mode(DirectPlayMode::Forced));
-    assert_eq!(stored_value::<SubtitleSizePref>("profile-a"), Some(SubtitleSize::Large));
+    assert_eq!(stored_value::<SubtitleSizePref>("profile-a"), Some(SubtitleSize::from_percent(125)));
     assert_eq!(stored_value::<DirectPlayModePref>("profile-a"), Some(DirectPlayMode::Forced));
     let a = session::load();
-    assert_eq!((a.subtitle_size(), a.direct_play_mode()), (SubtitleSize::Medium, DirectPlayMode::Auto),
+    assert_eq!((a.subtitle_size(), a.direct_play_mode()), (SubtitleSize::from_percent(100), DirectPlayMode::Auto),
         "A's picks are A's own: the legacy install-wide keys are untouched");
 
     // Profile B is seated and reads the fallback, not A's picks.
@@ -503,7 +503,7 @@ fn profile_picks_are_each_profiles_own_and_play_automatically_on_b_leaves_a_alon
     seat_globally("profile-b");
     assert_eq!(session::peek().user.uuid, "profile-b");
     assert_eq!(stored_value::<SubtitleSizePref>("profile-b"), None, "B has picked nothing");
-    assert_eq!(plx_media::route::subtitle_size(), SubtitleSize::Medium, "B reads Medium, not A's Large");
+    assert_eq!(plx_media::route::subtitle_size(), SubtitleSize::from_percent(100), "B reads Medium, not A's Large");
     assert_eq!(plx_media::route::direct_play_mode(), DirectPlayMode::Auto, "B reads Auto, not A's Force");
 
     // B forces Direct Play itself, its playback fails under Force, and B presses Play Automatically.
@@ -527,7 +527,7 @@ fn profile_picks_are_each_profiles_own_and_play_automatically_on_b_leaves_a_alon
     seat_globally("profile-a");
     assert_eq!(session::peek().user.uuid, "profile-a");
     assert_eq!(plx_media::route::direct_play_mode(), DirectPlayMode::Forced, "B's Play Automatically left A alone");
-    assert_eq!(plx_media::route::subtitle_size(), SubtitleSize::Large, "A's size survived");
+    assert_eq!(plx_media::route::subtitle_size(), SubtitleSize::from_percent(125), "A's size survived");
 }
 
 /// **Declared delta 3: Play Automatically publishes Auto once.** It used to publish twice, once on
@@ -664,9 +664,9 @@ fn first_login_single_user_seats_the_owner() {
 
     // Its own pick lands in ITS record, under that stamp.
     seat_globally("");
-    plx_media::route::select_subtitle_size(SubtitleSize::Large, None);
+    plx_media::route::select_subtitle_size(SubtitleSize::from_percent(125), None);
     plx_base::storage_worker::drain_for_test();
-    assert_eq!(stored_value::<SubtitleSizePref>(""), Some(SubtitleSize::Large));
+    assert_eq!(stored_value::<SubtitleSizePref>(""), Some(SubtitleSize::from_percent(125)));
 }
 
 /// **A dev-token boot never seats (plan 3.8.5).** `ActivateDevBootstrap` publishes nobody, so the cells
@@ -802,11 +802,11 @@ fn same_seat_republication_restores_nothing() {
     assert_eq!(rig.seat_watch.restored, seat_of("profile-a"));
 
     // A picks a size; before the write comes back, the same seat is published again.
-    plx_media::route::select_subtitle_size(SubtitleSize::Small, None);
+    plx_media::route::select_subtitle_size(SubtitleSize::from_percent(80), None);
     let before = size_publishes();
     assert!(!rig.seat_watch.arrive(seat_of("profile-a")), "the same seat again is not a change");
     assert_eq!(size_publishes(), before, "so nothing was published");
-    assert_eq!(plx_media::route::subtitle_size(), SubtitleSize::Small, "and the pick stands");
+    assert_eq!(plx_media::route::subtitle_size(), SubtitleSize::from_percent(80), "and the pick stands");
 
     assert!(rig.seat_watch.arrive(seat_of("profile-b")), "another seat is a change");
     assert_eq!(size_publishes(), before + 1, "and restores once");
@@ -859,20 +859,20 @@ fn size_picked_by_profile_a_is_not_seen_by_profile_b() {
     settle(&mut rig, &mut d, 100);
     seat_globally("profile-a");
 
-    plx_media::route::select_subtitle_size(SubtitleSize::Large, None);
+    plx_media::route::select_subtitle_size(SubtitleSize::from_percent(125), None);
     plx_base::storage_worker::drain_for_test();
-    assert_eq!(plx_media::route::subtitle_size(), SubtitleSize::Large);
+    assert_eq!(plx_media::route::subtitle_size(), SubtitleSize::from_percent(125));
 
     open_picker(&mut rig, &mut d, 2000);
     seat_globally("profile-b");
     pick(&mut rig, &mut d, 1, 3000);
-    assert_eq!(plx_media::route::subtitle_size(), SubtitleSize::Medium, "B reads the fallback, not A's Large");
+    assert_eq!(plx_media::route::subtitle_size(), SubtitleSize::from_percent(100), "B reads the fallback, not A's Large");
     assert_eq!(stored_value::<SubtitleSizePref>("profile-b"), None, "and has picked nothing");
 
     open_picker(&mut rig, &mut d, 4000);
     seat_globally("profile-a");
     pick(&mut rig, &mut d, 0, 5000);
-    assert_eq!(plx_media::route::subtitle_size(), SubtitleSize::Large, "A finds its own pick");
+    assert_eq!(plx_media::route::subtitle_size(), SubtitleSize::from_percent(125), "A finds its own pick");
 }
 
 /// **Play Automatically resets the active profile's Direct Play, and only that (plan 3.8.1).** A is

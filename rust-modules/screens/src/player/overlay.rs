@@ -94,6 +94,8 @@ pub enum OverlayKind {
     Timing,
     /// The Custom subtitle-distance capsule, reached from Player > Style > Position.
     CustomDistance { gap: u8 },
+    /// The Subtitle Size stepper, reached from Player > Style > Size.
+    SubtitleSize { percent: u8 },
 }
 
 impl OverlayKind {
@@ -102,11 +104,12 @@ impl OverlayKind {
     /// navigation tests), so a new kind is added here once rather than to each of them.
     /// `every_kind_is_listed_once` fails to compile when a variant is added and not listed.
     #[cfg(any(test, feature = "test-support"))]
-    pub const ALL: [OverlayKind; 4] = [
+    pub const ALL: [OverlayKind; 5] = [
         OverlayKind::Tracks { tab: 0 },
         OverlayKind::More { page: None },
         OverlayKind::Timing,
         OverlayKind::CustomDistance { gap: 40 },
+        OverlayKind::SubtitleSize { percent: 100 },
     ];
 
     /// The heartbeat's `overlay=` word. These spellings are the ones `tests/manifest.json`'s
@@ -129,6 +132,7 @@ impl OverlayKind {
             OverlayKind::More { .. } => 1,
             OverlayKind::Timing => 2,
             OverlayKind::CustomDistance { .. } => 3,
+            OverlayKind::SubtitleSize { .. } => 4,
         }
     }
 
@@ -138,6 +142,7 @@ impl OverlayKind {
             OverlayKind::More { .. } => "more",
             OverlayKind::Timing => "timing",
             OverlayKind::CustomDistance { .. } => "subtitle_distance",
+            OverlayKind::SubtitleSize { .. } => "subtitle_size",
         }
     }
 
@@ -149,7 +154,7 @@ impl OverlayKind {
     /// different questions.
     pub fn hud_policy(self) -> HudPolicy {
         match self {
-            OverlayKind::Timing | OverlayKind::CustomDistance { .. } => HudPolicy::Hidden,
+            OverlayKind::Timing | OverlayKind::CustomDistance { .. } | OverlayKind::SubtitleSize { .. } => HudPolicy::Hidden,
             OverlayKind::Tracks { .. } | OverlayKind::More { .. } => HudPolicy::Lifted,
         }
     }
@@ -208,6 +213,7 @@ impl LogicalState for PlayerOverlayArg {
             }
             OverlayKind::Timing => {}
             OverlayKind::CustomDistance { gap } => { c.u8(gap); }
+            OverlayKind::SubtitleSize { percent } => { c.u8(percent); }
         }
     }
     fn probe(&self, out: &mut String) {
@@ -221,6 +227,7 @@ pub enum Panel {
     More(plx_appkit::more_menu::MoreMenuState),
     Timing(TimingCapsule),
     CustomDistance(plx_appkit::timing_capsule::CustomDistanceCapsule),
+    SubtitleSize(plx_appkit::timing_capsule::SubtitleSizeCapsule),
 }
 
 pub struct PlayerOverlayScreen {
@@ -331,6 +338,9 @@ impl PlayerOverlayScreen {
             OverlayKind::CustomDistance { gap } => {
                 Panel::CustomDistance(plx_appkit::timing_capsule::CustomDistanceCapsule::new(gap))
             }
+            OverlayKind::SubtitleSize { percent } => {
+                Panel::SubtitleSize(plx_appkit::timing_capsule::SubtitleSizeCapsule::new(percent))
+            }
         };
         Self {
             entry,
@@ -375,6 +385,7 @@ impl PlayerOverlayScreen {
             // `key()`, never by the engine's focus movement.
             Panel::Timing(_) => 0,
             Panel::CustomDistance(_) => 0,
+            Panel::SubtitleSize(_) => 0,
         }
     }
 
@@ -452,7 +463,7 @@ impl PlayerOverlayScreen {
         match &mut self.panel {
             Panel::Tracks(p) => match p.commit_sub_track(i, meta) {
                 TrackOk::Commit { commit, .. } => Some(commit),
-                TrackOk::Dismiss | TrackOk::OpenTiming | TrackOk::OpenCustomDistance(_) | TrackOk::Inert | TrackOk::Navigated
+                TrackOk::Dismiss | TrackOk::OpenTiming | TrackOk::OpenCustomDistance(_) | TrackOk::OpenSubtitleSize(_) | TrackOk::Inert | TrackOk::Navigated
                 | TrackOk::Search(_) => None,
             },
             _ => None,
@@ -476,7 +487,7 @@ impl PlayerOverlayScreen {
             p.focus_row(row);
             return match p.on_ok(meta) {
                 TrackOk::Commit { commit, .. } => Some(commit),
-                TrackOk::Dismiss | TrackOk::OpenTiming | TrackOk::OpenCustomDistance(_) | TrackOk::Inert | TrackOk::Navigated
+                TrackOk::Dismiss | TrackOk::OpenTiming | TrackOk::OpenCustomDistance(_) | TrackOk::OpenSubtitleSize(_) | TrackOk::Inert | TrackOk::Navigated
                 | TrackOk::Search(_) => None,
             };
         }
@@ -562,6 +573,11 @@ impl PlayerOverlayScreen {
                     self.dismiss(fx);
                     Self::ask(fx, PlayerReq::OpenOverlay(next));
                 }
+                TrackOk::OpenSubtitleSize(size) => {
+                    let next = OverlayKind::SubtitleSize { percent: size.percent() };
+                    self.dismiss(fx);
+                    Self::ask(fx, PlayerReq::OpenOverlay(next));
+                }
             },
             Panel::More(p) => match p.on_ok(ps) {
                 // A folded row is a HUD command: More closes FIRST, then the app's one performer runs it, the
@@ -586,6 +602,7 @@ impl PlayerOverlayScreen {
             // nothing ever calls `activate()` while this variant is up. Exhaustiveness only.
             Panel::Timing(_) => {}
             Panel::CustomDistance(_) => {}
+            Panel::SubtitleSize(_) => {}
         }
     }
 
@@ -612,8 +629,24 @@ impl PlayerOverlayScreen {
                 self.moved(fx);
             }
             (Panel::Tracks(p), Key::Right { .. }) => {
-                p.on_right(ps, H::metadata(cx));
-                self.moved(fx);
+                match p.on_right(ps, H::metadata(cx)) {
+                    TrackOk::OpenCustomDistance(position) => {
+                        fx.push(Fx::App(AppFx::Player(PlayerReq::CommitTrack(
+                            plx_appkit::track_menu::TrackCommit::SubtitlePosition(position),
+                        ))));
+                        let next = OverlayKind::CustomDistance {
+                            gap: position.custom_gap().unwrap_or(40),
+                        };
+                        self.dismiss(fx);
+                        Self::ask(fx, PlayerReq::OpenOverlay(next));
+                    }
+                    TrackOk::OpenSubtitleSize(size) => {
+                        let next = OverlayKind::SubtitleSize { percent: size.percent() };
+                        self.dismiss(fx);
+                        Self::ask(fx, PlayerReq::OpenOverlay(next));
+                    }
+                    _ => self.moved(fx),
+                }
             }
             // More's one drill-in page: LEFT pops it (nothing at the root), RIGHT enters a Nav row
             (Panel::More(p), Key::Left { .. }) => {
@@ -721,6 +754,29 @@ impl PlayerOverlayScreen {
             }
             return Handled::Yes;
         }
+        if let Panel::SubtitleSize(cap) = &mut self.panel {
+            match edge {
+                Edge::Down => self.repeat.rearm(now),
+                Edge::Repeat if !self.repeat.ready_every(now, PANEL_REPEAT_MS) => return Handled::Yes,
+                Edge::Up => return Handled::Yes,
+                _ => {}
+            }
+            match cap.key(key, edge) {
+                Some(plx_appkit::timing_capsule::SubtitleSizeCapsuleOut::Step(percent)) => {
+                    Self::ask(fx, PlayerReq::CommitTrack(
+                        plx_appkit::track_menu::TrackCommit::SubtitleSize(
+                            plx_plex::plex::session::SubtitleSize::from_percent(percent),
+                        ),
+                    ));
+                }
+                Some(plx_appkit::timing_capsule::SubtitleSizeCapsuleOut::CloseAndPlay) => {
+                    self.dismiss(fx);
+                    Self::ask(fx, PlayerReq::CapsuleCloseAndPlay);
+                }
+                None => {}
+            }
+            return Handled::Yes;
+        }
         // A held direction is paced; a FRESH press is never swallowed by the cadence before it.
         let directional = matches!(key, Key::Up | Key::Down | Key::Left { .. } | Key::Right { .. });
         if directional {
@@ -797,7 +853,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Machine<H> 
                 // answered `HitSource::Engine` since phase 12's contract freeze, and the property
                 // it relies on was never the Legacy answer but the delivery.)
                 if let InputKind::Click { .. } | InputKind::Pointer { .. } = input.kind {
-                    if matches!(&self.panel, Panel::Timing(_) | Panel::CustomDistance(_))
+                    if matches!(&self.panel, Panel::Timing(_) | Panel::CustomDistance(_) | Panel::SubtitleSize(_))
                         && matches!(input.kind, InputKind::Click { .. })
                     {
                         // Capsules intentionally have no cursor stops: every cursor click, on the
@@ -830,6 +886,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Machine<H> 
                     // it in practice.
                     Panel::Timing(_) => {}
                     Panel::CustomDistance(_) => {}
+                    Panel::SubtitleSize(_) => {}
                 }
                 self.moved(fx);
                 Handled::No
@@ -908,6 +965,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Machine<H> 
                     Panel::More(p) => p.update(dt, cx.measure, ps),
                     Panel::Timing(p) => p.update(dt),
                     Panel::CustomDistance(_) => {}
+                    Panel::SubtitleSize(_) => {}
                 }
                 // The transport must not auto-hide out from under a panel a viewer is reading —
                 // the rule `app/run.rs` kept as "keep the HUD alive while the track menu is open",
@@ -943,6 +1001,7 @@ impl PlayerOverlayScreen {
             // per-row geometry to register — `draw`, below, paints the capsule itself.
             Panel::Timing(_) => {}
             Panel::CustomDistance(_) => {}
+            Panel::SubtitleSize(_) => {}
         }
     }
 }
@@ -965,6 +1024,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Focusable<H
             // (`Handled::Yes`) before the engine's focus machinery ever sees one.
             Panel::Timing(_) => {}
             Panel::CustomDistance(_) => {}
+            Panel::SubtitleSize(_) => {}
         }
     }
     fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
@@ -973,6 +1033,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Focusable<H
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.group_of(key, cx),
             Panel::Timing(_) => None,
             Panel::CustomDistance(_) => None,
+            Panel::SubtitleSize(_) => None,
         }
     }
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
@@ -981,6 +1042,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Focusable<H
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.neighbour(key, dir, cx),
             Panel::Timing(_) => Step::Edge,
             Panel::CustomDistance(_) => Step::Edge,
+            Panel::SubtitleSize(_) => Step::Edge,
         }
     }
     fn place(&self, key: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
@@ -989,6 +1051,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Focusable<H
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.place(key, cx, at),
             Panel::Timing(_) => None,
             Panel::CustomDistance(_) => None,
+            Panel::SubtitleSize(_) => None,
         }
     }
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
@@ -997,6 +1060,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Focusable<H
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.reconcile(want, cx),
             Panel::Timing(_) => want,
             Panel::CustomDistance(_) => want,
+            Panel::SubtitleSize(_) => want,
         }
     }
     fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<u32> {
@@ -1005,6 +1069,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Focusable<H
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.seat(g, from, cx),
             Panel::Timing(_) => FocusKey { entry: self.entry, elem: 0 },
             Panel::CustomDistance(_) => FocusKey { entry: self.entry, elem: 0 },
+            Panel::SubtitleSize(_) => FocusKey { entry: self.entry, elem: 0 },
         }
     }
 }
@@ -1048,6 +1113,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Screen<H> f
                 Panel::More(p) => p.warm_open(cx.measure),
                 Panel::Timing(_) => {}
                 Panel::CustomDistance(_) => {}
+                Panel::SubtitleSize(_) => {}
             }
         }
     }
@@ -1068,6 +1134,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Screen<H> f
             // The capsule sits over the video in the transport's own band — no dim.
             Panel::Timing(_) => plx_ui::screen::Scrim::NONE,
             Panel::CustomDistance(_) => plx_ui::screen::Scrim::NONE,
+            Panel::SubtitleSize(_) => plx_ui::screen::Scrim::NONE,
         }
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
@@ -1088,6 +1155,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Screen<H> f
             // Fixed y, never the live caption's own baseline — see `player_hud::CAPSULE_BOTTOM_Y`.
             Panel::Timing(p) => p.draw(plx_appkit::player_hud::CAPSULE_BOTTOM_Y, appear),
             Panel::CustomDistance(p) => p.draw(plx_appkit::player_hud::CAPSULE_BOTTOM_Y, appear),
+            Panel::SubtitleSize(p) => p.draw(plx_appkit::player_hud::CAPSULE_BOTTOM_Y, appear),
         }
         self.record_stops(f);
     }
@@ -1109,6 +1177,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Screen<H> f
             Panel::More(p) => p.transitioning(),
             Panel::Timing(_) => false,
             Panel::CustomDistance(_) => false,
+            Panel::SubtitleSize(_) => false,
         }
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> {

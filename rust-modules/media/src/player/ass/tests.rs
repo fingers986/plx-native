@@ -1221,17 +1221,17 @@ fn text_render(engine: &mut Engine, source: &Arc<Source>, now_ms: i64) -> Arc<Fr
 }
 
 fn no_cues_style() -> TextStyle {
-    style(SubtitleSize::Medium, SubtitlePosition::TvScreen)
+    style(SubtitleSize::from_percent(100), SubtitlePosition::TvScreen)
 }
 
 #[test]
 fn restyle_applies_to_text_origin_tracks_of_equal_fonts_and_a_different_header_only() {
     let medium = text_source(1, 1, &no_cues_style(), &[]);
-    let large = text_source(1, 2, &style(SubtitleSize::Large, SubtitlePosition::TvScreen), &[]);
+    let large = text_source(1, 2, &style(SubtitleSize::from_percent(125), SubtitlePosition::TvScreen), &[]);
     assert!(restyles(&medium, &large), "a new size is a restyle");
     assert!(!restyles(&medium, &medium), "an equal header is the flush path, not a restyle");
     // Another seek's id does not matter: the renderer is kept by resources, not identity.
-    let seek = text_source(7, 1, &style(SubtitleSize::Large, SubtitlePosition::TvScreen), &[]);
+    let seek = text_source(7, 1, &style(SubtitleSize::from_percent(125), SubtitlePosition::TvScreen), &[]);
     assert!(restyles(&medium, &seek));
 
     let authored = |header: &'static [u8]| Source {
@@ -1318,12 +1318,12 @@ fn aligns_are_read_from_the_style_name_of_each_active_script_line() {
 #[test]
 fn renderer_settings_follow_the_origin_and_the_picks_it_carries() {
     assert_eq!(Origin::Authored.renderer_settings(), None);
-    for size in [SubtitleSize::Medium, SubtitleSize::Large] {
+    for size in [SubtitleSize::from_percent(100), SubtitleSize::from_percent(125)] {
         let picks = style(size, SubtitlePosition::TvScreen);
         assert_eq!(Origin::Text(picks).renderer_settings(), Some((text_style::line_spacing(picks.scale()), true)));
     }
     let spacing = |size| Origin::Text(style(size, SubtitlePosition::TvScreen)).renderer_settings().unwrap().0;
-    assert_ne!(spacing(SubtitleSize::Large), spacing(SubtitleSize::Medium));
+    assert_ne!(spacing(SubtitleSize::from_percent(125)), spacing(SubtitleSize::from_percent(100)));
 }
 
 #[test]
@@ -1347,7 +1347,7 @@ fn native_one_restyle_opens_no_new_renderer_and_renders_the_new_size_and_spacing
         style(size, position)
     };
     let mut engine = Engine::default();
-    let medium = pick(SubtitleSize::Medium, SubtitlePosition::TvScreen);
+    let medium = pick(SubtitleSize::from_percent(100), SubtitlePosition::TvScreen);
     let a = text_render(&mut engine, &text_source(1, 1, &medium, &one), 500);
     let a_ink = ink(&a.rects);
     assert_eq!(a_ink.bands.len(), 1);
@@ -1355,7 +1355,7 @@ fn native_one_restyle_opens_no_new_renderer_and_renders_the_new_size_and_spacing
     assert_eq!((opened.font_scans, opened.tracks), (1, 1));
 
     // Larger: the same renderer, a replaced track, a bigger letter.
-    let large = pick(SubtitleSize::Large, SubtitlePosition::TvScreen);
+    let large = pick(SubtitleSize::from_percent(125), SubtitlePosition::TvScreen);
     let b = text_render(&mut engine, &text_source(1, 2, &large, &one), 500);
     let b_ink = ink(&b.rects);
     let (a_h, b_h) = (a_ink.bands[0].1 - a_ink.bands[0].0 + 1, b_ink.bands[0].1 - b_ink.bands[0].0 + 1);
@@ -1371,7 +1371,7 @@ fn native_one_restyle_opens_no_new_renderer_and_renders_the_new_size_and_spacing
     );
 
     // A 180 px custom gap raises the baseline 120 px above the 60 px TV-screen gap.
-    let high = pick(SubtitleSize::Large, SubtitlePosition::Custom(180));
+    let high = pick(SubtitleSize::from_percent(125), SubtitlePosition::Custom(180));
     let c = text_render(&mut engine, &text_source(1, 3, &high, &one), 500);
     let c_ink = ink(&c.rects);
     assert!(
@@ -1391,7 +1391,7 @@ fn native_one_restyle_opens_no_new_renderer_and_renders_the_new_size_and_spacing
     assert_eq!((last.font_scans, last.tracks), (1, 4), "four tracks on one renderer");
 
     // Back to Medium: 48 px.
-    let again = pick(SubtitleSize::Medium, SubtitlePosition::TvScreen);
+    let again = pick(SubtitleSize::from_percent(100), SubtitlePosition::TvScreen);
     let e = text_render(&mut engine, &text_source(1, 5, &again, &two), 500);
     let e_ink = ink(&e.rects);
     assert_eq!(e_ink.bands.len(), 2);
@@ -1415,8 +1415,8 @@ fn native_a_fresh_open_of_a_text_track_has_the_line_spacing_of_its_own_size() {
         assert_eq!(bands.len(), 2, "two lines");
         bands[1].0 - bands[0].0
     };
-    let medium = style(SubtitleSize::Medium, SubtitlePosition::TvScreen);
-    let large = style(SubtitleSize::Large, SubtitlePosition::TvScreen);
+    let medium = style(SubtitleSize::from_percent(100), SubtitlePosition::TvScreen);
+    let large = style(SubtitleSize::from_percent(125), SubtitlePosition::TvScreen);
     let pitch = pitch_of(&mut Engine::default(), &medium, &medium);
     assert!((pitch - 48).abs() <= 1, "Medium opens at the 48 px pitch, got {pitch}");
     let pitch = pitch_of(&mut Engine::default(), &large, &large);
