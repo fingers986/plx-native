@@ -112,11 +112,14 @@ fn caption_geometry_for_block(
 ) -> (f32, f32, f32) {
     let scale = size_scale(size);
     let custom_adjust = BOTTOM_GAP - position_distance(position);
-    let rest = band.rest_limit(position);
+    let natural_baseline = SUB_BASE_Y - position_lift(position) + custom_adjust;
+    let baseline_before_section = if hud_up { natural_baseline.min(band.ceil_y) } else { natural_baseline };
+    let section_target = band.ceil_y - band.rise_for(position);
+    let requested_rise = (baseline_before_section - section_target).max(0.0);
     let rise = if hud_up {
-        HudBand::clear_rise(band.rise_for(position) + custom_adjust.max(0.0), rest, block_h)
+        HudBand::clear_rise(requested_rise, baseline_before_section, block_h)
     } else { 0.0 };
-    let baseline = (if hud_up { band.ceil_y } else { SUB_BASE_Y }) - position_lift(position) - rise + custom_adjust;
+    let baseline = baseline_before_section - rise;
     let floor = if hud_up { band.ceil_y } else { CAPTION_FLOOR_Y };
     (scale, baseline, floor)
 }
