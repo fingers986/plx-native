@@ -103,10 +103,8 @@ fn finding(cx: &LangCtx<'_>, band_top: f32, limit: f32, found: Option<(BandExten
 #[cfg(test)]
 pub(super) const INVALID: &[super::lint::testing::InvalidCase] = &[
     // classic with its whole block lifted 500 px (inset 13 -> 513): the control row's top, 792, becomes 292,
-    // above the highest top (about 304) a three-line caption at the largest size still fits under.
-    // A row whose top is above the bound has less than 600 px above it (the menus' `NEED_H`) however it got
-    // there, so its Audio and More menus leave the Above side and stop sharing an edge with the Subtitles one:
-    // the two `also` are that consequence (`lint_menus`, M4), not a second defect
+    // above the highest top (about 424) a three-line caption at the largest size still fits under. The
+    // resulting compact layout also puts Up Next below the screen; the second finding names that row.
     InvalidCase {
         name: "classic lifted: the control row's top is above the caption bound",
         code: "HUD-E1201",
@@ -115,10 +113,7 @@ pub(super) const INVALID: &[super::lint::testing::InvalidCase] = &[
         edits: &[(r#""inset": 13,"#, r#""inset": 513,"#)],
         langs: &[],
         skew: 0.0,
-        also: &[
-            ("HUD-E1303", "/layout/block/0/cells/1/segment/items/1"),
-            ("HUD-E1303", "/layout/block/0/cells/1/segment/items/2"),
-        ],
+        also: &[("HUD-E1102", "/layout/up_next")],
     },
     // classic under `band: "block"` with a 554 px title: the band is the top of ANY drawn extent, and the
     // title block (a 34 px kicker over a 554 px title, bottom-aligned in its band) now rises to y 268, above

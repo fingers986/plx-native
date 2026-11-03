@@ -405,6 +405,13 @@ mod tests {
         TextStyle { size, position }
     }
 
+    /// Distance an anchored bottom cue must rise so its deepest ink clears the HUD safe edge.
+    fn hud_rise(position: SubtitlePosition, band: HudBand, extra_below_anchor: f32) -> f32 {
+        let adjust = text_style::BOTTOM_GAP - text_style::position_distance(position);
+        let target = band.ceil_y + adjust.min(0.0);
+        text_style::bottom_anchor_y(position) + extra_below_anchor - target
+    }
+
     /// A one-line region whose bottom edge sits on the style's bottom anchor, `extra` px below
     /// the line (a descender).
     fn line_at(style: TextStyle, extra: i32) -> (i32, i32) {
@@ -436,8 +443,9 @@ mod tests {
                 let plain = line_at(style, 0);
                 let deep = line_at(style, 12);
                 let dys = dys_of(ass::Origin::Text(style), true, &[plain, deep], BOTTOM);
-                assert_eq!(dys, [-200.0, -200.0], "{position:?} {size:?}");
-                assert_eq!(HudBand::CLASSIC.lift, 200.0);
+                let expected = -hud_rise(position, HudBand::CLASSIC, 12.0);
+                assert_eq!(dys, [expected, expected], "{position:?} {size:?}");
+                assert_eq!(HudBand::CLASSIC.lift, 240.0);
             }
         }
     }
@@ -454,7 +462,8 @@ mod tests {
                 let regions = [line_at(style, 0), line_at(style, 12)];
                 let classic = dys_in(HudBand::CLASSIC, text(style), true, &regions, BOTTOM);
                 let moved = dys_in(band, text(style), true, &regions, BOTTOM);
-                assert_eq!(moved, [-band.lift, -band.lift], "{position:?} {size:?}");
+                let expected = -hud_rise(position, band, 12.0);
+                assert_eq!(moved, [expected, expected], "{position:?} {size:?}");
                 assert_eq!(classic[0] - moved[0], shift, "{position:?} {size:?}");
             }
         }
@@ -463,7 +472,7 @@ mod tests {
     /// The largest block at the highest position, three lines, as libass places it, lifted by the
     /// band's `lift`: where its top starts and where it ends up.
     fn lifted_libass_top(band: HudBand) -> (f32, f32) {
-        let style = style(SubtitleSize::Huge, SubtitlePosition::TvScreen);
+    let style = style(SubtitleSize::Huge, SubtitlePosition::TvScreen);
         let pitch = text_style::CAPTION_LINE_PITCH * style.scale();
         let height = text_style::CAPTION_ANCHOR_LINES as f32 * pitch;
         let top = text_style::bottom_anchor_y(style.position) - height;
@@ -482,7 +491,8 @@ mod tests {
         let bound = plx_appkit::player_hud::min_controls_top_y();
         for band in [HudBand::from_controls_top(bound), HudBand::from_controls_top(bound - 1.0)] {
             let (top, lifted) = lifted_libass_top(band);
-            assert_eq!(lifted, top - band.lift, "{band:?}: the rise is the band's lift");
+        let target = band.ceil_y + (text_style::BOTTOM_GAP - text_style::position_distance(style.position)).min(0.0);
+        assert_eq!(lifted, target - (text_style::CAPTION_ANCHOR_LINES as f32 * pitch), "{band:?}: the bottom clears the safe edge");
             assert_ne!(band.lift, HudBand::CLASSIC.lift);
             assert!(lifted >= plx_ui::consts::SAFE.y, "{band:?}: lifted top {lifted}");
         }
@@ -497,8 +507,8 @@ mod tests {
     #[test]
     fn a_bottom_cue_stands_on_the_limit_the_open_section_leaves() {
         let table = [
-            (668.0, [656.0, 620.0, 460.0]), // built-in Info
-            (684.0, [672.0, 620.0, 460.0]), // built-in Chapters
+            (668.0, [656.0, 656.0, 656.0]), // built-in Info
+            (684.0, [672.0, 672.0, 672.0]), // built-in Chapters
         ];
         for (top, limits) in table {
             let band = HudBand::CLASSIC.with_rise(HudBand::CLASSIC.rise_to_clear(top));
@@ -525,7 +535,7 @@ mod tests {
         let (y, h) = line_at(style, 0);
         let regions = [(y - h, h), (y, h), (100, 48)];
         let dys = dys_in(band, text(style), true, &regions, TOP_AND_BOTTOM);
-        assert_eq!(dys, [-324.0, -324.0, 0.0], "the two lines of the block move together, the top sign stays");
+        assert_eq!(dys, [-367.0, -367.0, 0.0], "the two lines of the block move together, the top sign stays");
     }
 
     /// Where the lifted block's top would cross the safe area the rise stops: the block overlaps the section.
@@ -568,7 +578,7 @@ mod tests {
         let pitch = 72;
         let bottom = text_style::bottom_anchor_y(style.position) as i32;
         let region = (bottom - 4 * pitch, 4 * pitch);
-        assert_eq!(dys_of(ass::Origin::Text(style), true, &[region], BOTTOM), [-200.0]);
+                assert_eq!(dys_of(ass::Origin::Text(style), true, &[region], BOTTOM), [-hud_rise(style.position, HudBand::CLASSIC, 0.0)]);
     }
 
     #[test]
@@ -591,7 +601,7 @@ mod tests {
                 let bottom_cue = line_at(style, 12);
                 assert_eq!(
                     dys_of(text(style), true, &[top_cue, bottom_cue], TOP_AND_BOTTOM),
-                    [0.0, -200.0],
+                    [0.0, -hud_rise(position, HudBand::CLASSIC, 12.0)],
                     "{position:?} {size:?}"
                 );
             }
@@ -623,7 +633,7 @@ mod tests {
         regions.extend((1..=4).rev().map(|n| (bottom - n * pitch, pitch)));
         assert_eq!(
             dys_of(text(style), true, &regions, TOP_AND_BOTTOM),
-            [0.0, -200.0, -200.0, -200.0, -200.0]
+            [0.0, -hud_rise(style.position, HudBand::CLASSIC, 0.0), -hud_rise(style.position, HudBand::CLASSIC, 0.0), -hud_rise(style.position, HudBand::CLASSIC, 0.0), -hud_rise(style.position, HudBand::CLASSIC, 0.0)]
         );
     }
 
@@ -640,7 +650,7 @@ mod tests {
                     &[(100, 48), (450, 48), line_at(style, 12)],
                     UNKNOWN_ALIGNS,
                 );
-                assert_eq!(dys, [0.0, 0.0, -200.0], "{position:?} {size:?}");
+                assert_eq!(dys, [0.0, 0.0, -hud_rise(position, HudBand::CLASSIC, 12.0)], "{position:?} {size:?}");
             }
         }
     }
@@ -657,7 +667,7 @@ mod tests {
         // The top region does not move under the unknown set.
         let style = TextStyle::default();
         let regions = [(100, 48), line_at(style, 0)];
-        assert_eq!(dys_of(text(style), true, &regions, UNKNOWN_ALIGNS), [0.0, -200.0]);
+        assert_eq!(dys_of(text(style), true, &regions, UNKNOWN_ALIGNS), [0.0, -hud_rise(style.position, HudBand::CLASSIC, 0.0)]);
     }
 
     #[test]

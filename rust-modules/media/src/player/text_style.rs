@@ -448,15 +448,17 @@ mod tests {
     }
 
     #[test]
-    fn today_baseline_is_the_old_geometry() {
+    fn today_baseline_matches_the_selected_distance_and_hud_clearance() {
         for position in SubtitlePosition::LADDER {
             let lift = position_lift(position);
+            let adjust = BOTTOM_GAP - position_distance(position);
             let down = today_baseline(position, 1.0, false, HudBand::CLASSIC);
-            assert_eq!((down.baseline, down.floor), (1020.0 - lift, 1026.0));
+            assert_eq!((down.baseline, down.floor), (1020.0 - lift + adjust, 1026.0));
             let up = today_baseline(position, 1.0, true, HudBand::CLASSIC);
-            assert_eq!((up.baseline, up.floor), (780.0 - lift, 780.0));
-            // The HUD moves the baseline by the same band lift at every position.
-            assert_eq!(down.baseline - up.baseline, HudBand::CLASSIC.lift);
+            assert_eq!((up.baseline, up.floor), (780.0 - lift + adjust.min(0.0), 780.0));
+            // A distance below the default gets an extra rise while the HUD is visible.
+            assert_eq!(down.baseline - up.baseline,
+                HudBand::CLASSIC.lift + adjust.max(0.0) - adjust.min(0.0));
         }
     }
 

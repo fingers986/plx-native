@@ -7391,7 +7391,7 @@ mod classic_placement_tests {
             [
                 ("audio root (3 dubs)", [1824.0, 764.0, 468.0, 356.0]),
                 ("subtitles root (3 dubs)", [1824.0, 764.0, 447.0, 488.0]),
-                ("style page (3 dubs)", [1824.0, 764.0, 440.0, 296.0]),
+                ("style page (3 dubs)", [1824.0, 764.0, 450.0, 296.0]),
             ],
         );
     }

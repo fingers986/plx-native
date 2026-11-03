@@ -1444,7 +1444,7 @@ fn a_block_too_tall_for_any_step_keeps_all_its_lines() {
 /// capsule.
 #[test]
 fn the_capsule_edge_is_fixed_and_a_taller_block_grows_away_from_it() {
-    assert_eq!(CAPSULE_BOTTOM_Y, 836.0);
+    assert_eq!(CAPSULE_BOTTOM_Y, 876.0);
     for n in [1usize, 3, 6] {
         let lay = caption_layout(n, 1.0, SUB_BASE_Y, CAPTION_FLOOR_Y);
         assert!(

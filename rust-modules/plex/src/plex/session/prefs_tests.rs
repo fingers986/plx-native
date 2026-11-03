@@ -335,9 +335,9 @@ fn garbage_fixtures() -> Vec<(&'static str, Vec<Value>)> {
         ("subtitle_tone", generic()),
         ("subtitle_size", generic()),
         ("subtitle_position", generic()),
-        ("subtitle_custom_distance", generic()),
-        ("subtitle_video_frame_distance", generic()),
-        ("subtitle_tv_screen_distance", generic()),
+        ("subtitle_custom_distance", soft_distance_garbage()),
+        ("subtitle_video_frame_distance", soft_distance_garbage()),
+        ("subtitle_tv_screen_distance", soft_distance_garbage()),
         ("hdr_overlay_brightness", generic()),
         ("next_episode_mode", generic()),
         ("skip_interval", generic()),
@@ -362,6 +362,10 @@ fn garbage_fixtures() -> Vec<(&'static str, Vec<Value>)> {
         ("subtitle_offsets", not_a_list()),
         ("profile_prefs", not_a_list()),
     ]
+}
+
+fn soft_distance_garbage() -> Vec<Value> {
+    vec![Value::Null, json!("zzz-not-a-distance"), json!(true), json!([1, "x"]), json!({"unexpected": 1})]
 }
 
 fn not_a_bool() -> Vec<Value> {

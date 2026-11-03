@@ -137,7 +137,7 @@ impl OverlayKind {
             OverlayKind::Tracks { .. } => "menu",
             OverlayKind::More { .. } => "more",
             OverlayKind::Timing => "timing",
-            OverlayKind::CustomDistance { .. } => "subtitle-distance",
+            OverlayKind::CustomDistance { .. } => "subtitle_distance",
         }
     }
 
