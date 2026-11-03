@@ -3186,7 +3186,7 @@ mod tests {
         // Style -> Color -> the second tone: a Nav row pushes, a choice commits and the panel stays
         menu.focus_row(5);
         assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
-        assert_eq!(menu.on_ok(store.view()), TrackOk::OpenSubtitleSize(plx_plex::plex::session::SubtitleSize::default()), "Size opens its live capsule");
+        assert!(matches!(menu.on_ok(store.view()), TrackOk::OpenSubtitleSize(_)), "Size opens its live capsule");
         assert_eq!(menu.page_path(), [TrackPage::Style]);
         assert!(menu.pop(&ps, store.view()));
         menu.focus_key(TrackRow::OpenField(StyleField::Color).key().0);

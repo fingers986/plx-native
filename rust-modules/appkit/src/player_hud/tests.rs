@@ -1343,8 +1343,8 @@ fn image_sub_lift_follows_the_band() {
 
 /// **`min_controls_top_y`**: the highest row top for which the largest block (three lines at the
 /// largest size, the highest position) is still inside `SAFE`. The number is computed, not
-/// estimated: 54 (SAFE top) + 3 x 48 x 1.65 (block) + 120 (extra 180 px anchor gap) + 12 (clearance) = 423.6, up
-/// to the whole pixel 424. A band exactly there keeps the block on screen through
+/// estimated: 54 (SAFE top) + 3 x 48 x 1.8 (block) + 120 (extra 180 px anchor gap) + 12 (clearance) = 445.2, up
+/// to the whole pixel 446. A band exactly there keeps the block on screen through
 /// `caption_geometry_for` and `hud_lift`; one px higher does not.
 #[test]
 fn min_controls_top_y_is_where_the_largest_block_just_fits() {
@@ -1352,7 +1352,7 @@ fn min_controls_top_y_is_where_the_largest_block_just_fits() {
     let bound = min_controls_top_y();
     assert_eq!(bound, 446.0);
     assert!(bound <= HudBand::CLASSIC.controls_top_y, "classic's own row passes");
-    let (size, position) = (SubtitleSize::from_percent(165), SubtitlePosition::Custom(180));
+    let (size, position) = (SubtitleSize::from_percent(180), SubtitlePosition::Custom(180));
     let top_of_block = |band: HudBand| {
         let (scale, baseline, floor) = caption_geometry_for(size, position, true, band);
         caption_layout(CAPTION_ANCHOR_LINES, scale, baseline, floor).top

@@ -115,13 +115,13 @@ pub(super) const INVALID: &[super::lint::testing::InvalidCase] = &[
         skew: 0.0,
         also: &[("HUD-E1102", "/layout/up_next")],
     },
-    // A leading above the parser's 400 px limit is rejected at its source before layout lint runs.
+    // classic under `band: "block"`: a valid but tall title reaches above the Up Next extent.
     InvalidCase {
-        name: "classic with a block band and a title leading above the limit",
-        code: "HUD-E0105",
-        pointer: "/layout/block/0/cells/0/vstack/cells/1/text/leading",
+        name: "classic with a block band and a tall title: a text rises above the caption bound",
+        code: "HUD-E1201",
+        pointer: "/layout/block/0/cells/0/vstack/cells/0/text",
         base: Base::Classic,
-        edits: &[(r#""band": "controls","#, r#""band": "block","#), (r#""leading": 54,"#, r#""leading": 554,"#)],
+        edits: &[(r#""band": "controls","#, r#""band": "block","#), (r#""leading": 54,"#, r#""leading": 400,"#)],
         langs: &[],
         skew: 0.0,
         also: &[],

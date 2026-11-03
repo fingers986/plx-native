@@ -729,6 +729,7 @@ fn the_replay_canon_includes_the_page_path_and_return_ids() {
     let root = fp(&page);
     assert_eq!(root, fp(&PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 })));
     open_row(&mut page, TrackRow::Style);
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: TrackRow::OpenField(StyleField::Color).key().0 }, by: By::Dir });
     let style = fp(&page);
     assert_ne!(style, root, "a pushed page is not the root");
     open_row(&mut page, TrackRow::OpenField(StyleField::Color));
