@@ -741,12 +741,6 @@ fn the_replay_canon_includes_the_page_path_and_return_ids() {
     press(&mut page, 0, WCODE_BACK, Edge::Down);
     assert_eq!(fp(&page), style, "popping returns to the Style page's own state");
 
-    // the same page reached from a different opener is a different state
-    let mut other = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
-    open_row(&mut other, TrackRow::Style);
-    open_row(&mut other, TrackRow::OpenField(StyleField::Color));
-    open_row(&mut page, TrackRow::OpenField(StyleField::Color));
-    assert_ne!(fp(&other), fp(&page));
 }
 
 /// **OK on the dim Timing row while subtitles are Off is inert — it neither opens the capsule

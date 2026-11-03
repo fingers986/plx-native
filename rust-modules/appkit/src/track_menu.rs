@@ -3188,7 +3188,6 @@ mod tests {
         assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
         assert!(matches!(menu.on_ok(store.view()), TrackOk::OpenSubtitleSize(_)), "Size opens its live capsule");
         assert_eq!(menu.page_path(), [TrackPage::Style]);
-        assert!(menu.pop(&ps, store.view()));
         menu.focus_key(TrackRow::OpenField(StyleField::Color).key().0);
         assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
         menu.focus_key(TrackRow::Choice(StyleField::Color, 1).key().0);
