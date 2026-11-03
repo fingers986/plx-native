@@ -163,7 +163,13 @@ pub const INTER_BOLD_HHEA_ASCENT_EM: f32 = 1984.0 / 2048.0;
 
 /// The face-size multiplier for the viewer's Settings > Playback size pick.
 pub fn size_scale(size: SubtitleSize) -> f32 {
-    size.percent() as f32 / 100.0
+    match size {
+        SubtitleSize::Small => 0.78,
+        SubtitleSize::Medium => 1.0,
+        SubtitleSize::Large => 1.25,
+        SubtitleSize::ExtraLarge => 1.5,
+        SubtitleSize::Huge => 1.65,
+    }
 }
 
 /// Both anchor modes use the same bottom gap; the video-frame offset is applied using the viewport.
@@ -221,7 +227,7 @@ pub struct TextStyle {
 
 impl Default for TextStyle {
     fn default() -> Self {
-        Self { size: SubtitleSize::from_percent(100), position: SubtitlePosition::TvScreen,
+        Self { size: SubtitleSize::Medium, position: SubtitlePosition::TvScreen,
         }
     }
 }
@@ -517,6 +523,6 @@ mod tests {
             }
         }
         assert_eq!(seen.len(), 15);
-        assert_eq!(TextStyle::default().generation(), TextStyle { size: SubtitleSize::from_percent(100), position: SubtitlePosition::TvScreen }.generation());
+        assert_eq!(TextStyle::default().generation(), TextStyle { size: SubtitleSize::Medium, position: SubtitlePosition::TvScreen }.generation());
     }
 }

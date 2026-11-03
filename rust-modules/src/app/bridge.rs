@@ -3801,8 +3801,7 @@ pub(crate) fn open_player_overlay(
     }
     d.nav.next_style = match kind {
         plx_screens::player::overlay::OverlayKind::Timing
-        | plx_screens::player::overlay::OverlayKind::CustomDistance { .. }
-        | plx_screens::player::overlay::OverlayKind::SubtitleSize { .. } => Style::PlayerCapsule,
+        | plx_screens::player::overlay::OverlayKind::CustomDistance { .. } => Style::PlayerCapsule,
         _ => Style::PlayerPanel {
             survives_failure: kind.survives_failure(),
         },

@@ -106,7 +106,7 @@ fn every_marker_names_its_own_field() {
     check_row::<QualityPref>(PlaybackQuality::P720);
     check_row::<DirectPlayModePref>(DirectPlayMode::Forced);
     check_row::<SubtitleTonePref>(SubtitleTone::Grey);
-    check_row::<SubtitleSizePref>(SubtitleSize::from_percent(125));
+    check_row::<SubtitleSizePref>(SubtitleSize::Large);
     check_row::<SubtitlePositionPref>(SubtitlePosition::VideoFrame);
     check_row::<HdrOverlayBrightnessPref>(HdrOverlayBrightness::Half);
     check_row::<NextEpisodeModePref>(NextEpisodeMode::Off);
@@ -471,7 +471,7 @@ fn modelled_keys_never_reach_extensions_and_future_keys_still_do() {
     }))
     .unwrap();
     assert_eq!(canonical.prefs.deck_press, DeckPress::Play);
-    assert_eq!(canonical.prefs.subtitle_size, SubtitleSize::from_percent(125));
+    assert_eq!(canonical.prefs.subtitle_size, SubtitleSize::Large);
     assert_eq!(canonical.prefs.playback_quality, Some(PlaybackQuality::Auto));
     assert_eq!(canonical.extensions.keys().map(String::as_str).collect::<Vec<_>>(), ["a_future_key"]);
     let legacy: Session = serde_json::from_value(json!({

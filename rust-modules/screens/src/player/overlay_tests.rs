@@ -1124,8 +1124,7 @@ fn every_kind_is_listed_once() {
         OverlayKind::Tracks { .. }
         | OverlayKind::More { .. }
         | OverlayKind::Timing
-        | OverlayKind::CustomDistance { .. }
-        | OverlayKind::SubtitleSize { .. } => OverlayKind::ALL.iter().any(|a| a.slot() == k.slot()),
+        | OverlayKind::CustomDistance { .. } => OverlayKind::ALL.iter().any(|a| a.slot() == k.slot()),
     };
     let mut slots: Vec<u8> = OverlayKind::ALL.iter().map(|k| k.slot()).collect();
     slots.sort_unstable();

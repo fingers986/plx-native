@@ -3891,8 +3891,7 @@ unsafe fn controlled_key_input(app: &mut App, event: plx_machine::machine::Input
             && matches!(
                 super::bridge::player_overlay_kind(&app.pages),
                 Some(plx_screens::player::overlay::OverlayKind::Timing
-                    | plx_screens::player::overlay::OverlayKind::CustomDistance { .. }
-                    | plx_screens::player::overlay::OverlayKind::SubtitleSize { .. })
+                    | plx_screens::player::overlay::OverlayKind::CustomDistance { .. })
             );
         if click_on_capsule {
             // A scroll/wiggle may have brought the pointer back while a capsule was open. The
@@ -4718,7 +4717,7 @@ mod lifecycle_regression_tests {
         let (size, position, tone) =
             (plx_media::route::subtitle_size(), plx_media::route::subtitle_position(), plx_media::player::subtitle_tone());
         let state = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Buffering);
-        plx_media::route::restore_subtitle_size(SubtitleSize::from_percent(125));
+        plx_media::route::restore_subtitle_size(SubtitleSize::Large);
         plx_media::route::restore_subtitle_position(SubtitlePosition::Custom(100));
         plx_media::route::set_player_subtitle_position_custom(100);
         plx_media::player::restore_subtitle_tone(SubtitleTone::Charcoal);
@@ -4755,7 +4754,7 @@ mod lifecycle_regression_tests {
         assert!(model.loading, "loading(ps): Buffering is a busy state");
         assert_eq!(model.sub_sel, 3, "desired_sub_idx()");
         assert_eq!(model.bitmap_key, None, "no image cue is stored, so none is active");
-        assert_eq!(model.sub_size, SubtitleSize::from_percent(125), "subtitle_size()");
+        assert_eq!(model.sub_size, SubtitleSize::Large, "subtitle_size()");
         assert_eq!(model.sub_position, SubtitlePosition::Custom(100), "subtitle_position()");
         assert_eq!(model.sub_tone, SubtitleTone::Charcoal, "subtitle_tone()");
         assert!((model.bitmap_by_key)(1).is_none(), "the lookup is the media function, over an empty store");

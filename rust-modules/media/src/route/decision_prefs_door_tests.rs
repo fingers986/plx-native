@@ -32,7 +32,7 @@ fn confirm_repick_of_the_current_value_writes_nothing_and_reports_saved() {
     assert!(set_deck_press(DeckPress::Play));
     assert!(set_default_quality(Quality::P720));
     let (tx, rx) = mpsc::channel();
-    select_subtitle_size(SubtitleSize::from_percent(125), Some(tx));
+    select_subtitle_size(SubtitleSize::Large, Some(tx));
     assert!(recv(&rx));
     let (tx, rx) = mpsc::channel();
     select_subtitle_position(SubtitlePosition::TvScreen, Some(tx));
@@ -47,7 +47,7 @@ fn confirm_repick_of_the_current_value_writes_nothing_and_reports_saved() {
         assert!(set_deck_press(DeckPress::Play), "deck press");
         assert!(set_default_quality(Quality::P720), "quality");
         let (tx, rx) = mpsc::channel();
-        select_subtitle_size(SubtitleSize::from_percent(125), Some(tx));
+        select_subtitle_size(SubtitleSize::Large, Some(tx));
         assert!(recv(&rx), "size reports saved");
         let (tx, rx) = mpsc::channel();
         select_subtitle_position(SubtitlePosition::TvScreen, Some(tx));

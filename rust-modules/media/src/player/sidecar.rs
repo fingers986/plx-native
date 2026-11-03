@@ -837,7 +837,7 @@ mod tests {
     /// Another pair of picks than `current`, in both size and position.
     fn other_picks(current: TextStyle) -> TextStyle {
         TextStyle {
-            size: if current.size == SubtitleSize::from_percent(125) { SubtitleSize::from_percent(80) } else { SubtitleSize::from_percent(125) },
+            size: if current.size == SubtitleSize::Large { SubtitleSize::Small } else { SubtitleSize::Large },
             position: if current.position == SubtitlePosition::TvScreen { SubtitlePosition::VideoFrame } else { SubtitlePosition::TvScreen },
         }
     }

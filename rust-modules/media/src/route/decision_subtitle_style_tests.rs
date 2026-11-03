@@ -28,14 +28,14 @@ fn select_publishes_the_live_value_before_the_write_and_persists_it() {
     let session = plx_plex::plex::session::TempSession::new("select-style");
     sign_in(&session);
     let _restore = Restore(subtitle_size(), subtitle_position());
-    restore_subtitle_size(SubtitleSize::from_percent(100));
+    restore_subtitle_size(SubtitleSize::Medium);
     restore_subtitle_position(SubtitlePosition::TvScreen);
 
     let (tx, rx) = mpsc::channel();
-    select_subtitle_size(SubtitleSize::from_percent(125), Some(tx));
-    assert_eq!(subtitle_size(), SubtitleSize::from_percent(125), "published synchronously, ahead of the worker");
+    select_subtitle_size(SubtitleSize::Large, Some(tx));
+    assert_eq!(subtitle_size(), SubtitleSize::Large, "published synchronously, ahead of the worker");
     assert!(recv(&rx), "a writable session is durable");
-    assert_eq!(picked::<SubtitleSizePref>(), Some(SubtitleSize::from_percent(125)));
+    assert_eq!(picked::<SubtitleSizePref>(), Some(SubtitleSize::Large));
 
     let (tx, rx) = mpsc::channel();
     select_subtitle_position(SubtitlePosition::TvScreen, Some(tx));
@@ -53,13 +53,13 @@ fn select_never_republishes_when_the_write_completes() {
     let session = plx_plex::plex::session::TempSession::new("select-no-republish");
     sign_in(&session);
     let _restore = Restore(subtitle_size(), subtitle_position());
-    restore_subtitle_size(SubtitleSize::from_percent(100));
+    restore_subtitle_size(SubtitleSize::Medium);
 
     let (tx, rx) = mpsc::channel();
-    select_subtitle_size(SubtitleSize::from_percent(125), Some(tx));
-    restore_subtitle_size(SubtitleSize::from_percent(80)); // a newer pick, made before the worker answers
+    select_subtitle_size(SubtitleSize::Large, Some(tx));
+    restore_subtitle_size(SubtitleSize::Small); // a newer pick, made before the worker answers
     assert!(recv(&rx));
-    assert_eq!(subtitle_size(), SubtitleSize::from_percent(80), "the completed write left the live value alone");
+    assert_eq!(subtitle_size(), SubtitleSize::Small, "the completed write left the live value alone");
 }
 
 /// **A failed write claims nothing**: the reply says `false` and the live value the viewer picked
@@ -70,7 +70,7 @@ fn select_reports_a_failed_write_and_keeps_the_live_value() {
     let session = plx_plex::plex::session::TempSession::new("select-failed");
     sign_in(&session);
     let _restore = Restore(subtitle_size(), subtitle_position());
-    restore_subtitle_size(SubtitleSize::from_percent(100));
+    restore_subtitle_size(SubtitleSize::Medium);
     // the session file's parent is a regular file, so no write can land
     let dir = std::env::temp_dir().join(format!("plxnative-select-blocked-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -79,9 +79,9 @@ fn select_reports_a_failed_write_and_keeps_the_live_value() {
     plx_plex::plex::session::redirect_for_test(Some(dir.join("blocker").join("auth.json")));
 
     let (tx, rx) = mpsc::channel();
-    select_subtitle_size(SubtitleSize::from_percent(150), Some(tx));
+    select_subtitle_size(SubtitleSize::ExtraLarge, Some(tx));
     assert!(!recv(&rx), "an unwritable session is not durable");
-    assert_eq!(subtitle_size(), SubtitleSize::from_percent(150), "the live pick stands");
+    assert_eq!(subtitle_size(), SubtitleSize::ExtraLarge, "the live pick stands");
     plx_plex::plex::session::redirect_for_test(None);
     let _ = std::fs::remove_dir_all(&dir);
     drop(session);

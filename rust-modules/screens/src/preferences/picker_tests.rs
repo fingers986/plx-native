@@ -193,7 +193,7 @@ fn the_subtitle_pickers_write_locally_and_pop_on_the_receipt() {
     let _serial = plx_base::testlock::serial();
     let _session = plx_plex::plex::session::TempSession::new("picker-subtitle-local");
     let (size, position) = (plx_media::route::subtitle_size(), plx_media::route::subtitle_position());
-    plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::from_percent(100));
+    plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Medium);
     plx_media::route::restore_subtitle_position(plx_media::route::SubtitlePosition::TvScreen);
     let mut page = PickerPage::new(EntryId(0), PickerKind::SubtitleSize);
     let checked = page.state.checked;
@@ -236,10 +236,10 @@ fn the_size_picker_moves_its_checkmark_when_the_live_value_is_published() {
     let _serial = plx_base::testlock::serial();
     let _session = plx_plex::plex::session::TempSession::new("picker-optimistic-check");
     let (size, position) = (plx_media::route::subtitle_size(), plx_media::route::subtitle_position());
-    plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::from_percent(100));
+    plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Medium);
     let mut page = PickerPage::new(EntryId(0), PickerKind::SubtitleSize);
     let before = page.state.checked;
-    plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::from_percent(125));
+    plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Large);
     drive(&mut page, tick(), before);
     assert_ne!(page.state.checked, before, "the checked option follows the published value");
     plx_media::route::restore_subtitle_size(size);
@@ -253,7 +253,7 @@ fn ok_on_the_checked_size_after_a_failed_write_retries_the_write() {
     let _serial = plx_base::testlock::serial();
     let _session = plx_plex::plex::session::TempSession::new("picker-size-retry");
     let (size, position) = (plx_media::route::subtitle_size(), plx_media::route::subtitle_position());
-    plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::from_percent(100));
+    plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Medium);
     let mut page = PickerPage::new(EntryId(0), PickerKind::SubtitleSize);
     let other = if page.state.checked == 0 { 1 } else { 0 };
     let emitted = drive(&mut page, ScreenEvent::Activate(other), other);
@@ -288,12 +288,12 @@ fn ok_on_checked_profile_size_pops() {
     let stamp = session.seated("kid", "picker-account");
     assert!(plx_plex::plex::session::update(|cur| {
         let mut next = cur.clone();
-        put_own::<SubtitleSizePref>(&mut next.prefs.profile_prefs, "kid", &stamp, plx_media::route::SubtitleSize::from_percent(125));
+        put_own::<SubtitleSizePref>(&mut next.prefs.profile_prefs, "kid", &stamp, plx_media::route::SubtitleSize::Large);
         Some(next)
     }));
-    assert_eq!(plx_plex::plex::session::peek().subtitle_size(), plx_media::route::SubtitleSize::from_percent(100),
+    assert_eq!(plx_plex::plex::session::peek().subtitle_size(), plx_media::route::SubtitleSize::Medium,
         "the legacy key says Medium");
-    plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::from_percent(125));
+    plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Large);
 
     let mut page = PickerPage::new(EntryId(0), PickerKind::SubtitleSize);
     let checked = page.state.checked;
