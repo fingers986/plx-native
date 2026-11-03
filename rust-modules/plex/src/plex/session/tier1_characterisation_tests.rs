@@ -323,7 +323,7 @@ fn new_build_preferences(base: &Value, malformed: bool) -> Value {
         object.insert("track_memory".into(), serde_json::json!([1, "two", null]));
     } else {
         object.insert("profile_prefs".into(), serde_json::json!({
-            "u-7": {"subtitle_size": "large", "skip_interval": "30s"}}));
+            "u-7": {"subtitle_size": 125, "skip_interval": "30s"}}));
         object.insert("track_memory".into(), serde_json::json!({
             "version": 1, "profiles": {"u-7": {"show:rk-9": {"audio": "eng", "subtitle": "off"}}}}));
     }

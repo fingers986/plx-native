@@ -82,18 +82,18 @@ fn nothing_picked_serializes_to_no_key() {
     assert_eq!(serde_json::to_value(ProfilePrefs::default()).unwrap(), json!({}));
     let v = serde_json::to_value(Preferences::default()).unwrap();
     assert!(v.get("profile_prefs").is_none(), "an empty list is not written");
-    let p = prefs_with(json!([record("kid", STAMP, json!({ "subtitle_size": "large" }))]));
+    let p = prefs_with(json!([record("kid", STAMP, json!({ "subtitle_size": 125 }))]));
     let v = serde_json::to_value(&p).unwrap();
-    assert_eq!(v["profile_prefs"], json!([{ "user": "kid", "account": STAMP, "prefs": { "subtitle_size": "large" } }]));
+    assert_eq!(v["profile_prefs"], json!([{ "user": "kid", "account": STAMP, "prefs": { "subtitle_size": 125 } }]));
 }
 
 /// **No `extensions`**: a field a later build adds is not carried by this one. A modelled field
 /// round-trips; an unknown one is dropped (the tier-2 case the plan does not promise).
 #[test]
 fn an_unknown_field_of_a_record_is_not_carried() {
-    let p = prefs_with(json!([record("kid", STAMP, json!({ "subtitle_size": "large", "future_setting": 7 }))]));
+    let p = prefs_with(json!([record("kid", STAMP, json!({ "subtitle_size": 125, "future_setting": 7 }))]));
     let v = serde_json::to_value(&p).unwrap();
-    assert_eq!(v["profile_prefs"][0]["prefs"], json!({ "subtitle_size": "large" }));
+    assert_eq!(v["profile_prefs"][0]["prefs"], json!({ "subtitle_size": 125 }));
 }
 
 /// **P-d4.** A garbage own value is "no value of its own", which reads the LEGACY value, not the
@@ -133,10 +133,10 @@ fn an_unknown_size_falls_back_and_huge_round_trips() {
     let install: Preferences = serde_json::from_value(json!({ "subtitle_size": "gigantic" })).unwrap();
     assert_eq!(SubtitleSizePref::get(&install), SubtitleSize::from_percent(100));
 
-    let p = prefs_with(json!([record("kid", STAMP, json!({ "subtitle_size": "huge" }))]));
+    let p = prefs_with(json!([record("kid", STAMP, json!({ "subtitle_size": 165 }))]));
     assert_eq!(effective::<SubtitleSizePref>(&legacy, own_prefs(&p.profile_prefs, "kid", STAMP)), SubtitleSize::from_percent(165));
-    assert_eq!(serde_json::to_value(&p).unwrap()["profile_prefs"][0]["prefs"], json!({ "subtitle_size": "huge" }));
-    let install: Preferences = serde_json::from_value(json!({ "subtitle_size": "huge" })).unwrap();
+    assert_eq!(serde_json::to_value(&p).unwrap()["profile_prefs"][0]["prefs"], json!({ "subtitle_size": 165 }));
+    let install: Preferences = serde_json::from_value(json!({ "subtitle_size": 165 })).unwrap();
     assert_eq!(SubtitleSizePref::get(&install), SubtitleSize::from_percent(165));
 }
 
@@ -145,9 +145,9 @@ fn an_unknown_size_falls_back_and_huge_round_trips() {
 fn a_malformed_record_costs_only_itself() {
     let p = prefs_with(json!([
         7,
-        { "user": "kid", "account": 5, "prefs": { "subtitle_size": "large" } },
+        { "user": "kid", "account": 5, "prefs": { "subtitle_size": 125 } },
         { "user": "kid2", "account": STAMP, "prefs": "junk" },
-        record("kid3", STAMP, json!({ "subtitle_size": "small" })),
+        record("kid3", STAMP, json!({ "subtitle_size": 80 })),
     ]));
     assert!(own_prefs(&p.profile_prefs, "kid3", STAMP).is_some_and(|o| o.subtitle_size == Some(SubtitleSize::from_percent(80))));
     assert!(own_prefs(&p.profile_prefs, "kid", STAMP).is_none(), "a non-string stamp binds to no account");
@@ -170,7 +170,7 @@ fn own_value_then_legacy_then_default() {
     SubtitleSizePref::put(&mut tv.prefs, SubtitleSize::from_percent(125));
     assert_eq!(stored_effective::<SubtitleSizePref>(&tv, &seat), SubtitleSize::from_percent(125), "a profile with no record reads the TV's value");
 
-    tv.prefs.profile_prefs = prefs_with(json!([record("kid", STAMP, json!({ "subtitle_size": "small" }))])).profile_prefs;
+    tv.prefs.profile_prefs = prefs_with(json!([record("kid", STAMP, json!({ "subtitle_size": 80 }))])).profile_prefs;
     assert_eq!(stored_effective::<SubtitleSizePref>(&tv, &seat), SubtitleSize::from_percent(80), "its own value wins");
     assert_eq!(stored_effective::<SubtitlePositionPref>(&tv, &seat), SubtitlePosition::TvScreen, "an unpicked setting still falls back");
     let other = Seat::Seated { user: "sibling".into(), stamp: STAMP.into() };
@@ -185,9 +185,9 @@ fn own_value_then_legacy_then_default() {
 fn a_record_is_visible_only_under_its_own_non_empty_stamp() {
     let mut tv = Session::default();
     tv.prefs.profile_prefs = prefs_with(json!([
-        record("", STAMP, json!({ "subtitle_size": "small" })),
-        record("", OTHER_STAMP, json!({ "subtitle_size": "extra_large" })),
-        record("kid", "", json!({ "subtitle_size": "large" })),
+        record("", STAMP, json!({ "subtitle_size": 80 })),
+        record("", OTHER_STAMP, json!({ "subtitle_size": 150 })),
+        record("kid", "", json!({ "subtitle_size": 125 })),
     ]))
     .profile_prefs;
     let owner = |stamp: &str| Seat::Seated { user: String::new(), stamp: stamp.into() };

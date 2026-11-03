@@ -840,7 +840,7 @@ fn a_preference_returned_to_its_default_is_not_resurrected_by_the_public_rewrite
     };
     commit_fresh(&session, &mut transport);
     let stored = stored_preferences(&mut transport);
-    assert_eq!(stored["subtitle_size"], "large");
+    assert_eq!(stored["subtitle_size"], 125);
 
     let back = Session {
         prefs: Preferences {

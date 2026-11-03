@@ -172,12 +172,12 @@ fn the_field_list_rereads_a_subtitle_look_picked_elsewhere() {
     let mut parent = PreferencesPage::new(EntryId(0), Kind::Playback);
     let size_row = parent.form.index_of(&RowId::Field(PickerKind::SubtitleSize)).unwrap();
     let position_row = parent.form.index_of(&RowId::Field(PickerKind::SubtitlePosition)).unwrap();
-    assert_eq!(parent.state.values[size_row], plx_platform::i18n::msg::settings_playback_subtitle_size_medium());
+    assert_eq!(parent.state.values[size_row], "100%");
 
     plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::from_percent(125));
     plx_media::route::restore_subtitle_position(plx_media::route::SubtitlePosition::TvScreen);
     drive(&mut parent, tick(), 0);
-    assert_eq!(parent.state.values[size_row], plx_platform::i18n::msg::settings_playback_subtitle_size_large());
+    assert_eq!(parent.state.values[size_row], "125%");
     assert_eq!(parent.state.values[position_row], plx_platform::i18n::msg::settings_playback_subtitle_position_high());
     plx_media::route::restore_subtitle_size(size);
     plx_media::route::restore_subtitle_position(position);

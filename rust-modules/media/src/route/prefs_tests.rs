@@ -186,7 +186,7 @@ fn restore_profile_rows_unseated_reads_the_legacy_keys_and_never_an_own_value() 
     let _g = plx_base::testlock::serial();
     let _session = session::TempSession::new("restore-unseated");
     let _restore = Put::back(cells());
-    let own = vec![picked("u1", &stamp(), serde_json::json!({"subtitle_size": "extra_large", "skip_interval": "60s"}))];
+    let own = vec![picked("u1", &stamp(), serde_json::json!({"subtitle_size": 150, "skip_interval": "60s"}))];
 
     scramble();
     restore(&record(stored_prefs(), own.clone()), &Seat::Unseated, Overrides::default());
@@ -220,10 +220,10 @@ fn restore_profile_rows_seated_reads_the_own_value_and_falls_back_per_setting() 
     let _session = session::TempSession::new("restore-seated");
     let _restore = Put::back(cells());
     let own = vec![
-        picked("u1", &stamp(), serde_json::json!({"subtitle_size": "extra_large", "skip_interval": "60s",
+        picked("u1", &stamp(), serde_json::json!({"subtitle_size": 150, "skip_interval": "60s",
             "trailer_autoplay": true})),
         picked("", &stamp(), serde_json::json!({"playback_quality": "480p_720_kbps"})),
-        picked("u3", "ffffffffffffffff", serde_json::json!({"subtitle_size": "small"})),
+        picked("u3", "ffffffffffffffff", serde_json::json!({"subtitle_size": 80})),
     ];
     let rec = record(stored_prefs(), own);
 

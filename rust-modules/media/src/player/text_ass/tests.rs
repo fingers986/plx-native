@@ -487,7 +487,7 @@ fn header_follows_the_viewers_size_and_position() {
     let an1 = h.lines().find(|l| l.starts_with("Style: An1,")).unwrap();
     assert!(an1.contains(",1,192,192,177,-1"), "{an1}");
     let small = header(&TextStyle { size: SubtitleSize::from_percent(80), position: SubtitlePosition::Custom(180) });
-    assert!(style_lines(&small)[0].contains(",40.16,"), "{}", style_lines(&small)[0]);
+    assert!(style_lines(&small)[0].contains(",41.19,"), "{}", style_lines(&small)[0]);
     assert!(style_lines(&small)[0].contains(",2,192,192,177,-1"));
 }
 

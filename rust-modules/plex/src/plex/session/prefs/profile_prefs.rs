@@ -8,7 +8,7 @@
 //!
 //! ```json
 //! "profile_prefs": [ { "user": "<home uuid, or \"\" for the account owner>", "account": "<grant::account_key>",
-//!                      "prefs": { "subtitle_size": "large", "playback_quality": "720p_4_mbps" } } ]
+//!                      "prefs": { "subtitle_size": 125, "playback_quality": "720p_4_mbps" } } ]
 //! ```
 //!
 //! * **The record is the profile's own value and nothing else.** A [`ProfilePrefs`] field is `None`

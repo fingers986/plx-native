@@ -115,14 +115,11 @@ pub(super) const INVALID: &[super::lint::testing::InvalidCase] = &[
         skew: 0.0,
         also: &[("HUD-E1102", "/layout/up_next")],
     },
-    // classic under `band: "block"` with a 554 px title: the band is the top of ANY drawn extent, and the
-    // title block (a 34 px kicker over a 554 px title, bottom-aligned in its band) now rises to y 268, above
-    // every language's Up Next still (about 550), while the control row stays at 792: only the kicker's text
-    // sets the band and is named
+    // A leading above the parser's 400 px limit is rejected at its source before layout lint runs.
     InvalidCase {
-        name: "classic with a block band and a tall title: a text rises above the caption bound",
-        code: "HUD-E1201",
-        pointer: "/layout/block/0/cells/0/vstack/cells/0/text",
+        name: "classic with a block band and a title leading above the limit",
+        code: "HUD-E0105",
+        pointer: "/layout/block/0/cells/0/vstack/cells/1/text/leading",
         base: Base::Classic,
         edits: &[(r#""band": "controls","#, r#""band": "block","#), (r#""leading": 54,"#, r#""leading": 554,"#)],
         langs: &[],

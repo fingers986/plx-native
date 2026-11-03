@@ -772,10 +772,10 @@ fn live_cell_indices_are_pinned() {
     assert_eq!(DeckPress::from_index(250), DeckPress::Details);
     for (size, index) in [
         (SubtitleSize::from_percent(80), 0),
-        (SubtitleSize::from_percent(100), 1),
-        (SubtitleSize::from_percent(125), 2),
-        (SubtitleSize::from_percent(150), 3),
-        (SubtitleSize::from_percent(165), 4),
+        (SubtitleSize::from_percent(100), 4),
+        (SubtitleSize::from_percent(125), 9),
+        (SubtitleSize::from_percent(150), 14),
+        (SubtitleSize::from_percent(165), 17),
     ] {
         restore_subtitle_size(size);
         assert_eq!(SUBTITLE_SIZE.raw(), index, "{size:?}");
@@ -860,7 +860,7 @@ fn unrestored_cells_hold_their_seeds() {
     assert_eq!(NEXT_EPISODE_MODE.raw(), 0);
     assert_eq!(SKIP_INTERVAL.raw(), 1);
     assert_eq!(DECK_PRESS.raw(), 0);
-    assert_eq!(SUBTITLE_SIZE.raw(), 1);
+    assert_eq!(SUBTITLE_SIZE.raw(), 4);
     assert_eq!(SUBTITLE_POSITION.raw(), 0);
     assert_eq!(QUALITY.raw(), 1);
     assert_eq!(quality(), Quality::Original);
