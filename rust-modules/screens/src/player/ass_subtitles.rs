@@ -496,7 +496,8 @@ mod tests {
             let height = text_style::CAPTION_ANCHOR_LINES as f32 * pitch;
             let target = band.ceil_y
                 + (text_style::BOTTOM_GAP - text_style::position_distance(style.position)).min(0.0);
-            // Match the integer region bounds passed to lift_dys.\n            let region_bottom = (top as i32 + height as i32) as f32;
+            // Match the integer region bounds passed to lift_dys.
+            let region_bottom = (top as i32 + height as i32) as f32;
             assert_eq!(lifted, top + target - region_bottom, "{band:?}: the bottom clears the safe edge");
             assert_ne!(band.lift, HudBand::CLASSIC.lift);
             assert!(lifted >= plx_ui::consts::SAFE.y, "{band:?}: lifted top {lifted}");
