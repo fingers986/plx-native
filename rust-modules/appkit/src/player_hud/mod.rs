@@ -113,7 +113,9 @@ fn caption_geometry_for_block(
     let scale = size_scale(size);
     let custom_adjust = BOTTOM_GAP - position_distance(position);
     let rest = band.rest_limit(position);
-    let rise = if hud_up { HudBand::clear_rise(band.rise_for(position), rest, block_h) } else { 0.0 };
+    let rise = if hud_up {
+        HudBand::clear_rise(band.rise_for(position) + custom_adjust.max(0.0), rest, block_h)
+    } else { 0.0 };
     let baseline = (if hud_up { band.ceil_y } else { SUB_BASE_Y }) - position_lift(position) - rise + custom_adjust;
     let floor = if hud_up { band.ceil_y } else { CAPTION_FLOOR_Y };
     (scale, baseline, floor)

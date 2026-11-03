@@ -291,8 +291,8 @@ fn lift_dys(
     let height = (moving_bottom(regions, dys).unwrap_or(top) - top) as f32;
     let bottom = moving_bottom(regions, dys).unwrap_or(top) as f32;
     let custom_adjust = text_style::BOTTOM_GAP - text_style::position_distance(style.position);
-    let hud_rise = if lift { (bottom + frame_offset_y - (band.ceil_y + custom_adjust)).max(0.0) } else { 0.0 };
-    let rest = band.rest_limit(position) + frame_offset_y - hud_rise;
+    let hud_rise = if lift { (bottom + frame_offset_y - (band.ceil_y + custom_adjust.min(0.0))).max(0.0) } else { 0.0 };
+    let rest = band.rest_limit(position) + frame_offset_y;
     let section_rise = (band.rise_for(position) + frame_offset_y).max(0.0);
     let rise = if lift { HudBand::clear_rise(section_rise, rest, height) } else { 0.0 };
     let shift = (frame_offset_y - hud_rise - rise).max(-top.max(0) as f32);

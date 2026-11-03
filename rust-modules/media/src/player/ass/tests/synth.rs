@@ -439,7 +439,7 @@ fn native_hud_up_deep_marks_clear_the_transport_controls() {
                     ("Arabic descenders", "ليج جحخ عغ ڤ"),
                 ] {
                     let depth = ink_bottom(&text_frame(&picks, &[cue(text)]));
-                    let lifted = depth as f32 - band.lift;
+                    let lifted = depth as f32 - band.lift - (text_style::BOTTOM_GAP - text_style::position_distance(position)).max(0.0);
                     assert!(
                         lifted <= band.controls_top_y,
                         "{script} {size:?} {position:?}: lifted ink ends at {lifted}, controls start at {}",

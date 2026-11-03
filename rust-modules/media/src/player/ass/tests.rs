@@ -1370,13 +1370,13 @@ fn native_one_restyle_opens_no_new_renderer_and_renders_the_new_size_and_spacing
         "the held renderer's track was replaced; no renderer was created and no face reopened"
     );
 
-    // Higher: the baseline moves up by the Position's lift (320 px), nothing else changes.
-    let high = pick(SubtitleSize::Large, SubtitlePosition::TvScreen);
+    // A 180 px custom gap raises the baseline 120 px above the 60 px TV-screen gap.
+    let high = pick(SubtitleSize::Large, SubtitlePosition::Custom(180));
     let c = text_render(&mut engine, &text_source(1, 3, &high, &one), 500);
     let c_ink = ink(&c.rects);
     assert!(
-        (b_ink.bands[0].1 - c_ink.bands[0].1 - 320).abs() <= 2,
-        "High lifts the baseline 320 px above Low: {} -> {}",
+        (b_ink.bands[0].1 - c_ink.bands[0].1 - 120).abs() <= 2,
+        "Custom 180 px lifts the baseline 120 px above the 60 px TV-screen gap: {} -> {}",
         b_ink.bands[0].1,
         c_ink.bands[0].1
     );

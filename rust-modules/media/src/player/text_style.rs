@@ -111,7 +111,7 @@ impl HudBand {
 
     /// P: where the HUD-up limit of `position` sits with no section open.
     pub fn rest_limit(&self, position: SubtitlePosition) -> f32 {
-        self.ceil_y - position_lift(position) + BOTTOM_GAP - position_distance(position)
+        self.ceil_y - position_lift(position) - (position_distance(position) - BOTTOM_GAP).max(0.0)
     }
 
     /// The rise of `position`'s limit, before the safe-area clamp ([`clear_rise`](Self::clear_rise)).
@@ -271,7 +271,9 @@ pub fn today_baseline(position: SubtitlePosition, scale: f32, hud_up: bool, band
 ) -> TodayBaseline {
     let custom_adjust = BOTTOM_GAP - position_distance(position);
     let rest = band.rest_limit(position);
-    let rise = if hud_up { HudBand::clear_rise(band.rise_for(position), rest, 0.0) } else { 0.0 };
+    let rise = if hud_up {
+        HudBand::clear_rise(band.rise_for(position) + custom_adjust.max(0.0), rest, 0.0)
+    } else { 0.0 };
     let baseline = (if hud_up { band.ceil_y } else { SUB_BASE_Y }) - position_lift(position) - rise + custom_adjust;
     let floor = if hud_up { band.ceil_y } else { CAPTION_FLOOR_Y };
     TodayBaseline { scale, baseline, floor,
