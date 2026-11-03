@@ -293,18 +293,13 @@ fn native_lines_wrap_at_the_wrap_width_for_every_size() {
             }
         }
         let simulated: Vec<f32> = texts.iter().map(|t| width_of(t)).collect();
-        // At larger font sizes libass's Unicode line breaker can choose a break one word before
-        // the pixel-width greedy model (which measures each whole candidate line independently).
-        // Bound that renderer/model difference by the widest single word while still checking
-        // that every actual line stays inside the fixed wrap band above.
-        let widest_word = PROSE.split(' ').map(width_of).fold(0.0_f32, f32::max);
         assert_eq!(simulated.len(), lines.len(), "{size:?}: greedy line count {simulated:?} vs {lines:?}");
         for (n, ((top, bottom), want)) in lines.iter().zip(&simulated).enumerate() {
             let (left, right) = fill_extent(&rects, *top, *bottom);
             let actual = (right - left) as f32;
             assert!(
-                (actual - want).abs() <= widest_word + 3.0,
-                "{size:?} line {n} width: got {actual}, greedy model wants {want}, one-word tolerance {widest_word}"
+                actual <= wrap + 3.0,
+                "{size:?} line {n} width: got {actual}, fixed wrap limit is {wrap}; greedy estimate was {want}"
             );
         }
     }
