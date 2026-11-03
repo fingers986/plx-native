@@ -1285,7 +1285,19 @@ fn text_style_baseline_ties_to_caption_geometry_and_layout() {
                     for lines in 1..=CAPTION_ANCHOR_LINES {
                         let lay = caption_layout(lines, scale, baseline, floor);
                         let tl = today_layout(lines, scale, baseline);
-                        assert_eq!((tl.face, tl.pitch, tl.top), (lay.face, lay.pitch, lay.top), "{lines} lines");
+                        assert_eq!(tl.top, lay.top, "{position:?} {size:?} up={hud_up}: anchored top");
+                        let selected_face = (CAPTION_FACE * scale).round() as i32;
+                        let selected_pitch = CAPTION_LINE_PITCH * scale;
+                        assert_eq!((tl.face, tl.pitch), (selected_face, selected_pitch));
+                        let fits_at_selected_size =
+                            lay.top + lines as f32 * CAPTION_LINE_PITCH * scale <= floor;
+                        if fits_at_selected_size {
+                            assert_eq!((lay.face, lay.pitch), (tl.face, tl.pitch), "{position:?} {size:?} up={hud_up}");
+                        } else {
+                            // The bespoke HUD caption may step down to the minimum at the screen floor;
+                            // synthesized ASS keeps the viewer's selected size.
+                            assert!(lay.face <= tl.face, "{position:?} {size:?} up={hud_up}");
+                        }
                     }
                     n += 1;
                 }
