@@ -309,7 +309,7 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
     let ladder_last = |len: usize| (len - 1) as u32;
     r::restore_quality(quality);
     r::restore_direct_play_mode(r::DirectPlayMode::Disabled);
-    r::restore_subtitle_font(ses::SubtitleFont::OpenSans);
+    r::restore_subtitle_font(*ses::SubtitleFont::LADDER.last().unwrap());
     r::restore_subtitle_size(*ses::SubtitleSize::LADDER.last().unwrap());
     r::restore_subtitle_position(*ses::SubtitlePosition::LADDER.last().unwrap());
     r::restore_hdr_overlay_brightness(*ses::HdrOverlayBrightness::LADDER.last().unwrap());
