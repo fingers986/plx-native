@@ -1,4 +1,4 @@
-//! The look of a text subtitle, as numbers: the viewer's size and position picks mapped to the
+//! The look of a text subtitle: the viewer's font, size and position picks mapped to the
 //! constants the synthesized ASS header (`text_ass::header`) and the screen's HUD lift are built
 //! from. Pure; nothing here touches libass, a font or the screen.
 //!
@@ -7,7 +7,7 @@
 //! mirror the maths `player_hud::caption_geometry_for`/`caption_layout` use, kept with hard-coded
 //! constants so a tie test in appkit can pin that the two cannot drift apart.
 
-use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
+use plx_plex::plex::session::{SubtitleFont, SubtitlePosition, SubtitleSize};
 
 /// The logical canvas a text-origin subtitle frame is rendered into (`PlayResX/Y` of the header).
 /// `plx_base::surface::LOGICAL_*` is the one definition of the canvas; they are whole numbers.
@@ -156,6 +156,8 @@ pub const CAPTION_FLOOR_Y: f32 = SCR_H - 54.0;
 pub const INTER_BOLD_WIN_ASCENT_EM: f64 = 2269.0 / 2048.0;
 pub const INTER_BOLD_WIN_DESCENT_EM: f64 = 660.0 / 2048.0;
 pub const INTER_BOLD_WIN_EM: f64 = INTER_BOLD_WIN_ASCENT_EM + INTER_BOLD_WIN_DESCENT_EM;
+/// SF Pro Text Bold's `(usWinAscent 1950 + usWinDescent 494) / unitsPerEm 2048`.
+pub const SF_PRO_TEXT_BOLD_WIN_EM: f64 = (1950.0 + 494.0) / 2048.0;
 
 /// Inter Bold's `hhea` ascender over its em (`1984 / 2048`): SDL_ttf puts the baseline of the
 /// bespoke draw `ceil(face * INTER_BOLD_HHEA_ASCENT_EM)` rows under a line's draw y.
@@ -202,27 +204,37 @@ pub fn bottom_anchor_y(position: SubtitlePosition) -> f32 {
     SCR_H - bottom_margin_v(position) as f32
 }
 
-/// The `Fontsize` of the synthesized styles at `scale`: today's em times the Inter win ratio.
-pub fn font_size(scale: f32) -> f64 {
-    CAPTION_FACE as f64 * scale as f64 * INTER_BOLD_WIN_EM
+/// The OS/2 win-metric ratio used by libass for the selected subtitle family.
+fn win_em(font: SubtitleFont) -> f64 {
+    match font {
+        SubtitleFont::SfProText => SF_PRO_TEXT_BOLD_WIN_EM,
+        SubtitleFont::Inter | SubtitleFont::OpenSans => INTER_BOLD_WIN_EM,
+    }
+}
+
+/// The `Fontsize` of the synthesized styles at `scale`, calibrated to keep the selected bold face
+/// at today's caption em size.
+pub fn font_size(font: SubtitleFont, scale: f32) -> f64 {
+    CAPTION_FACE as f64 * scale as f64 * win_em(font)
 }
 
 /// The renderer-wide line spacing (`ass_set_line_spacing`, frame pixels) that turns libass's
-/// face-height advance into today's pitch of `CAPTION_LINE_PITCH * scale`.
-pub fn line_spacing(scale: f32) -> f64 {
-    CAPTION_LINE_PITCH as f64 * scale as f64 - font_size(scale)
+/// selected face-height advance into today's pitch of `CAPTION_LINE_PITCH * scale`.
+pub fn line_spacing(font: SubtitleFont, scale: f32) -> f64 {
+    CAPTION_LINE_PITCH as f64 * scale as f64 - font_size(font, scale)
 }
 
-/// The two viewer picks the synthesized header is a function of.
+/// The viewer's font, size and position picks used to synthesize a text-origin subtitle header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TextStyle {
+    pub font: SubtitleFont,
     pub size: SubtitleSize,
     pub position: SubtitlePosition,
 }
 
 impl Default for TextStyle {
     fn default() -> Self {
-        Self { size: SubtitleSize::from_percent(100), position: SubtitlePosition::TvScreen,
+        Self { font: SubtitleFont::Inter, size: SubtitleSize::from_percent(100), position: SubtitlePosition::TvScreen,
         }
     }
 }
@@ -230,7 +242,7 @@ impl Default for TextStyle {
 impl TextStyle {
     /// The picks as the preferences hold them now.
     pub fn current() -> Self {
-        Self { size: crate::route::subtitle_size(), position: crate::route::subtitle_position(),
+        Self { font: crate::route::subtitle_font(), size: crate::route::subtitle_size(), position: crate::route::subtitle_position(),
         }
     }
 
@@ -241,7 +253,8 @@ impl TextStyle {
     /// A number that differs for every distinct pair of picks, so a stored copy is stale exactly
     /// when the header it was built for no longer matches.
     pub fn generation(&self) -> u32 {
-        self.size.index() as u32 * 2048
+        self.font.index() as u32 * 65536
+            + self.size.index() as u32 * 2048
             + self.position.index() as u32 * 256
             + position_distance(self.position).round() as u32
     }
@@ -363,12 +376,12 @@ mod tests {
     fn font_size_gives_todays_em_and_pitch() {
         for size in SubtitleSize::LADDER {
             let scale = size_scale(size);
-            let fs = font_size(scale);
+            let fs = font_size(SubtitleFont::Inter, scale);
             assert!((fs / INTER_BOLD_WIN_EM - 36.0 * scale as f64).abs() < 1e-6, "em at {scale}");
-            assert!((fs + line_spacing(scale) - 48.0 * scale as f64).abs() < 1e-9, "pitch at {scale}");
+            assert!((fs + line_spacing(SubtitleFont::Inter, scale) - 48.0 * scale as f64).abs() < 1e-9, "pitch at {scale}");
         }
-        assert!((font_size(1.0) - 51.5).abs() < 0.05, "plan §2.2 quotes about 51.5");
-        assert!((line_spacing(1.0) + 3.5).abs() < 0.05, "plan §2.2 quotes about -3.5");
+        assert!((font_size(SubtitleFont::Inter, 1.0) - 51.5).abs() < 0.05, "plan §2.2 quotes about 51.5");
+        assert!((line_spacing(SubtitleFont::Inter, 1.0) + 3.5).abs() < 0.05, "plan §2.2 quotes about -3.5");
     }
 
     #[test]
@@ -516,10 +529,10 @@ mod tests {
         let mut seen = std::collections::BTreeSet::new();
         for size in SubtitleSize::LADDER {
             for position in SubtitlePosition::LADDER {
-                assert!(seen.insert(TextStyle { size, position }.generation()), "{size:?} {position:?}");
+                assert!(seen.insert(TextStyle { size, position, ..TextStyle::default() }.generation()), "{size:?} {position:?}");
             }
         }
         assert_eq!(seen.len(), 63);
-        assert_eq!(TextStyle::default().generation(), TextStyle { size: SubtitleSize::from_percent(100), position: SubtitlePosition::TvScreen }.generation());
+        assert_eq!(TextStyle::default().generation(), TextStyle { size: SubtitleSize::from_percent(100), position: SubtitlePosition::TvScreen, ..TextStyle::default() }.generation());
     }
 }

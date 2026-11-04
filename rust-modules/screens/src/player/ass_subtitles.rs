@@ -467,7 +467,7 @@ mod tests {
     }
 
     fn style(size: SubtitleSize, position: SubtitlePosition) -> TextStyle {
-        TextStyle { size, position }
+        TextStyle { size, position, ..TextStyle::default() }
     }
 
     /// Distance an anchored bottom cue must rise so its deepest ink clears the common HUD safe edge.

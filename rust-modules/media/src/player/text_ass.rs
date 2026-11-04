@@ -20,10 +20,6 @@
 
 use super::text_style::{self, TextStyle};
 
-/// The family every synthesized style names. The shipped Inter Bold answers to it (plan §3.2); a
-/// libass without that alias would fall back to the default family, "Inter", and pick Inter Regular.
-pub const STYLE_FONT: &str = "PlxSubs";
-
 /// A cue's numpad alignment, 1-9 (2 is the default, bottom centre).
 pub type Align = u8;
 
@@ -575,7 +571,7 @@ fn number(x: f64) -> String {
 /// line so events can be appended.
 pub fn header(style: &TextStyle) -> String {
     let scale = style.scale();
-    let fs = number(text_style::font_size(scale));
+    let fs = number(text_style::font_size(style.font, scale));
     let margin = text_style::side_margin(scale);
     let mut h = String::from(
         "[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\nWrapStyle: 1\n\
@@ -586,9 +582,9 @@ pub fn header(style: &TextStyle) -> String {
     );
     for (align, margin_v) in style_margins(style) {
         h.push_str(&format!(
-            "Style: {name},{STYLE_FONT},{fs},&H00FFFFFF,&H00FFFFFF,&H26000000,&HFF000000,\
-             0,0,0,0,100,100,0,0,1,4,0,{align},{margin},{margin},{margin_v},-1\n",
-            name = style_name(align),
+            "Style: {name},{font},{fs},&H00FFFFFF,&H00FFFFFF,&H26000000,&HFF000000,\
+             -1,0,0,0,100,100,0,0,1,4,0,{align},{margin},{margin},{margin_v},-1\n",
+            name = style_name(align), font = style.font.family_name(),
         ));
     }
     h.push_str("\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n");
@@ -743,7 +739,7 @@ fn vtt_line_is_top(settings: &str) -> bool {
 }
 
 /// A sidecar file as ASS: the `Dialogue:` lines, without a header, so a change of the viewer's
-/// size or position re-assembles the script without converting the file again.
+/// font, size or position re-assembles the script without converting the file again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextScript {
     /// Zero or more `Dialogue:` lines, each ending in a newline, in start order.

@@ -280,6 +280,9 @@ def main():
     # loaded native subtitle renderer must be placed there.
     for f in ("appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf", "appfont-emoji.ttf",
               "appfont-arabic.ttf", "appfont-arabic-bold.ttf", "appfont-hebrew.ttf", "appfont-hebrew-bold.ttf",
+              "subtitle-open-sans-regular.ttf", "subtitle-open-sans-bold.ttf",
+              "OpenSans-OFL.txt", "subtitle-sf-pro-text-regular.otf", "subtitle-sf-pro-text-bold.otf",
+              "subtitle-sf-pro-text-regular-italic.otf", "subtitle-sf-pro-text-bold-italic.otf",
               "OFL.txt", "le-roots.pem", "libass-plx.0.dylib"):
         shutil.copy2(REPO / "pkg" / f, res / f)
     # The subtitle faces (tools/cut-noto-subs.py): paths::app_dir/fonts/subs, read by player::ass::fonts.
