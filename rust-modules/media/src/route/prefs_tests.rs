@@ -70,11 +70,12 @@ fn t_live_catches_a_row_forgotten_in_either_list() {
     assert!(!agrees(&plex), "a setting declared live in plex but missing in media is caught");
 }
 
-/// The legacy install-wide keys of a record with the eleven settings away from every default.
+/// The legacy install-wide keys of a record with the twelve settings away from every default.
 fn stored_prefs() -> Preferences {
     let s = session::Session::default()
         .with_pref::<QualityPref>(Quality::P1080High)
         .with_pref::<DirectPlayModePref>(DirectPlayMode::Forced)
+        .with_pref::<SubtitleFontPref>(SubtitleFont::SfProText)
         .with_pref::<SubtitleSizePref>(SubtitleSize::from_percent(125))
         .with_pref::<SubtitlePositionPref>(SubtitlePosition::TvScreen)
         .with_pref::<NextEpisodeModePref>(NextEpisodeMode::AfterCredits)
@@ -121,23 +122,23 @@ fn restore(record: &session::Session, seat: &Seat, ov: Overrides) {
 }
 
 #[derive(Debug, PartialEq)]
-struct Cells(Quality, DirectPlayMode, SubtitleSize, SubtitlePosition, NextEpisodeMode, SkipInterval, DeckPress,
+struct Cells(Quality, DirectPlayMode, SubtitleFont, SubtitleSize, SubtitlePosition, NextEpisodeMode, SkipInterval, DeckPress,
     SubtitleTone, AudioEnhancements, HdrOverlayBrightness, bool);
 
 fn cells() -> Cells {
-    Cells(quality(), direct_play_mode(), subtitle_size(), subtitle_position(), next_episode_mode(), skip_interval(),
+    Cells(quality(), direct_play_mode(), subtitle_font(), subtitle_size(), subtitle_position(), next_episode_mode(), skip_interval(),
         deck_press(), crate::player::subtitle_tone(), crate::player::audio_enhancements(),
         hdr_overlay_brightness(), crate::player::preview::TRAILER_AUTOPLAY.get())
 }
 
-/// The eleven legacy values of [`stored_prefs`], as the cells hold them once they are restored.
+/// The twelve legacy values of [`stored_prefs`], as the cells hold them once they are restored.
 fn legacy_cells() -> Cells {
-    Cells(Quality::P1080High, DirectPlayMode::Forced, SubtitleSize::from_percent(125), SubtitlePosition::TvScreen,
+    Cells(Quality::P1080High, DirectPlayMode::Forced, SubtitleFont::SfProText, SubtitleSize::from_percent(125), SubtitlePosition::TvScreen,
         NextEpisodeMode::AfterCredits, SkipInterval::Seconds30, DeckPress::Play, SubtitleTone::Silver,
         AudioEnhancements { boost_dialog: true, normalize_loudness: true }, HdrOverlayBrightness::Half, false)
 }
 
-/// Put the eleven cells back to what they held, and the mirrors to never-seeded, on drop. Declared
+/// Put the twelve cells back to what they held, and the mirrors to never-seeded, on drop. Declared
 /// AFTER `serial()` so it drops first, while the lock `restore_*` asserts is still held.
 struct Put(Option<Cells>);
 impl Put {
@@ -148,9 +149,10 @@ impl Put {
 impl Drop for Put {
     fn drop(&mut self) {
         unseed_profile_prefs_for_test();
-        let Some(Cells(q, dpm, size, position, next, skip, deck, tone, enh, hdr, trailer)) = self.0.take() else { return };
+        let Some(Cells(q, dpm, font, size, position, next, skip, deck, tone, enh, hdr, trailer)) = self.0.take() else { return };
         restore_quality(q);
         restore_direct_play_mode(dpm);
+        restore_subtitle_font(font);
         restore_subtitle_size(size);
         restore_subtitle_position(position);
         restore_next_episode_mode(next);
@@ -166,6 +168,7 @@ impl Drop for Put {
 fn scramble() {
     restore_quality(Quality::P480);
     restore_direct_play_mode(DirectPlayMode::Disabled);
+    restore_subtitle_font(SubtitleFont::OpenSans);
     restore_subtitle_size(SubtitleSize::from_percent(150));
     restore_subtitle_position(SubtitlePosition::TvScreen);
     restore_next_episode_mode(NextEpisodeMode::Off);
@@ -202,7 +205,7 @@ fn restore_profile_rows_unseated_reads_the_legacy_keys_and_never_an_own_value() 
     restore(&record(Preferences::default(), vec![]), &Seat::Unseated, Overrides::default());
     assert_eq!(
         cells(),
-        Cells(Quality::Original, DirectPlayMode::Auto, SubtitleSize::from_percent(100), SubtitlePosition::TvScreen,
+        Cells(Quality::Original, DirectPlayMode::Auto, SubtitleFont::Inter, SubtitleSize::from_percent(100), SubtitlePosition::TvScreen,
             NextEpisodeMode::Countdown, SkipInterval::Seconds10, DeckPress::Details, SubtitleTone::White,
             AudioEnhancements::NONE, HdrOverlayBrightness::ThreeQuarters, false),
         "a record that chose nothing restores every default (an absent quality is Original; the derived \
@@ -229,10 +232,10 @@ fn restore_profile_rows_seated_reads_the_own_value_and_falls_back_per_setting() 
 
     scramble();
     restore(&rec, &seat("u1"), Overrides::default());
-    let Cells(q, dpm, _, position, next, _, deck, tone, enh, hdr, _) = legacy_cells();
+    let Cells(q, dpm, font, _, position, next, _, deck, tone, enh, hdr, _) = legacy_cells();
     assert_eq!(
         cells(),
-        Cells(q, dpm, SubtitleSize::from_percent(150), position, next, SkipInterval::Seconds60, deck, tone, enh, hdr, true),
+        Cells(q, dpm, font, SubtitleSize::from_percent(150), position, next, SkipInterval::Seconds60, deck, tone, enh, hdr, true),
         "u1: its three picks (trailers ON over the TV's off) over the TV's seven"
     );
 
@@ -387,6 +390,7 @@ fn every_live_setting_is_picked_into_the_seated_profiles_record() {
 
     assert!(confirm::<QualityPref>(Quality::P480));
     assert!(confirm::<DirectPlayModePref>(DirectPlayMode::Disabled));
+    assert!(confirm::<SubtitleFontPref>(SubtitleFont::OpenSans));
     assert!(confirm::<SubtitleSizePref>(SubtitleSize::from_percent(150)));
     assert!(confirm::<SubtitlePositionPref>(SubtitlePosition::TvScreen));
     assert!(confirm::<NextEpisodeModePref>(NextEpisodeMode::Off));
@@ -404,7 +408,7 @@ fn every_live_setting_is_picked_into_the_seated_profiles_record() {
     assert_eq!(profile_prefs_mirror_for_test(), after.prefs.profile_prefs, "the mirror holds exactly what landed");
     assert_eq!(
         cells(),
-        Cells(Quality::P480, DirectPlayMode::Disabled, SubtitleSize::from_percent(150), SubtitlePosition::TvScreen,
+        Cells(Quality::P480, DirectPlayMode::Disabled, SubtitleFont::OpenSans, SubtitleSize::from_percent(150), SubtitlePosition::TvScreen,
             NextEpisodeMode::Off, SkipInterval::Seconds60, DeckPress::Details, SubtitleTone::Grey,
             AudioEnhancements::NONE, HdrOverlayBrightness::ThreeQuarters, true)
     );

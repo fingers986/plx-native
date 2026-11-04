@@ -1208,7 +1208,7 @@ fn track(header: &str, events: &[(i64, i64, &str)]) -> Arc<Source> {
 }
 
 fn style(size: SubtitleSize, position: SubtitlePosition) -> TextStyle {
-    TextStyle { size, position }
+    TextStyle { size, position, ..TextStyle::default() }
 }
 
 /// Render a Text-origin source into the full logical screen, as the screen asks for it.
@@ -1320,7 +1320,7 @@ fn renderer_settings_follow_the_origin_and_the_picks_it_carries() {
     assert_eq!(Origin::Authored.renderer_settings(), None);
     for size in [SubtitleSize::from_percent(100), SubtitleSize::from_percent(125)] {
         let picks = style(size, SubtitlePosition::TvScreen);
-        assert_eq!(Origin::Text(picks).renderer_settings(), Some((text_style::line_spacing(picks.scale()), true)));
+        assert_eq!(Origin::Text(picks).renderer_settings(), Some((text_style::line_spacing(picks.font, picks.scale()), true)));
     }
     let spacing = |size| Origin::Text(style(size, SubtitlePosition::TvScreen)).renderer_settings().unwrap().0;
     assert_ne!(spacing(SubtitleSize::from_percent(125)), spacing(SubtitleSize::from_percent(100)));

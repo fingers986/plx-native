@@ -1,4 +1,4 @@
-//! The look of a text subtitle, as numbers: the viewer's size and position picks mapped to the
+//! The look of a text subtitle: the viewer's font, size and position picks mapped to the
 //! constants the synthesized ASS header (`text_ass::header`) and the screen's HUD lift are built
 //! from. Pure; nothing here touches libass, a font or the screen.
 //!
@@ -7,7 +7,7 @@
 //! mirror the maths `player_hud::caption_geometry_for`/`caption_layout` use, kept with hard-coded
 //! constants so a tie test in appkit can pin that the two cannot drift apart.
 
-use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
+use plx_plex::plex::session::{SubtitleFont, SubtitlePosition, SubtitleSize};
 
 /// The logical canvas a text-origin subtitle frame is rendered into (`PlayResX/Y` of the header).
 /// `plx_base::surface::LOGICAL_*` is the one definition of the canvas; they are whole numbers.
@@ -71,20 +71,19 @@ pub const TOP_MARGIN_V: f32 = BOTTOM_GAP;
 pub const SUB_BASE_Y: f32 = SCR_H - BOTTOM_GAP;
 
 /// **The band a HUD occupies at the bottom of the screen**, as the numbers every caption reader
-/// needs: the top of the control row (`controls_top_y`), the ceiling a lifted caption is held
-/// under (`ceil_y`, clear of the row's top by [`CAPTION_INK_CLEARANCE`]), the fixed distance a
-/// text caption moves up while the HUD is up (`lift`, `SUB_BASE_Y - ceil_y`, the same at every
-/// Position and size: plan §2.4) and, while a player section is open, how much further a caption
-/// has risen to clear it (`rise`). It is a value the layout reports, never a global: the readers
+/// needs: the top of the control row (`controls_top_y`), the common safe edge captions must clear
+/// when they overlap it (`ceil_y`, clear of the row's top by [`CAPTION_INK_CLEARANCE`]), the maximum
+/// travel from the default bottom anchor to that edge (`lift`, `SUB_BASE_Y - ceil_y`) and, while a
+/// player section is open, the maximum further rise requested to clear it (`rise`). It is a value
+/// the layout reports, never a global: the readers
 /// (`caption_geometry_for`, `hud_lift`, `today_baseline`, the libass lift) take it as an argument.
 ///
-/// **The rise** (`docs/hud-plugins.md`, "Captions"): a caption's bottom limit is the HUD-up limit P of
-/// the viewer's Position (`ceil_y - position_lift`) while no section is open, and
-/// `min(P, S - CAPTION_INK_CLEARANCE)` while one is, `S` being the resting top of everything the HUD
-/// has open. `rise[i]` is `P - limit` for Position `i` in [`SubtitlePosition::LADDER`] order
-/// (VideoFrame, TvScreen), so a Position that already clears the section has none. The rise is
-/// motion (a spring the HUD steps, `player_hud::motion`), which is why it is a field of the value
-/// the readers take and not something they compute.
+/// **The rise** (`docs/hud-plugins.md`, "Captions"): the common HUD-safe edge is `ceil_y`; an open
+/// section asks captions to clear `S - CAPTION_INK_CLEARANCE`, where `S` is the resting top of
+/// everything open. `rise[i]` stores the maximum rise from that edge. Each caption reader applies
+/// only the rise needed from its actual position, so captions already clear of the section stay
+/// where they are. The rise is motion (a spring the HUD steps, `player_hud::motion`), which is why
+/// it is a field of the value the readers take and not something they compute.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HudBand {
     pub ceil_y: f32,
@@ -109,9 +108,10 @@ impl HudBand {
         Self { rise, ..self }
     }
 
-    /// P: where the HUD-up limit of `position` sits with no section open.
-    pub fn rest_limit(&self, position: SubtitlePosition) -> f32 {
-        self.ceil_y - position_lift(position) - (position_distance(position) - BOTTOM_GAP).max(0.0)
+    /// The common HUD-safe edge for every Position. Position selects the subtitle's resting
+    /// placement; it must not move a subtitle down when the HUD appears.
+    pub fn rest_limit(&self, _position: SubtitlePosition) -> f32 {
+        self.ceil_y
     }
 
     /// The rise of `position`'s limit, before the safe-area clamp ([`clear_rise`](Self::clear_rise)).
@@ -119,13 +119,14 @@ impl HudBand {
         self.rise.get(position.index() as usize).copied().unwrap_or(0.0)
     }
 
-    /// The rise each Position takes to stand `CAPTION_INK_CLEARANCE` above a block whose top edge is
-    /// `block_top`: `max(0, P - (block_top - CAPTION_INK_CLEARANCE))`. A Position already above that
-    /// takes none (Position gives way first).
+    /// The maximum rise from the common HUD-safe edge to stand `CAPTION_INK_CLEARANCE` above a block
+    /// whose top edge is `block_top`. Readers apply only the part needed from the subtitle's actual
+    /// current position, so a subtitle already clear of the block does not move.
     pub fn rise_to_clear(&self, block_top: f32) -> [f32; 3] {
         let mut rises = [0.0; 3];
+        let rise = (self.ceil_y - (block_top - CAPTION_INK_CLEARANCE)).max(0.0);
         for position in SubtitlePosition::LADDER {
-            rises[position.index() as usize] = (self.rest_limit(position) - (block_top - CAPTION_INK_CLEARANCE)).max(0.0);
+            rises[position.index() as usize] = rise;
         }
         rises
     }
@@ -155,6 +156,8 @@ pub const CAPTION_FLOOR_Y: f32 = SCR_H - 54.0;
 pub const INTER_BOLD_WIN_ASCENT_EM: f64 = 2269.0 / 2048.0;
 pub const INTER_BOLD_WIN_DESCENT_EM: f64 = 660.0 / 2048.0;
 pub const INTER_BOLD_WIN_EM: f64 = INTER_BOLD_WIN_ASCENT_EM + INTER_BOLD_WIN_DESCENT_EM;
+/// SF Pro Text Bold's `(usWinAscent 1950 + usWinDescent 494) / unitsPerEm 2048`.
+pub const SF_PRO_TEXT_BOLD_WIN_EM: f64 = (1950.0 + 494.0) / 2048.0;
 
 /// Inter Bold's `hhea` ascender over its em (`1984 / 2048`): SDL_ttf puts the baseline of the
 /// bespoke draw `ceil(face * INTER_BOLD_HHEA_ASCENT_EM)` rows under a line's draw y.
@@ -201,27 +204,37 @@ pub fn bottom_anchor_y(position: SubtitlePosition) -> f32 {
     SCR_H - bottom_margin_v(position) as f32
 }
 
-/// The `Fontsize` of the synthesized styles at `scale`: today's em times the Inter win ratio.
-pub fn font_size(scale: f32) -> f64 {
-    CAPTION_FACE as f64 * scale as f64 * INTER_BOLD_WIN_EM
+/// The OS/2 win-metric ratio used by libass for the selected subtitle family.
+fn win_em(font: SubtitleFont) -> f64 {
+    match font {
+        SubtitleFont::SfProText => SF_PRO_TEXT_BOLD_WIN_EM,
+        SubtitleFont::Inter | SubtitleFont::OpenSans => INTER_BOLD_WIN_EM,
+    }
+}
+
+/// The `Fontsize` of the synthesized styles at `scale`, calibrated to keep the selected bold face
+/// at today's caption em size.
+pub fn font_size(font: SubtitleFont, scale: f32) -> f64 {
+    CAPTION_FACE as f64 * scale as f64 * win_em(font)
 }
 
 /// The renderer-wide line spacing (`ass_set_line_spacing`, frame pixels) that turns libass's
-/// face-height advance into today's pitch of `CAPTION_LINE_PITCH * scale`.
-pub fn line_spacing(scale: f32) -> f64 {
-    CAPTION_LINE_PITCH as f64 * scale as f64 - font_size(scale)
+/// selected face-height advance into today's pitch of `CAPTION_LINE_PITCH * scale`.
+pub fn line_spacing(font: SubtitleFont, scale: f32) -> f64 {
+    CAPTION_LINE_PITCH as f64 * scale as f64 - font_size(font, scale)
 }
 
-/// The two viewer picks the synthesized header is a function of.
+/// The viewer's font, size and position picks used to synthesize a text-origin subtitle header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TextStyle {
+    pub font: SubtitleFont,
     pub size: SubtitleSize,
     pub position: SubtitlePosition,
 }
 
 impl Default for TextStyle {
     fn default() -> Self {
-        Self { size: SubtitleSize::from_percent(100), position: SubtitlePosition::TvScreen,
+        Self { font: SubtitleFont::Inter, size: SubtitleSize::from_percent(100), position: SubtitlePosition::TvScreen,
         }
     }
 }
@@ -229,7 +242,7 @@ impl Default for TextStyle {
 impl TextStyle {
     /// The picks as the preferences hold them now.
     pub fn current() -> Self {
-        Self { size: crate::route::subtitle_size(), position: crate::route::subtitle_position(),
+        Self { font: crate::route::subtitle_font(), size: crate::route::subtitle_size(), position: crate::route::subtitle_position(),
         }
     }
 
@@ -240,7 +253,8 @@ impl TextStyle {
     /// A number that differs for every distinct pair of picks, so a stored copy is stale exactly
     /// when the header it was built for no longer matches.
     pub fn generation(&self) -> u32 {
-        self.size.index() as u32 * 2048
+        self.font.index() as u32 * 65536
+            + self.size.index() as u32 * 2048
             + self.position.index() as u32 * 256
             + position_distance(self.position).round() as u32
     }
@@ -264,11 +278,14 @@ pub struct TodayBaseline {
 pub fn today_baseline(position: SubtitlePosition, scale: f32, hud_up: bool, band: HudBand,
 ) -> TodayBaseline {
     let custom_adjust = BOTTOM_GAP - position_distance(position);
-    let rest = band.rest_limit(position);
+    let natural_baseline = SUB_BASE_Y - position_lift(position) + custom_adjust;
+    let baseline_before_section = if hud_up { natural_baseline.min(band.ceil_y) } else { natural_baseline };
+    let section_target = band.ceil_y - band.rise_for(position);
+    let requested_rise = (baseline_before_section - section_target).max(0.0);
     let rise = if hud_up {
-        HudBand::clear_rise(band.rise_for(position) + custom_adjust.max(0.0), rest, 0.0)
+        HudBand::clear_rise(requested_rise, baseline_before_section, 0.0)
     } else { 0.0 };
-    let baseline = (if hud_up { band.ceil_y } else { SUB_BASE_Y }) - position_lift(position) - rise + custom_adjust;
+    let baseline = baseline_before_section - rise;
     let floor = if hud_up { band.ceil_y } else { CAPTION_FLOOR_Y };
     TodayBaseline { scale, baseline, floor,
     }
@@ -359,12 +376,12 @@ mod tests {
     fn font_size_gives_todays_em_and_pitch() {
         for size in SubtitleSize::LADDER {
             let scale = size_scale(size);
-            let fs = font_size(scale);
+            let fs = font_size(SubtitleFont::Inter, scale);
             assert!((fs / INTER_BOLD_WIN_EM - 36.0 * scale as f64).abs() < 1e-6, "em at {scale}");
-            assert!((fs + line_spacing(scale) - 48.0 * scale as f64).abs() < 1e-9, "pitch at {scale}");
+            assert!((fs + line_spacing(SubtitleFont::Inter, scale) - 48.0 * scale as f64).abs() < 1e-9, "pitch at {scale}");
         }
-        assert!((font_size(1.0) - 51.5).abs() < 0.05, "plan §2.2 quotes about 51.5");
-        assert!((line_spacing(1.0) + 3.5).abs() < 0.05, "plan §2.2 quotes about -3.5");
+        assert!((font_size(SubtitleFont::Inter, 1.0) - 51.5).abs() < 0.05, "plan §2.2 quotes about 51.5");
+        assert!((line_spacing(SubtitleFont::Inter, 1.0) + 3.5).abs() < 0.05, "plan §2.2 quotes about -3.5");
     }
 
     #[test]
@@ -392,8 +409,8 @@ mod tests {
         assert_eq!(band.lift, SUB_BASE_Y - band.ceil_y);
     }
 
-    /// The rise a section asks of each Position: `max(0, P - (S - 12))`, so a Position that already clears
-    /// the block takes none, and the safe-area clamp leaves a zero rise at zero.
+    /// The maximum rise from the common HUD-safe edge to clear a block. Every Position receives the
+    /// same target; each reader applies only the amount needed from its current subtitle placement.
     #[test]
     fn the_rise_clears_the_block_and_gives_way_by_position() {
         let band = HudBand::CLASSIC;
@@ -449,10 +466,9 @@ mod tests {
             let down = today_baseline(position, 1.0, false, HudBand::CLASSIC);
             assert_eq!((down.baseline, down.floor), (1020.0 - lift + adjust, 1026.0));
             let up = today_baseline(position, 1.0, true, HudBand::CLASSIC);
-            assert_eq!((up.baseline, up.floor), (780.0 - lift + adjust.min(0.0), 780.0));
-            // A distance below the default gets an extra rise while the HUD is visible.
-            assert_eq!(down.baseline - up.baseline,
-                HudBand::CLASSIC.lift + adjust.max(0.0) - adjust.min(0.0));
+            assert_eq!((up.baseline, up.floor), (down.baseline.min(780.0), 780.0));
+            // HUD appearance only raises when the selected resting position crosses the safe edge.
+            assert_eq!(down.baseline - up.baseline, (down.baseline - 780.0).max(0.0));
         }
     }
 
@@ -513,10 +529,10 @@ mod tests {
         let mut seen = std::collections::BTreeSet::new();
         for size in SubtitleSize::LADDER {
             for position in SubtitlePosition::LADDER {
-                assert!(seen.insert(TextStyle { size, position }.generation()), "{size:?} {position:?}");
+                assert!(seen.insert(TextStyle { size, position, ..TextStyle::default() }.generation()), "{size:?} {position:?}");
             }
         }
         assert_eq!(seen.len(), 63);
-        assert_eq!(TextStyle::default().generation(), TextStyle { size: SubtitleSize::from_percent(100), position: SubtitlePosition::TvScreen }.generation());
+        assert_eq!(TextStyle::default().generation(), TextStyle { size: SubtitleSize::from_percent(100), position: SubtitlePosition::TvScreen, ..TextStyle::default() }.generation());
     }
 }

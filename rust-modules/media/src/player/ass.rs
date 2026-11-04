@@ -80,7 +80,7 @@ pub enum Origin {
     #[default]
     Authored,
     /// Synthesized from a text subtitle (`text_ass::header`): the full logical screen, and the
-    /// header follows the viewer's size and position picks. The picks the header was synthesized
+    /// header follows the viewer's font, size and position picks. The picks the header was synthesized
     /// for travel with it, so the worker sets the line spacing of the header it loads, not of
     /// whatever the viewer has picked since.
     Text(super::text_style::TextStyle),
@@ -97,7 +97,7 @@ impl Origin {
     fn renderer_settings(self) -> Option<(f64, bool)> {
         match self {
             Origin::Authored => None,
-            Origin::Text(style) => Some((super::text_style::line_spacing(style.scale()), true)),
+            Origin::Text(style) => Some((super::text_style::line_spacing(style.font, style.scale()), true)),
         }
     }
 }
@@ -591,7 +591,7 @@ impl Engine {
         })
     }
 
-    /// The viewer changed the text size or position: `source` is the synthesized track for the new
+    /// The viewer changed the text font, size or position: `source` is the synthesized track for the new
     /// picks, of the same fonts. Swap the track in place on the held renderer (every opened face
     /// stays), put the held events back, and set the line spacing the new size needs.
     fn restyle(&mut self, source: &Source, now_ms: i64) -> Result<(), Fault> {
