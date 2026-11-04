@@ -695,7 +695,7 @@
   },
   "settings.playback.subtitle_position.low": {
     "value": "Video frame",
-    "description": "Subtitle position picker option: keep the subtitle 60 px above the bottom of the video picture."
+    "description": "Subtitle position picker option: choose the subtitle's distance from the bottom of the video picture."
   },
   "settings.playback.subtitle_position.middle": {
     "value": "Middle",
@@ -703,11 +703,11 @@
   },
   "settings.playback.subtitle_position.high": {
     "value": "TV screen",
-    "description": "Subtitle position picker option: keep the subtitle 60 px above the bottom of the TV screen."
+    "description": "Subtitle position picker option: choose the subtitle's distance from the bottom of the TV screen."
   },
   "settings.playback.subtitle_position.custom": {
     "value": "Custom",
-    "description": "Subtitle position picker option: set a custom TV-screen bottom gap from 40 to 180 px in 5 px steps."
+    "description": "Subtitle position picker option: set a custom TV-screen bottom gap from 20 to 200 px in 5 px steps."
   },
   "settings.playback.subtitle_position.distance_px": {
     "value": "{distance} px",

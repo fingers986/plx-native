@@ -1438,7 +1438,8 @@ where
     D: Deserializer<'de>,
 {
     let Ok(v) = u64::deserialize(d) else { return Ok(None); };
-    Ok(Some((v.clamp(40, 180) as u8 / 5) * 5))
+    Ok(Some((v.clamp(SubtitlePosition::DISTANCE_MIN as u64, SubtitlePosition::DISTANCE_MAX as u64) as u8
+        / SubtitlePosition::DISTANCE_STEP) * SubtitlePosition::DISTANCE_STEP))
 }
 
 /// The taught flags are a preference too: an unreadable shape is "not taught".
