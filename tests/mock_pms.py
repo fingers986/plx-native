@@ -3827,6 +3827,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         q = {k: v[-1] for k, v in urllib.parse.parse_qs(split.query).items()}
         row = {"t_recv": t_recv, "t_done": time.monotonic(), "class": plan.klass, "path": split.path,
+               # Record the selected profile as well as elapsed time: tests can assert a runtime
+               # profile switch without treating a busy CI runner's scheduling delay as network
+               # latency.
+               "delay_s": plan.delay_s, "kbit": plan.kbit,
                # a poster transcode names its item here (`/library/metadata/<rk>/thumb/..`)
                "url": q.get("url"),
                "start": q.get("X-Plex-Container-Start", self.headers.get("X-Plex-Container-Start")),
@@ -4675,11 +4679,22 @@ def _selftest_link():
         assert status == 200 and took >= 0.14, (status, took)
         status, n, took = timed(base, "/photo/:/transcode?url=%2Fx&width=250&height=375")
         assert status == 200 and took >= n * 8 / 40000 * 0.9, (n, took)  # paced at 40 kbit/s
-        _, _, fast = timed(base, "/_mock/requests")
-        assert fast < 0.1, fast  # control surface unconditioned
+        urllib.request.urlopen(urllib.request.Request(base + "/_mock/wire", method="DELETE"), timeout=5)
+        timed(base, "/_mock/requests")
+        rows = json.loads(urllib.request.urlopen(base + "/_mock/wire", timeout=5).read())["rows"]
+        assert not any(r["path"] == "/_mock/requests" for r in rows), rows  # control is unconditioned
         post(base, {"spec": "all=none"})
-        _, _, took = timed(base, "/library/sections/1/all?type=1")
-        assert took < 0.1, took  # fast again, mid-run
+        timed(base, "/library/sections/1/all?type=1&X-Plex-Container-Start=707")
+        deadline = time.monotonic() + 5
+        switched = None
+        while switched is None and time.monotonic() < deadline:
+            rows = json.loads(urllib.request.urlopen(base + "/_mock/wire", timeout=5).read())["rows"]
+            switched = next((r for r in rows if r["path"] == "/library/sections/1/all"
+                             and r["start"] == "707"), None)
+            if switched is None:
+                time.sleep(0.01)
+        assert switched is not None, "the profile-switched page did not reach the wire log"
+        assert (switched["delay_s"], switched["kbit"]) == (0.0, 0), switched  # fast again, mid-run
         got = post(base, {"class": "listing", "profile": "very-bad"})
         assert got["listing"]["error_rate"] == 0.2 and got["image"]["kbit"] == 0
         try:
