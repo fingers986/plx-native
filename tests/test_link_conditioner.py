@@ -144,11 +144,18 @@ class OnTheMock(unittest.TestCase):
             return json.loads(r.read())
 
     def test_fast_then_slow_then_fast_within_one_server(self):
-        self.assertGreaterEqual(self.timed("/library/sections/1/all"), 0.11)
+        path = "/library/sections/1/all"
+        self.assertGreaterEqual(self.timed(path + "?X-Plex-Container-Start=41"), 0.11)
+        first = self.wire_row(path, start="41")
+        self.assertEqual((first["delay_s"], first["kbit"]), (0.12, 0))
         self.post({"spec": "all=none"})
-        self.assertLess(self.timed("/library/sections/1/all"), 0.1)
+        self.timed(path + "?X-Plex-Container-Start=42")
+        fast = self.wire_row(path, start="42")
+        self.assertEqual((fast["delay_s"], fast["kbit"]), (0.0, 0))
         self.post({"spec": "listing=none:latency=120"})
-        self.assertGreaterEqual(self.timed("/library/sections/1/all"), 0.11)
+        self.assertGreaterEqual(self.timed(path + "?X-Plex-Container-Start=43"), 0.11)
+        last = self.wire_row(path, start="43")
+        self.assertEqual((last["delay_s"], last["kbit"]), (0.12, 0))
 
     def test_the_wire_log_says_how_long_a_page_was_in_flight(self):
         self.post({"spec": "listing=none:latency=100"})
