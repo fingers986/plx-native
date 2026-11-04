@@ -1,4 +1,4 @@
-{"updated":"2026-11-04T05:01:35Z",
+{"updated":"2026-11-04T05:04:45Z",
 "ci":[
 {"id":41395664519,"at":"2026-11-02T05:43:22Z","sha":"de5f513cb","title":"Refine playback HUD, markers, subtitles, and navigation","pr":null,"conclusion":"failure","attempt":1,"jobs":{"which gates apply":5,"host harness tests":379,"armv7 cross-build and artifact assertions":430,"cross-build (armv7) + artifact assertions":3},"failed":["host checks (NOT a device gate)","host lint + type-checks","host python/shell/C gates","host unit tests (default features)","host unit tests (hostsim)"]},
 {"id":41398462805,"at":"2026-11-02T06:12:27Z","sha":"5f73d6f40","title":"Show seasons in Recently Added TV","pr":1,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"which gates apply":4,"host harness tests":373,"armv7 cross-build and artifact assertions":354,"cross-build (armv7) + artifact assertions":4},"failed":["host checks (NOT a device gate)","host lint + type-checks","host python/shell/C gates","host unit tests (default features)","host unit tests (hostsim)"]},
@@ -94,6 +94,6 @@
 {"id":41776188643,"at":"2026-11-04T04:56:29Z","sha":"fd5741f0a","title":"Document subtitle distance stepper cap","pr":13,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":20,"Linux simulator build + launch":296,"macOS simulator build + launch":115,"macOS tests against bundled FFmpeg and ASS":162}}
 ],
 "nightly":[],
-"cancelled":{"2026-11-03":{"push":0,"pull_request":17},"2026-11-04":{"push":0,"pull_request":2}},
+"cancelled":{"2026-11-03":{"push":0,"pull_request":17},"2026-11-04":{"push":0,"pull_request":3}},
 "daily":[],
 "flaky":[]}
