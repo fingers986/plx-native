@@ -132,7 +132,8 @@ impl PickerPage {
     fn checked_position(&self) -> u32 {
         let current = self.current();
         let options = if let Some(anchor) = self.state.distance_anchor {
-            (40..=180).step_by(5).map(|distance| (String::new(), Value::SubtitleDistance(anchor, distance))).collect()
+            (SubtitlePosition::DISTANCE_MIN..=SubtitlePosition::DISTANCE_MAX).step_by(SubtitlePosition::DISTANCE_STEP as usize)
+                .map(|distance| (String::new(), Value::SubtitleDistance(anchor, distance))).collect()
         } else {
             field_options(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs())
         };
@@ -171,7 +172,8 @@ impl PickerPage {
         self.state.alert_scroll = self.alert.scroll_target_bits();
         let current = self.current();
         let options = if let Some(anchor) = self.state.distance_anchor {
-            (40..=180).step_by(5).map(|distance| (format!("{distance} px"), Value::SubtitleDistance(anchor, distance))).collect()
+            (SubtitlePosition::DISTANCE_MIN..=SubtitlePosition::DISTANCE_MAX).step_by(SubtitlePosition::DISTANCE_STEP as usize)
+                .map(|distance| (format!("{distance} px"), Value::SubtitleDistance(anchor, distance))).collect()
         } else {
             field_options(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs())
         };

@@ -15,6 +15,7 @@ use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::icons::{self, Icon};
 use plx_ui::label::{HAlign, Label};
 use plx_machine::machine::Edge;
+use plx_plex::plex::session::SubtitlePosition;
 use plx_ui::{theme, Painter, Rect, Spring};
 use std::ffi::CString;
 
@@ -276,7 +277,7 @@ impl TimingCapsule {
 /// Timing. It is D-pad-only; `gap_px` changes in fixed 5 px steps without Timing's repeat acceleration.
 pub fn draw_custom_distance_capsule(gap_px: u8, bottom_y: f32, appear: f32) {
     let caption = CString::new(plx_platform::i18n::msg::settings_playback_subtitle_position_distance_px(gap_px as i64)).unwrap_or_default();
-    draw_stepper_capsule(&caption, gap_px <= 40, gap_px >= 180, bottom_y, appear);
+    draw_stepper_capsule(&caption, gap_px <= SubtitlePosition::DISTANCE_MIN, gap_px >= SubtitlePosition::DISTANCE_MAX, bottom_y, appear);
 }
 
 /// Draw Subtitle Size with the same value capsule, chevrons and secondary read-out styling.
@@ -314,7 +315,8 @@ pub enum DistanceCapsuleOut {
 
 impl CustomDistanceCapsule {
     pub fn new(gap_px: u8) -> Self {
-        Self { gap_px: (gap_px.clamp(40, 180) / 5) * 5 }
+        Self { gap_px: (gap_px.clamp(SubtitlePosition::DISTANCE_MIN, SubtitlePosition::DISTANCE_MAX)
+            / SubtitlePosition::DISTANCE_STEP) * SubtitlePosition::DISTANCE_STEP }
     }
 
     pub fn gap_px(&self) -> u8 { self.gap_px }
@@ -323,9 +325,9 @@ impl CustomDistanceCapsule {
         match key {
             Key::Left { .. } | Key::Right { .. } if edge != Edge::Up => {
                 let next = if matches!(key, Key::Left { .. }) {
-                    self.gap_px.saturating_sub(5).max(40)
+                    self.gap_px.saturating_sub(SubtitlePosition::DISTANCE_STEP).max(SubtitlePosition::DISTANCE_MIN)
                 } else {
-                    self.gap_px.saturating_add(5).min(180)
+                    self.gap_px.saturating_add(SubtitlePosition::DISTANCE_STEP).min(SubtitlePosition::DISTANCE_MAX)
                 };
                 if next == self.gap_px { return None; }
                 self.gap_px = next;

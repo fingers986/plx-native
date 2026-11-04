@@ -13,8 +13,8 @@ libass worker. They have no header in the file, so `player::ass_source` synthesi
 bold, underline, colour and `{\an}` placement honoured, everything else shown as plain text). Such a
 source has `Origin::Text`: it renders into the full 1920x1080 logical screen, not the video viewport.
 The default subtitle anchor is either the video picture's bottom edge or the TV screen's bottom
-edge. Each anchor has its own 40–180 px distance default, adjustable in Settings in 5 px steps.
-Player > Subtitle Style also offers Custom, which uses its own saved TV-screen gap; its live control
+edge. Each anchor has its own 20–200 px distance default, adjustable in Settings in 5 px steps.
+Player > Subtitle Style also offers Custom, which uses its own saved TV-screen gap from 20–200 px; its live control
 adjusts that gap in 5 px steps. With the transport visible, a cue rises only when its current anchor
 overlaps the HUD safe edge; an open HUD section can request a further rise. A change of the font, size or position
 pick re-synthesizes the header of the selected track lazily (the revision bumps once; the renderer swaps

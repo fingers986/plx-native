@@ -949,7 +949,7 @@ pub fn select_subtitle_font(font: SubtitleFont, reply: Option<Sender<bool>>) {
 
 pub fn subtitle_position() -> SubtitlePosition {
     let custom = PLAYER_SUBTITLE_POSITION_OVERRIDE.load(Relaxed);
-    if (40..=180).contains(&custom) {
+    if (SubtitlePosition::DISTANCE_MIN..=SubtitlePosition::DISTANCE_MAX).contains(&custom) {
         SubtitlePosition::Custom(custom / 5 * 5)
     } else {
         match SubtitlePositionPref::live() {
@@ -972,7 +972,11 @@ pub fn restore_subtitle_position(position: SubtitlePosition) {
     restore_live::<SubtitlePositionPref>(position)
 }
 pub fn set_player_subtitle_position_custom(distance: u8) {
-    PLAYER_SUBTITLE_POSITION_OVERRIDE.store(distance.clamp(40, 180) / 5 * 5, Relaxed);
+    PLAYER_SUBTITLE_POSITION_OVERRIDE.store(
+        distance.clamp(SubtitlePosition::DISTANCE_MIN, SubtitlePosition::DISTANCE_MAX)
+            / SubtitlePosition::DISTANCE_STEP * SubtitlePosition::DISTANCE_STEP,
+        Relaxed,
+    );
 }
 pub fn clear_player_subtitle_position_custom() {
     PLAYER_SUBTITLE_POSITION_OVERRIDE.store(u8::MAX, Relaxed);
