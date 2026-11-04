@@ -655,6 +655,16 @@
     "value": "Direct Play",
     "description": "Settings, consent or sign-in UI: settings.playback.direct_play"
   },
+  "settings.playback.subtitle_font": {
+    "value": "Subtitle font",
+    "description": "Settings: choose the typeface used by client-rendered text subtitles.",
+    "translate": false
+  },
+  "settings.playback.subtitle_font.copy": {
+    "value": "Choose the typeface for text subtitles. Styled ASS/SSA tracks keep their own font.",
+    "description": "Explanation under the title of the Subtitle font picker.",
+    "translate": false
+  },
   "settings.playback.subtitle_size": {
     "value": "Subtitle size",
     "description": "Settings, consent or sign-in UI: the client-rendered subtitle caption's text size."

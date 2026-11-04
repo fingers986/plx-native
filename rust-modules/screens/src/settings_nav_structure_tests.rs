@@ -122,7 +122,7 @@ fn every_playback_field_pushes_its_picker() {
     let items = super::super::preferences::nav_items_for_test(super::super::preferences::Kind::Playback, None);
     assert_eq!(items.iter().map(|(_, d)| *d).collect::<Vec<_>>(),
         [SettingsPage::Picker(PickerKind::Quality), SettingsPage::Picker(PickerKind::DirectPlay),
-         SettingsPage::Picker(PickerKind::SubtitleSize), SettingsPage::Picker(PickerKind::SubtitlePosition),
+         SettingsPage::Picker(PickerKind::SubtitleFont), SettingsPage::Picker(PickerKind::SubtitleSize), SettingsPage::Picker(PickerKind::SubtitlePosition),
          SettingsPage::Picker(PickerKind::HdrOverlay), SettingsPage::Picker(PickerKind::NextEpisode), SettingsPage::Picker(PickerKind::DeckPress),
          SettingsPage::Picker(PickerKind::SkipInterval), SettingsPage::Picker(PickerKind::InstantDpadSeeking), SettingsPage::Picker(PickerKind::DolbyVision)]);
     assert_every_nav_item_pushes_exactly_its_dest("playback", &items, &|| consent_opened(SettingsPage::Playback));
@@ -240,6 +240,7 @@ fn the_details_picker_opens_seated_on_the_stored_line_not_its_first_row() {
 struct PlaybackCells {
     quality: plx_media::route::Quality,
     direct_play: plx_media::route::DirectPlayMode,
+    font: plx_media::route::SubtitleFont,
     size: plx_media::route::SubtitleSize,
     position: plx_media::route::SubtitlePosition,
     hdr: plx_media::route::HdrOverlayBrightness,
@@ -252,7 +253,7 @@ struct PlaybackCells {
 impl PlaybackCells {
     fn capture() -> Self {
         use plx_media::route as r;
-        PlaybackCells { quality: r::quality(), direct_play: r::direct_play_mode(), size: r::subtitle_size(),
+        PlaybackCells { quality: r::quality(), direct_play: r::direct_play_mode(), font: r::subtitle_font(), size: r::subtitle_size(),
             position: r::subtitle_position(), hdr: r::hdr_overlay_brightness(), next_episode: r::next_episode_mode(), instant_dpad_seeking: r::instant_dpad_seeking(),
             dolby_vision: r::dolby_vision_mode(), deck_press: r::deck_press(), skip: r::skip_interval() }
     }
@@ -261,6 +262,7 @@ impl Drop for PlaybackCells {
     fn drop(&mut self) {
         use plx_media::route as r;
         r::restore_quality(self.quality); r::restore_direct_play_mode(self.direct_play);
+        r::restore_subtitle_font(self.font);
         r::restore_subtitle_size(self.size); r::restore_subtitle_position(self.position);
         r::restore_hdr_overlay_brightness(self.hdr); r::restore_next_episode_mode(self.next_episode); r::restore_instant_dpad_seeking(self.instant_dpad_seeking);
         r::restore_dolby_vision_mode(self.dolby_vision); r::restore_deck_press(self.deck_press); r::restore_skip_interval(self.skip);
@@ -290,7 +292,7 @@ fn assert_a_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row(
 /// `RouteSurface::request` queues the destination's default first-row seat BEFORE that mount runs;
 /// queued after, it put every one of them back on the first row. Each row stores the LAST line of
 /// its ladder, so a first-row seat is a red row:
-/// Playback (Quality, Direct play, Subtitle size, Subtitle position, HDR overlay, Next episode,
+/// Playback (Quality, Direct play, Subtitle font, Subtitle size, Subtitle position, HDR overlay, Next episode,
 /// Deck press, Skip interval, Instant D-pad seeking), Audio & Subtitles (Audio language, Subtitle mode, Subtitle language,
 /// Forced subtitles), Under posters (Details), the Settings root (Language). The Interface
 /// resolution picker is not in the table: its row exists only where the platform offers it.
@@ -307,6 +309,7 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
     let ladder_last = |len: usize| (len - 1) as u32;
     r::restore_quality(quality);
     r::restore_direct_play_mode(r::DirectPlayMode::Disabled);
+    r::restore_subtitle_font(*ses::SubtitleFont::LADDER.last().unwrap());
     r::restore_subtitle_size(*ses::SubtitleSize::LADDER.last().unwrap());
     r::restore_subtitle_position(*ses::SubtitlePosition::LADDER.last().unwrap());
     r::restore_hdr_overlay_brightness(*ses::HdrOverlayBrightness::LADDER.last().unwrap());
@@ -318,6 +321,7 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
     let lines = |kind: PickerKind| match kind {
         PickerKind::Quality => ladder_last(r::available_quality_ladder().len()),
         PickerKind::DirectPlay => 2,
+        PickerKind::SubtitleFont => ladder_last(ses::SubtitleFont::LADDER.len()),
         PickerKind::SubtitleSize => ladder_last(ses::SubtitleSize::LADDER.len()),
         PickerKind::SubtitlePosition => ladder_last(ses::SubtitlePosition::LADDER.len()),
         PickerKind::HdrOverlay => ladder_last(ses::HdrOverlayBrightness::LADDER.len()),
@@ -329,7 +333,7 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
         other => panic!("{other:?} is not a Playback picker"),
     };
     let playback = super::super::preferences::nav_items_for_test(super::super::preferences::Kind::Playback, None);
-    assert_eq!(playback.len(), 10, "every Playback picker is in the table: {playback:?}");
+    assert_eq!(playback.len(), 11, "every Playback picker is in the table: {playback:?}");
     for &(row, dest) in &playback {
         let SettingsPage::Picker(kind) = dest else { panic!("a Playback row pushes a picker: {dest:?}") };
         assert_a_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row(

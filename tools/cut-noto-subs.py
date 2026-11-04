@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Cut the shipped subtitle faces `pkg/fonts/subs/*.ttf` (and their manifest) from pinned Noto Sans
-Bold releases, and keep the "PlxSubs" alias on `pkg/appfont-bold.ttf`.
+Bold releases, and keep the subtitle family aliases on the shipped fonts.
 
     python3 tools/cut-noto-subs.py --fetch DIR      # download the pinned inputs into a NEW, empty DIR
     python3 tools/cut-noto-subs.py DIR              # cut from DIR (verifies every sha256 first)
@@ -17,9 +17,9 @@ Arabic would draw unshaped. See `docs/ass-subtitles.md` "Fonts" for how libass p
 (with a per-glyph coverage check), then `family_default` ("Inter"), then `path_default` (the CJK
 file, with NO coverage check). Thai, Devanagari, Arabic and the rest must therefore be reachable
 BY FAMILY NAME. Each face here keeps its real English name ("Noto Sans Thai", name ID 1 under
-Windows langID 0x0409) and gains "PlxSubs" (0x0407) and "Inter" (0x040C) as ID 1 and ID 4 records
-(`tools/plxsubs_names.py` says why those languages). `pkg/appfont-bold.ttf` gets "PlxSubs" too, and
-is added to the renderer FIRST, so Latin, digits and punctuation never fall to a Noto face.
+Windows langID 0x0409) and gains "PlxSubs" (0x0407), "Inter" (0x040C) and "Open Sans" (0x0411)
+as ID 1 and ID 4 records (`tools/plxsubs_names.py` says why those languages). Inter and Open Sans
+faces are added before the Noto faces, so Latin and punctuation never fall to a script fallback.
 
 **Which scripts.** Every script used by a language in the account language picker
 (`rust-modules/plex/src/plex/languages.rs`) for which Noto Sans ships a Bold weight; the list is
@@ -445,6 +445,7 @@ def cut(directory: Path) -> None:
             "family": names.ALIAS_FAMILY,
             "plxsubs_lang_id": names.LANG_PLXSUBS,
             "inter_lang_id": names.LANG_INTER,
+            "open_sans_lang_id": names.LANG_OPEN_SANS,
             "inter_bold": INTER_BOLD.name,
         },
         "inter_ranges": [list(r) for r in INTER_RANGES],

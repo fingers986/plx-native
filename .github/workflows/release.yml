@@ -372,10 +372,9 @@ jobs:
       # package deliberately does not write that released asset name) — a loud failure naming a
       # checksum rather than a flavour.
       flavor: stable
-      # The PRODUCTION telemetry endpoints, compiled in from `vars` rather than `secrets`
-      # DELIBERATELY — see build-package.yml's own comment on the point. Only SENTRY_AUTH_TOKEN,
-      # passed as a secret below, can read or delete the project.
-      telemetry: production
+      # This fork does not configure Sentry or PostHog; compile telemetry out for the release.
+      telemetry: none
+      upload-debug-files: false
       artifact: release-assets
       homebrew-manifest: true
       source-asset: true
@@ -383,9 +382,6 @@ jobs:
       # plxnative-storage too (its DT_NEEDED list is ci/expected-dt-needed-storage.txt), so it owes the same
       # gate webosbrew-ipk-verify's per-package verdict does not replace.
       fwcompat: true
-    secrets:
-      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-
   publish:
     name: publish release
     runs-on: ubuntu-latest
@@ -412,6 +408,17 @@ jobs:
           fetch-depth: 0
           # the same deploy key as `prepare`, for the same ruleset
           ssh-key: ${{ secrets.MAIN_PUSH_KEY }}
+      - name: Load the release note and audit from the release line
+        env:
+          LINE: ${{ needs.guard.outputs.line }}
+          TAG: ${{ needs.guard.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$LINE"
+          git checkout "origin/$LINE" -- "docs/release-notes/$TAG.md" "docs/release-audits/$TAG.md"
+          python3 ci/check-package.py --lint-note "docs/release-notes/$TAG.md"
+          python3 ci/check-package.py --lint-audit "docs/release-audits/$TAG.md"
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-assets

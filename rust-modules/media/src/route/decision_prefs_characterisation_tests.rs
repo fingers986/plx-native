@@ -32,7 +32,7 @@ use super::*;
 use plx_plex::plex::session::{
     self as session, own_prefs, stored_effective, AudioEnhancementsPref, DeckPress, DeckPressPref,
     DirectPlayModePref, NextEpisodeMode, NextEpisodeModePref, ProfileSetting, QualityPref, Seat, SkipInterval,
-    SkipIntervalPref, SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone,
+    SkipIntervalPref, SubtitleFont, SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone,
     SubtitleTonePref,
 };
 use plx_plex::plex::AudioEnhancements;
@@ -48,6 +48,7 @@ pub(super) struct Restore {
     deck: DeckPress,
     quality: Quality,
     size: SubtitleSize,
+    font: SubtitleFont,
     position: SubtitlePosition,
     tone: SubtitleTone,
     enhancements: AudioEnhancements,
@@ -61,6 +62,7 @@ impl Restore {
             deck: deck_press(),
             quality: quality(),
             size: subtitle_size(),
+            font: subtitle_font(),
             position: subtitle_position(),
             tone: crate::player::subtitle_tone(),
             enhancements: crate::player::audio_enhancements(),
@@ -75,13 +77,14 @@ impl Drop for Restore {
         restore_deck_press(self.deck);
         restore_quality(self.quality);
         restore_subtitle_size(self.size);
+        restore_subtitle_font(self.font);
         restore_subtitle_position(self.position);
         crate::player::restore_subtitle_tone(self.tone);
         crate::player::restore_audio_enhancements(self.enhancements);
     }
 }
 
-/// The nine cells at the shipped defaults, so a test starts from a known baseline.
+/// The ten cells at the shipped defaults, so a test starts from a known baseline.
 pub(super) fn defaults() {
     restore_direct_play_mode(DirectPlayMode::Auto);
     restore_next_episode_mode(NextEpisodeMode::Countdown);
@@ -89,6 +92,7 @@ pub(super) fn defaults() {
     restore_deck_press(DeckPress::Details);
     restore_quality(Quality::Original);
     restore_subtitle_size(SubtitleSize::from_percent(100));
+    restore_subtitle_font(SubtitleFont::Inter);
     restore_subtitle_position(SubtitlePosition::TvScreen);
     crate::player::restore_subtitle_tone(SubtitleTone::White);
     crate::player::restore_audio_enhancements(AudioEnhancements::NONE);

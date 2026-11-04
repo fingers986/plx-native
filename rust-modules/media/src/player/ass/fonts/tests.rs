@@ -95,15 +95,17 @@ fn read_sub(face: &serde_json::Value) -> Vec<u8> {
     std::fs::read(dir().join(SUBS_DIR).join(face["file"].as_str().unwrap())).unwrap()
 }
 
-/// Inter first, Inter Bold second, then the Noto faces in manifest order: libass breaks ties among
-/// members of a family by the order they were added.
+/// Inter, Open Sans and SF Pro Text faces first, then the Noto faces in manifest order.
 #[test]
 fn the_bundled_faces_go_in_inter_first_then_the_manifest_order() {
     let files = bundled(dir()).unwrap();
     let names: Vec<String> = files.iter().map(|p| p.file_name().unwrap().to_string_lossy().into()).collect();
     assert_eq!(&names[..2], ["appfont.ttf", "appfont-bold.ttf"]);
+    assert_eq!(&names[2..4], ["subtitle-open-sans-regular.ttf", "subtitle-open-sans-bold.ttf"]);
+    assert_eq!(&names[4..8], ["subtitle-sf-pro-text-regular.otf", "subtitle-sf-pro-text-bold.otf",
+        "subtitle-sf-pro-text-regular-italic.otf", "subtitle-sf-pro-text-bold-italic.otf"]);
     let listed: Vec<String> = faces().iter().map(|f| f["file"].as_str().unwrap().to_string()).collect();
-    assert_eq!(&names[2..], &listed[..]);
+    assert_eq!(&names[8..], &listed[..]);
     assert!(listed.len() >= 20, "{} faces", listed.len());
     for f in &files {
         assert!(f.is_file(), "{f:?} is not shipped");
@@ -128,7 +130,7 @@ fn a_missing_or_hostile_manifest_is_fonts_unavailable() {
         assert!(matches!(bundled(&root), Err(Fault::FontsUnavailable)), "{body}");
     }
     std::fs::write(subs.join(MANIFEST), r#"{"faces":[{"file":"a.ttf"}]}"#).unwrap();
-    assert_eq!(bundled(&root).unwrap().len(), 3);
+    assert_eq!(bundled(&root).unwrap().len(), 9);
     std::fs::remove_dir_all(&root).unwrap();
 }
 
@@ -193,10 +195,12 @@ fn the_aliases_are_the_records_libass_looks_for() {
         assert!(rec.contains(&(0x409, own.into())), "{own}: {rec:?}");
         assert!(rec.contains(&(0x407, "PlxSubs".into())), "{own}: {rec:?}");
         assert!(rec.contains(&(0x40C, "Inter".into())), "{own}: {rec:?}");
+        assert!(rec.contains(&(0x411, "Open Sans".into())), "{own}: {rec:?}");
         let full = family_records(&bytes, 4);
         assert!(full.contains(&(0x407, "PlxSubs".into())), "{own}: full name {full:?}");
         assert!(full.contains(&(0x40C, "Inter".into())), "{own}: full name {full:?}");
-        for (lang, _) in rec.iter().filter(|(_, t)| t == "PlxSubs" || t == "Inter") {
+        assert!(full.contains(&(0x411, "Open Sans".into())), "{own}: full name {full:?}");
+        for (lang, _) in rec.iter().filter(|(_, t)| t == "PlxSubs" || t == "Inter" || t == "Open Sans") {
             assert_ne!(lang & 0x3FF, 0x009, "{own}: an alias under an English-variant language");
         }
     }

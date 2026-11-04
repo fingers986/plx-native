@@ -160,7 +160,7 @@ mkdir -p "$runtime" "$target" "$assets"
 build_simulator() {
     cd "$repo"
     make sim-wsl SIM_TDIR="$target"
-    for file in appfont.ttf appfont-bold.ttf appfont-cjk.ttf appfont-emoji.ttf appfont-arabic.ttf appfont-arabic-bold.ttf appfont-hebrew.ttf appfont-hebrew-bold.ttf OFL.txt le-roots.pem libass-plx-host.so.0; do
+    for file in appfont.ttf appfont-bold.ttf appfont-cjk.ttf appfont-emoji.ttf appfont-arabic.ttf appfont-arabic-bold.ttf appfont-hebrew.ttf appfont-hebrew-bold.ttf subtitle-open-sans-regular.ttf subtitle-open-sans-bold.ttf OpenSans-OFL.txt subtitle-sf-pro-text-regular.otf subtitle-sf-pro-text-bold.otf subtitle-sf-pro-text-regular-italic.otf subtitle-sf-pro-text-bold-italic.otf OFL.txt le-roots.pem libass-plx-host.so.0; do
         staged="$assets/$file.$$.new"
         install -m 0644 "$repo/pkg/$file" "$staged"
         mv -f "$staged" "$assets/$file"

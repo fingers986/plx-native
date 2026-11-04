@@ -1600,7 +1600,7 @@ print("== shipped fonts ==")
 # Landed 2026-08-01: Inter (SIL OFL 1.1). This is now a REAL gate, not an XFAIL — its job is to
 # stop Monotype Arial coming back through a stale local copy, which is exactly how it would
 # return (the files are named appfont*.ttf, so nothing about the filename reveals the swap).
-ALLOWED = {"Inter", "Arimo", "Roboto", "Noto Sans", "Source Sans 3", "Noto Sans CJK KR", "Noto Emoji",
+ALLOWED = {"Inter", "Open Sans", "Arimo", "Roboto", "Noto Sans", "Source Sans 3", "Noto Sans CJK KR", "Noto Emoji",
            "Noto Kufi Arabic", "Noto Sans Hebrew"}
 for f in ("pkg/appfont.ttf", "pkg/appfont-bold.ttf", "pkg/appfont-cjk.ttf", "pkg/appfont-emoji.ttf",
           "pkg/appfont-arabic.ttf", "pkg/appfont-arabic-bold.ttf", "pkg/appfont-hebrew.ttf", "pkg/appfont-hebrew-bold.ttf"):
@@ -1615,6 +1615,20 @@ check(_cjk.exists() and _cjk.stat().st_size > 10_000_000,
       "pkg/appfont-cjk.ttf present and whole — the CJK fallback face (see rust-modules/base/src/fontcov.rs)")
 check((ROOT / "pkg/OFL.txt").exists(),
       "pkg/OFL.txt present — the OFL requires the licence to travel with the font")
+for f in ("pkg/subtitle-open-sans-regular.ttf", "pkg/subtitle-open-sans-bold.ttf"):
+    check(font_family(ROOT / f) == "Open Sans", f"{f} is a static Open Sans face")
+check((ROOT / "pkg/OpenSans-OFL.txt").exists() and "Open Sans" in (ROOT / "pkg/OpenSans-OFL.txt").read_text(),
+      "pkg/OpenSans-OFL.txt carries Open Sans's OFL notice with the font")
+check("Open Sans" in (ROOT / "THIRD-PARTY-NOTICES.md").read_text(),
+      "THIRD-PARTY-NOTICES.md attributes the Open Sans subtitle faces")
+# SF Pro Text is supplied under a separate license held by the project owner; it is deliberately
+# checked separately from the repository's standard redistributable-font whitelist above.
+for f in ("pkg/subtitle-sf-pro-text-regular.otf", "pkg/subtitle-sf-pro-text-bold.otf",
+          "pkg/subtitle-sf-pro-text-regular-italic.otf", "pkg/subtitle-sf-pro-text-bold-italic.otf"):
+    check(font_family(ROOT / f) == "SF Pro Text", f"{f} is a static SF Pro Text face (local experiment)")
+check("SF Pro Text" in (ROOT / "THIRD-PARTY-NOTICES.md").read_text()
+      and "separate license held by the project owner" in (ROOT / "THIRD-PARTY-NOTICES.md").read_text(),
+      "THIRD-PARTY-NOTICES.md records the project owner's SF Pro Text license")
 # One OFL text covers both faces: Inter's and Noto CJK's licence bodies are byte-identical after
 # their differing copyright headers, and the per-font copyright notices live in THIRD-PARTY-NOTICES
 # and in each font's own name table (ID 0/7/13/14, asserted by tools/cut-noto-cjk.py).
@@ -1725,6 +1739,10 @@ expected = {
     # appfont-cjk.ttf is the fallback face. Its absence is not a cosmetic loss: every Korean,
     # Japanese and Chinese title in the library becomes tofu, which is LG checklist #6 and #48.
     "appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf", "OFL.txt",
+    "subtitle-open-sans-regular.ttf", "subtitle-open-sans-bold.ttf",
+    "OpenSans-OFL.txt",
+    "subtitle-sf-pro-text-regular.otf", "subtitle-sf-pro-text-bold.otf",
+    "subtitle-sf-pro-text-regular-italic.otf", "subtitle-sf-pro-text-bold-italic.otf",
     # appfont-emoji.ttf is the emoji face: without it an emoji in a library name is a box.
     "appfont-emoji.ttf",
     # The Arabic and Hebrew faces (Noto Kufi Arabic, Noto Sans Hebrew), shaped by libass-plx's UI

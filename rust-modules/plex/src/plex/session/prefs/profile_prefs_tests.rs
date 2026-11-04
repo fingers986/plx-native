@@ -5,7 +5,7 @@
 use super::super::{
     DolbyVisionMode, InstantDpadSeeking, current_seat, AudioEnhancementsPref, CurrentProfile, DeckPress, DeckPressPref, UnderPosters, UnderPostersDetails, DirectPlayMode, DirectPlayModePref,
     HdrOverlayBrightness, HdrOverlayBrightnessPref, NextEpisodeMode, NextEpisodeModePref, PlaybackQuality, QualityPref, Seat, Session, SkipInterval, SkipIntervalPref,
-    SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref, TempSession,
+    SubtitleFont, SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref, TempSession,
     TrailerAutoplayPref, UserRef,
 };
 use super::profile_prefs::*;
@@ -51,6 +51,7 @@ fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
         playback_quality: Some(PlaybackQuality::P720),
         direct_play_mode: Some(DirectPlayMode::Forced),
         subtitle_tone: Some(SubtitleTone::Silver),
+        subtitle_font: Some(SubtitleFont::OpenSans),
         subtitle_size: Some(SubtitleSize::from_percent(125)),
         subtitle_position: Some(SubtitlePosition::TvScreen),
         hdr_overlay_brightness: Some(HdrOverlayBrightness::Half),
@@ -69,7 +70,7 @@ fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
         .filter(|d| d.fallback == Fallback::LegacyInstallKey)
         .map(|d| d.key.to_string())
         .collect();
-    assert_eq!(rows.len(), 14, "every per-profile setting has a legacy fallback");
+    assert_eq!(rows.len(), 15, "every per-profile setting has a legacy fallback");
     assert_eq!(fields, rows, "ProfilePrefs and the rows with a legacy fallback drifted");
     assert!(DESCRIPTORS.iter().filter(|d| d.fallback == Fallback::LegacyInstallKey).all(|d| d.scope == Scope::Profile));
 }

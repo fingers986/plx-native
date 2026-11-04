@@ -1344,8 +1344,8 @@ fn image_sub_lift_follows_the_band() {
 /// **`min_controls_top_y`**: the highest row top for which the largest block (three lines at the
 /// largest size, the highest position) is still inside `SAFE`. The number is computed, not
 /// estimated: 54 (SAFE top) + 3 x 48 x 1.8 (block) + 120 (extra 180 px anchor gap) + 12 (clearance) = 445.2, up
-/// to the whole pixel 446. A band exactly there keeps the block on screen through
-/// `caption_geometry_for` and `hud_lift`; one px higher does not.
+/// to the whole pixel 446. The caption's safe-area clamp keeps it onscreen even when the HUD
+/// row is moved above that bound; in that case the caption can overlap the HUD band.
 #[test]
 fn min_controls_top_y_is_where_the_largest_block_just_fits() {
     use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
@@ -1358,7 +1358,7 @@ fn min_controls_top_y_is_where_the_largest_block_just_fits() {
         caption_layout(CAPTION_ANCHOR_LINES, scale, baseline, floor).top
     };
     assert!(top_of_block(HudBand::from_controls_top(bound)) >= SAFE.y);
-    assert!(top_of_block(HudBand::from_controls_top(bound - 1.0)) < SAFE.y, "one px higher does not");
+    assert!(top_of_block(HudBand::from_controls_top(bound - 1.0)) >= SAFE.y, "the safe-area clamp still applies above the bound");
     // Every other pick of size and position fits at the bound too: it is the binding one.
     for p in SubtitlePosition::LADDER {
         for z in SubtitleSize::LADDER {

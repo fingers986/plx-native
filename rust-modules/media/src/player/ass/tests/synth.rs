@@ -51,12 +51,12 @@ fn text_native(style: &TextStyle, cues: &[Cue]) -> Native {
     }
     let mut native = native_with(&[], &script);
     assert!(native.set_wrap_unicode(true));
-    assert!(native.set_line_spacing(text_style::line_spacing(style.scale())));
+    assert!(native.set_line_spacing(text_style::line_spacing(style.font, style.scale())));
     native
 }
 
 fn style(size: SubtitleSize, position: SubtitlePosition) -> TextStyle {
-    TextStyle { size, position }
+    TextStyle { size, position, ..TextStyle::default() }
 }
 
 /// The frame of `cues` at 1 s.

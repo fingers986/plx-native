@@ -142,7 +142,7 @@ fn every_picker_level_fits_its_column_in_every_language() {
         for kind in [Kind::Playback, Kind::AudioSubtitles] {
             let prefs = AudioPreferences::default();
             let fields: &[PickerKind] = match kind {
-                Kind::Playback => &[PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision],
+                Kind::Playback => &[PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleFont, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision],
                 Kind::AudioSubtitles => &[PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles],
             };
             // The Interface resolution picker is opened from the Settings root, not a field list.
@@ -254,7 +254,7 @@ fn every_explanation_under_a_title_fits_the_column_in_every_language() {
     const MAX_COPY_LINES: usize = 5;
     let _serial = plx_base::testlock::serial();
     let layout = RouteLayout::screen();
-    let all_fields = [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition,
+    let all_fields = [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleFont, PickerKind::SubtitleSize, PickerKind::SubtitlePosition,
         PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision, PickerKind::UiResolution, PickerKind::AudioLanguage, PickerKind::SubtitleMode,
         PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles];
     let mut out = Vec::new();
@@ -324,7 +324,7 @@ fn the_playback_page_names_its_profile_or_asks_for_one_in_every_language() {
 #[test]
 fn each_local_picker_has_its_own_explanation_in_every_language() {
     let _serial = plx_base::testlock::serial();
-    let fields = [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition,
+    let fields = [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleFont, PickerKind::SubtitleSize, PickerKind::SubtitlePosition,
         PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision];
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);

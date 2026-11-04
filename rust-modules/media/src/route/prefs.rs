@@ -38,7 +38,8 @@ use super::plan::{supported_quality, Quality, QUALITY_LADDER};
 use plx_plex::plex::session::{
     DolbyVisionMode, DolbyVisionModePref, InstantDpadSeeking, InstantDpadSeekingPref, effective, own_prefs, persist_profile_pref, AudioEnhancementsPref, DeckPress, DeckPressPref, DirectPlayMode,
     DirectPlayModePref, HdrOverlayBrightness, HdrOverlayBrightnessPref, NextEpisodeMode, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsRecord,
-    ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipInterval, SkipIntervalPref, SubtitlePosition,
+    ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipInterval, SkipIntervalPref, SubtitleFont,
+    SubtitleFontPref, SubtitlePosition,
     SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref, TrailerAutoplayPref, UnderPosters,
     UnderPostersPref,
 };
@@ -142,7 +143,7 @@ macro_rules! packed_by_index {
         }
     )*};
 }
-packed_by_index!(DolbyVisionMode = 0, InstantDpadSeeking = 0, NextEpisodeMode = 0, SkipInterval = 1, DeckPress = 0, SubtitleSize = 4, SubtitlePosition = 0, SubtitleTone = 0, HdrOverlayBrightness = 1);
+packed_by_index!(DolbyVisionMode = 0, InstantDpadSeeking = 0, NextEpisodeMode = 0, SkipInterval = 1, DeckPress = 0, SubtitleFont = 0, SubtitleSize = 4, SubtitlePosition = 0, SubtitleTone = 0, HdrOverlayBrightness = 1);
 
 impl Packed for DirectPlayMode {
     const SEED: u8 = 0;
@@ -266,6 +267,10 @@ live_cell!(
     pub(super) SUBTITLE_SIZE: SubtitleSize, "subtitle size preference"
 );
 live_cell!(
+    /// The typeface used for client-rendered text subtitles.
+    pub(super) SUBTITLE_FONT: SubtitleFont, "subtitle font preference"
+);
+live_cell!(
     /// The client-rendered subtitle caption's vertical placement. Only the plain-text caption draw
     /// moves with this; image (PGS/VobSub) captions and native ASS/SSA keep their own placement.
     pub(super) SUBTITLE_POSITION: SubtitlePosition, "subtitle position preference"
@@ -332,6 +337,7 @@ live_setting!(DolbyVisionModePref, DOLBY_VISION_MODE, "Dolby Vision mode");
 live_setting!(DeckPressPref, DECK_PRESS, "deck press");
 live_setting!(UnderPostersPref, UNDER_POSTERS, "under posters");
 live_setting!(SubtitleSizePref, SUBTITLE_SIZE, "subtitle size");
+live_setting!(SubtitleFontPref, SUBTITLE_FONT, "subtitle font");
 live_setting!(SubtitlePositionPref, SUBTITLE_POSITION, "subtitle position",
     fn normalize(position: SubtitlePosition) -> SubtitlePosition {
         // The selected anchor is per profile; its distance remains the shared install preference.
@@ -391,6 +397,7 @@ pub const LIVE_ROWS: &[LiveRow] = &[
     LiveRow::of::<DirectPlayModePref>(),
     LiveRow::of::<SubtitleTonePref>(),
     LiveRow::of::<SubtitleSizePref>(),
+    LiveRow::of::<SubtitleFontPref>(),
     LiveRow::of::<SubtitlePositionPref>(),
     LiveRow::of::<HdrOverlayBrightnessPref>(),
     LiveRow::of::<NextEpisodeModePref>(),
@@ -787,6 +794,7 @@ choices! {
     UnderPosters => UnderPostersPref,
     TrailerAutoplay => TrailerAutoplayPref,
     SubtitleSize => SubtitleSizePref,
+    SubtitleFont => SubtitleFontPref,
     SubtitlePosition => SubtitlePositionPref,
     HdrOverlayBrightness => HdrOverlayBrightnessPref,
 }
@@ -931,6 +939,12 @@ pub fn restore_subtitle_size(size: SubtitleSize) { restore_live::<SubtitleSizePr
 /// `reply` (Settings) learns whether the write was durable.
 pub fn select_subtitle_size(size: SubtitleSize, reply: Option<Sender<bool>>) {
     choose::<SubtitleSizePref>(size, How::Optimistic(reply));
+}
+
+pub fn subtitle_font() -> SubtitleFont { SubtitleFontPref::live() }
+pub fn restore_subtitle_font(font: SubtitleFont) { restore_live::<SubtitleFontPref>(font) }
+pub fn select_subtitle_font(font: SubtitleFont, reply: Option<Sender<bool>>) {
+    choose::<SubtitleFontPref>(font, How::Optimistic(reply));
 }
 
 pub fn subtitle_position() -> SubtitlePosition {
