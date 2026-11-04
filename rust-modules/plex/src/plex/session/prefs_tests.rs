@@ -334,6 +334,7 @@ fn garbage_fixtures() -> Vec<(&'static str, Vec<Value>)> {
         ("playback_quality", generic()),
         ("direct_play_mode", generic()),
         ("subtitle_tone", generic()),
+        ("subtitle_font", generic()),
         ("subtitle_size", generic()),
         ("subtitle_position", generic()),
         ("subtitle_custom_distance", soft_distance_garbage()),

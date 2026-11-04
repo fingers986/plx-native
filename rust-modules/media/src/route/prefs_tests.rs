@@ -75,6 +75,7 @@ fn stored_prefs() -> Preferences {
     let s = session::Session::default()
         .with_pref::<QualityPref>(Quality::P1080High)
         .with_pref::<DirectPlayModePref>(DirectPlayMode::Forced)
+        .with_pref::<SubtitleFontPref>(SubtitleFont::SfProText)
         .with_pref::<SubtitleSizePref>(SubtitleSize::from_percent(125))
         .with_pref::<SubtitlePositionPref>(SubtitlePosition::TvScreen)
         .with_pref::<NextEpisodeModePref>(NextEpisodeMode::AfterCredits)
@@ -132,7 +133,7 @@ fn cells() -> Cells {
 
 /// The twelve legacy values of [`stored_prefs`], as the cells hold them once they are restored.
 fn legacy_cells() -> Cells {
-    Cells(Quality::P1080High, DirectPlayMode::Forced, SubtitleFont::Inter, SubtitleSize::from_percent(125), SubtitlePosition::TvScreen,
+    Cells(Quality::P1080High, DirectPlayMode::Forced, SubtitleFont::SfProText, SubtitleSize::from_percent(125), SubtitlePosition::TvScreen,
         NextEpisodeMode::AfterCredits, SkipInterval::Seconds30, DeckPress::Play, SubtitleTone::Silver,
         AudioEnhancements { boost_dialog: true, normalize_loudness: true }, HdrOverlayBrightness::Half, false)
 }
@@ -389,6 +390,7 @@ fn every_live_setting_is_picked_into_the_seated_profiles_record() {
 
     assert!(confirm::<QualityPref>(Quality::P480));
     assert!(confirm::<DirectPlayModePref>(DirectPlayMode::Disabled));
+    assert!(confirm::<SubtitleFontPref>(SubtitleFont::OpenSans));
     assert!(confirm::<SubtitleSizePref>(SubtitleSize::from_percent(150)));
     assert!(confirm::<SubtitlePositionPref>(SubtitlePosition::TvScreen));
     assert!(confirm::<NextEpisodeModePref>(NextEpisodeMode::Off));
