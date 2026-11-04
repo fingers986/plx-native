@@ -58,7 +58,7 @@ pub use playback_options::{DolbyVisionMode, InstantDpadSeeking};
 pub use prefs::{DolbyVisionModePref, InstantDpadSeekingPref, HoldHintTaughtPref, effective, own_prefs, persist_profile_pref, put_own, stored_effective, tenure, AudioEnhancementsPref,
     DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsPref,
     ProfilePrefsRecord, ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipIntervalPref,
-    SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, UiResolutionPref, UnderPostersPref};
+    SubtitleFontPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, UiResolutionPref, UnderPostersPref};
 use prefs::ProfileMemory;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -1087,6 +1087,32 @@ impl<'de> Deserialize<'de> for SubtitleSize {
             return Err(serde::de::Error::custom("subtitle size must be 80–180 in 5% steps"));
         }
         Ok(Self(percent))
+    }
+}
+
+/// Typeface for client-rendered text subtitles. Authored ASS/SSA scripts retain their own styles.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubtitleFont {
+    #[default]
+    Inter,
+    OpenSans,
+    SfProText,
+}
+
+impl SubtitleFont {
+    pub const LADDER: [SubtitleFont; 3] = [SubtitleFont::Inter, SubtitleFont::OpenSans, SubtitleFont::SfProText];
+
+    pub const fn index(self) -> u8 {
+        match self { Self::Inter => 0, Self::OpenSans => 1, Self::SfProText => 2 }
+    }
+
+    pub const fn from_index(index: u8) -> Self {
+        match index { 1 => Self::OpenSans, 2 => Self::SfProText, _ => Self::Inter }
+    }
+
+    pub const fn family_name(self) -> &'static str {
+        match self { Self::Inter => "Inter", Self::OpenSans => "Open Sans", Self::SfProText => "SF Pro Text" }
     }
 }
 
@@ -2641,6 +2667,10 @@ impl Session {
 
     pub fn subtitle_size(&self) -> SubtitleSize {
         self.prefs.subtitle_size
+    }
+
+    pub fn subtitle_font(&self) -> SubtitleFont {
+        self.prefs.subtitle_font
     }
 
     pub fn subtitle_position(&self) -> SubtitlePosition {

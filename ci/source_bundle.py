@@ -20,7 +20,10 @@ ROOT_FILES = {'Makefile', 'LICENSE', 'LICENSING.md', 'THIRD-PARTY-NOTICES.md',
               'README.md', 'CONTRIBUTING.md', 'DCO', 'PRIVACY.md', 'SECURITY.md',
               'TRADEMARKS.md', '.gitignore', 'AGENTS.md', 'CLAUDE.md'}
 ROOT_DIRS = {'src', 'include', 'rust-modules', 'assets', 'ci', 'tools', 'docs', 'tests', 'licenses', 'locales', '.agents'}
-PKG_FILES = {'OFL.txt', 'appfont.ttf', 'appfont-bold.ttf', 'appfont-cjk.ttf', 'appfont-emoji.ttf', 'le-roots.pem',
+PKG_FILES = {'OFL.txt', 'OpenSans-OFL.txt', 'subtitle-open-sans-regular.ttf', 'subtitle-open-sans-bold.ttf',
+             'subtitle-sf-pro-text-regular.otf', 'subtitle-sf-pro-text-bold.otf',
+             'subtitle-sf-pro-text-regular-italic.otf', 'subtitle-sf-pro-text-bold-italic.otf',
+             'appfont.ttf', 'appfont-bold.ttf', 'appfont-cjk.ttf', 'appfont-emoji.ttf', 'le-roots.pem',
              'appfont-arabic.ttf', 'appfont-arabic-bold.ttf', 'appfont-hebrew.ttf', 'appfont-hebrew-bold.ttf',
              'appinfo.json', 'icon.png', 'icon160.png', 'icon320.png', 'icon400.png',
              'largeIcon.png', 'splash.png', 'telemetry.local.json.example'}

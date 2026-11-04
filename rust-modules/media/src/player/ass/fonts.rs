@@ -5,16 +5,18 @@
 //! with no coverage check). So Thai, Devanagari, Arabic and the other scripts of the account
 //! language picker are reachable only because a face named for them is in the library:
 //!
-//!   * `appfont.ttf`, `appfont-bold.ttf` - Inter. Bold also answers to the family **"PlxSubs"**
-//!     (a name record under Windows langID 0x0407), which the synthesized subtitle style names.
+//!   * `appfont.ttf`, `appfont-bold.ttf` - Inter.
+//!   * `subtitle-open-sans-*.ttf` - Open Sans Regular/Bold; italic is synthesized by libass.
+//!   * `subtitle-sf-pro-text-*.otf` - SF Pro Text Regular/Bold/Italic/Bold Italic.
 //!   * `fonts/subs/NotoSans<Script>-Bold.ttf` - one per script, cut by `tools/cut-noto-subs.py`,
-//!     listed in `fonts/subs/manifest.json`. Each answers to "PlxSubs" and "Inter" as well as to its
-//!     own name, and carries no Latin, digit or punctuation codepoint Inter Bold has.
+//!     listed in `fonts/subs/manifest.json`. Each answers to its own name and the selected subtitle
+//!     families (Inter and Open Sans), and carries no Latin, digit or punctuation codepoint Inter
+//!     Bold has. SF Pro Text falls back through Inter's family when a glyph is missing.
 //!
 //! **The order is load-bearing.** libass breaks a tie between equally good members of a family by
 //! the order they were added, and takes the first member for code 0 without a coverage check, so
-//! both Inter faces go in before every Noto face: Latin, digits and punctuation can never be drawn
-//! by a Noto face. The Noto faces follow in manifest order.
+//! the complete Inter, Open Sans and SF Pro Text families go in before every Noto face. The Noto
+//! faces follow in manifest order.
 //!
 //! **Read at create.** The files are read from disk each time a renderer is created, handed to
 //! libass (`ass_add_font` copies the bytes) and dropped. Nothing here is a process-lifetime copy:
@@ -26,6 +28,18 @@ use std::path::{Path, PathBuf};
 
 /// Inter Regular, then Inter Bold.
 const INTER: [&str; 2] = ["appfont.ttf", "appfont-bold.ttf"];
+/// Open Sans follows Inter's two-face scheme; libass synthesizes italic when a cue requests it.
+const OPEN_SANS: [&str; 2] = [
+    "subtitle-open-sans-regular.ttf",
+    "subtitle-open-sans-bold.ttf",
+];
+/// SF Pro Text's four static faces let libass match bold and italic tags to real designs.
+const SF_PRO_TEXT: [&str; 4] = [
+    "subtitle-sf-pro-text-regular.otf",
+    "subtitle-sf-pro-text-bold.otf",
+    "subtitle-sf-pro-text-regular-italic.otf",
+    "subtitle-sf-pro-text-bold-italic.otf",
+];
 /// Where the Noto faces and their manifest sit, under the app directory.
 const SUBS_DIR: &str = "fonts/subs";
 const MANIFEST: &str = "manifest.json";
@@ -52,7 +66,8 @@ pub(super) fn bundled(asset_dir: &Path) -> Result<Vec<PathBuf>, Fault> {
     if manifest.faces.is_empty() {
         return Err(Fault::FontsUnavailable);
     }
-    let mut files: Vec<PathBuf> = INTER.iter().map(|name| asset_dir.join(name)).collect();
+    let mut files: Vec<PathBuf> = INTER.iter().chain(OPEN_SANS.iter()).chain(SF_PRO_TEXT.iter())
+        .map(|name| asset_dir.join(name)).collect();
     for entry in manifest.faces {
         // A bare file name: the manifest is payload, but a path out of the directory is never right.
         let plain = !entry.file.is_empty()

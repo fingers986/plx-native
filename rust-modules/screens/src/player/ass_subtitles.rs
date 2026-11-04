@@ -328,16 +328,17 @@ fn lift_dys(
     let position = style.position;
     let height = (moving_bottom(regions, dys).unwrap_or(top) - top) as f32;
     let bottom = moving_bottom(regions, dys).unwrap_or(top) as f32;
-    let custom_adjust = text_style::BOTTOM_GAP - text_style::position_distance(style.position);
     let hud_rise = if lift {
-        (bottom + frame_offset_y - (band.ceil_y + custom_adjust.min(0.0))).max(0.0)
+        (bottom + frame_offset_y - band.ceil_y).max(0.0)
     } else {
         0.0
     };
-    let rest = band.rest_limit(position) + frame_offset_y;
-    let section_rise = (band.rise_for(position) + frame_offset_y).max(0.0);
+    let after_hud_bottom = bottom + frame_offset_y - hud_rise;
+    // `after_hud_bottom` is already in screen coordinates, including the video-frame offset.
+    let section_target = band.ceil_y - band.rise_for(position);
+    let section_rise = (after_hud_bottom - section_target).max(0.0);
     let rise = if lift {
-        HudBand::clear_rise(section_rise, rest, height)
+        HudBand::clear_rise(section_rise, after_hud_bottom, height)
     } else {
         0.0
     };
@@ -466,14 +467,12 @@ mod tests {
     }
 
     fn style(size: SubtitleSize, position: SubtitlePosition) -> TextStyle {
-        TextStyle { size, position }
+        TextStyle { size, position, ..TextStyle::default() }
     }
 
-    /// Distance an anchored bottom cue must rise so its deepest ink clears the HUD safe edge.
+    /// Distance an anchored bottom cue must rise so its deepest ink clears the common HUD safe edge.
     fn hud_rise(position: SubtitlePosition, band: HudBand, extra_below_anchor: f32) -> f32 {
-        let adjust = text_style::BOTTOM_GAP - text_style::position_distance(position);
-        let target = band.ceil_y + adjust.min(0.0);
-        text_style::bottom_anchor_y(position) + extra_below_anchor - target
+        (text_style::bottom_anchor_y(position) + extra_below_anchor - band.ceil_y).max(0.0)
     }
 
     /// A one-line region whose bottom edge sits on the style's bottom anchor, `extra` px below

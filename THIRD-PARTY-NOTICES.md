@@ -205,6 +205,17 @@ copyright statement declares **no Reserved Font Name**, so OFL §3 imposes no re
 family name "Inter" is retained. The fonts also carry the upstream trademark statement
 "Inter UI and Inter is a trademark of rsms."
 
+**Open Sans** — `subtitle-open-sans-regular.ttf` and `subtitle-open-sans-bold.ttf`.
+Copyright 2020 The Open Sans Project Authors (https://github.com/googlefonts/opensans), per the
+source font files. Licence: **SIL Open Font License 1.1** — the full text ships beside these faces
+as `OpenSans-OFL.txt`. These are the upstream static Regular and Bold faces; libass synthesizes
+italic styling when requested by subtitle cues.
+
+**SF Pro Text** — `subtitle-sf-pro-text-regular.otf`, `subtitle-sf-pro-text-bold.otf`,
+`subtitle-sf-pro-text-regular-italic.otf`, and `subtitle-sf-pro-text-bold-italic.otf`.
+Apple-provided SF Pro Text faces, supplied by the user for a local personal experiment. The font is
+subject to Apple's SF font licence and included under the separate license held by the project owner.
+
 **Noto Sans CJK KR** — `appfont-cjk.ttf`
 Copyright © 2014-2021 Adobe (https://www.adobe.com/), per the font's own name table. Version
 2.004, from `github.com/notofonts/noto-cjk` release `Sans2.004`, asset
@@ -247,9 +258,10 @@ own name table. None of the copyright statements declares a **Reserved Font Name
 name ("Noto Sans Thai", ...) is retained.
 *Modified*: each is subset to the codepoints of its script (everything Inter Bold or the
 Latin/punctuation ranges already cover is removed; layout tables are kept), hinting is dropped,
-the OS/2 and `hhea` metrics are scaled to Inter Bold's line proportions, and two name records are
-added (family and full name "PlxSubs" and "Inter", under non-English language IDs) so libass
-selects them as fallbacks. The recipe is `tools/cut-noto-subs.py`; the manifest
+the OS/2 and `hhea` metrics are scaled to Inter Bold's line proportions, and three name aliases
+("PlxSubs", "Inter" and "Open Sans", for family and full name under non-English language IDs)
+are added so libass selects these faces as fallbacks for either chosen subtitle font. The recipe is
+`tools/cut-noto-subs.py`; the manifest
 `fonts/subs/manifest.json` records every input and output hash.
 
 **Noto Emoji** — `appfont-emoji.ttf`

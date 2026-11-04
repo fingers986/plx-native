@@ -8,7 +8,7 @@ The viewer's existing tone and timing controls still apply to every subtitle.
 
 Embedded TEXT tracks (SubRip, WebVTT, mov_text, SAMI and the other text codecs) render through the same
 libass worker. They have no header in the file, so `player::ass_source` synthesizes one
-(`player::text_ass::header`) from the viewer's size and position picks and keeps each cue as it arrived;
+(`player::text_ass::header`) from the viewer's font, size and position picks and keeps each cue as it arrived;
 `player::text_ass::convert` turns the cue's text into an ASS event body in the track's dialect (italic,
 bold, underline, colour and `{\an}` placement honoured, everything else shown as plain text). Such a
 source has `Origin::Text`: it renders into the full 1920x1080 logical screen, not the video viewport.
@@ -16,7 +16,7 @@ The default subtitle anchor is either the video picture's bottom edge or the TV 
 edge. Each anchor has its own 40–180 px distance default, adjustable in Settings in 5 px steps.
 Player > Subtitle Style also offers Custom, which uses its own saved TV-screen gap; its live control
 adjusts that gap in 5 px steps. With the transport visible, a cue rises only when its current anchor
-overlaps the HUD safe edge; an open HUD section can request a further rise. A change of the size or position
+overlaps the HUD safe edge; an open HUD section can request a further rise. A change of the font, size or position
 pick re-synthesizes the header of the selected track lazily (the revision bumps once; the renderer swaps
 the track in place). The track's events are a newest-wins view of the cues: a cue's end is clipped to
 the start of the next cue of the same alignment class, so an overlap never leaves the old text up beside
@@ -47,7 +47,7 @@ it sets track features (`plx_ass_set_features`, Unicode line breaking), the liba
 scans its fonts (`ass_set_fonts`) only on its first load; a replaced track keeps every opened face
 and does not extract its own `[Fonts]` section again. The engine uses the replace for two
 cases: sliding the window of a long sidecar script, and a restyle (a Text-origin source whose
-synthesized header or script changed with the viewer's text size or position, same fonts): the
+synthesized header or script changed with the viewer's text font, size or position, same fonts): the
 track is replaced, the held events are appended again and the line spacing of the new header's size
 is set. Any other change of source either re-feeds the
 same renderer (the same embedded source with the same header and fonts) or opens a new one. A
@@ -56,13 +56,14 @@ spacing of the size its header was built for (`Origin::Text` holds those picks);
 keeps libass's own pitch and breaking. `tests/fixtures/make_ass_faces.py` regenerates the 14 one-glyph test faces.
 
 Fonts. libass runs with no font provider, so it finds a face by family name among the faces the
-engine adds when a renderer is created (`ass/fonts.rs`): `appfont.ttf` and `appfont-bold.ttf`
-(Inter; Bold also answers to the family "PlxSubs", which the synthesized style names), then the
-22 `fonts/subs/NotoSans<Script>-Bold.ttf` faces listed in `fonts/subs/manifest.json`, in manifest
-order. Each Noto face answers to "PlxSubs" and "Inter" too, carries nothing Inter Bold covers, and
-has Inter Bold's win-metric proportions, so authored ASS naming an unknown family falls to a face
-that has the script instead of the CJK default's missing-glyph boxes. Add order is load-bearing
-(Inter first). The files are read at each create and not kept. `tools/cut-noto-subs.py` cuts them
+engine adds when a renderer is created (`ass/fonts.rs`): Inter, Open Sans Regular/Bold (libass
+synthesizes italic), SF Pro Text's four static faces (Regular, Bold, Italic and Bold Italic), then
+the 22 `fonts/subs/NotoSans<Script>-Bold.ttf` faces
+listed in `fonts/subs/manifest.json`, in manifest order. The text-origin header uses the selected
+family; its Noto fallback faces answer to "Inter" and "Open Sans", carry nothing Inter Bold
+covers, and have Inter Bold's win-metric proportions. SF Pro Text uses Inter for fallback glyphs.
+Add order keeps Latin glyphs ahead of Noto.
+The files are read at each create and not kept. `tools/cut-noto-subs.py` cuts them
 and accounts for EVERY language of the picker (a face, the CJK default,
 Inter, or uncovered with its reason), which a test checks against the shipped cmaps. Three scripts
 are uncovered because Noto Sans ships them in Regular only: Yi (`ii`), Avestan (`ae`) and

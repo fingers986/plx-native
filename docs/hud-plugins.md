@@ -805,29 +805,30 @@ rounding, by an amount UNVERIFIED until PR12 measures it; either way the TV's co
 
 ### Captions clear of an open section (PR17)
 
-While any player section is open, a caption's bottom limit is `min(P, S - 12)`. P is the HUD-up limit the code
-gives the viewer's Position (`band.ceil_y - position_lift`: Low 780, Middle 620, High 460 on classic; an image
-caption has no Position, so its P is the ceiling, Low's) and S is the resting top of everything the HUD has open,
-which the compile reports as the open block's height (`HudGeometry::open_height`, `S = 1080 - height`: the top
-of the highest band of the state, the same rule the scrim's `block_top` uses). The two never add: a Position that
-already clears the section does not move. 12 is `CAPTION_INK_CLEARANCE`, the gap the band itself keeps.
+The HUD uses one safe edge for every subtitle Position: `band.ceil_y` (780 on classic), already 12 px above the
+control row. When the HUD appears, a subtitle is raised only if its current bottom lies below that edge. A subtitle
+already above the edge stays at its selected position; the HUD does not push it down. Position and distance set
+the starting point, not a different HUD target.
 
-| state | Low | Middle | High |
-|---|---|---|---|
-| HUD up, nothing open | 780 | 620 | 460 |
-| built-in Info (S 668) | 656 | 620 | 460 |
-| built-in Chapters (S 684) | 672 | 620 | 460 |
+With a player section open, the target becomes `min(band.ceil_y, S - 12)`, where S is the resting top of everything
+the HUD has open. The compile reports S as `1080 - HudGeometry::open_height`, the top of the highest band of the
+state, matching the scrim's `block_top`. Readers raise a subtitle only by the amount needed from its current
+position to reach that target. 12 is `CAPTION_INK_CLEARANCE`, the gap the band keeps.
+
+| state | target edge for all Positions |
+|---|---:|
+| HUD up, nothing open | 780 |
+| built-in Info (S 668) | 656 |
+| built-in Chapters (S 684) | 672 |
 
 The reference package's block is its whole inline block (its transport is lifted over the section), laid out by
 its own compile, and its band is its own too (ceiling 757.2, so P is 757.2 / 597.2 / 437.2): Chapters S 542.8
 gives 530.8 / 530.8 / 437.2, Info S 572.2 gives 560.2 / 560.2 / 437.2, both S 377.8 give 365.8 at every Position.
 (The designer's estimates, 640 / 600 / 480, were for a band at 780 and a block without the lifted title.)
 
-- **The rise.** `HudBand` carries `rise: [f32; 3]`, `P - limit` per Position (Low, Middle, High), so every reader
-  takes the limit as `P - rise` and a band whose rise is zero leaves its arithmetic exactly as it was
-  (`caption_geometry_for`, `hud_lift`, `today_baseline`, the libass `lift_dys`). `rise_to_clear(S)` is
-  `max(0, P - (S - 12))` per Position. A Position that already clears the block takes no rise: Position gives way
-  first.
+- **The rise.** `HudBand` carries `rise: [f32; 3]`, the maximum rise from the common ceiling to the open section's
+  safe edge. `rise_to_clear(S)` is `max(0, band.ceil_y - (S - 12))`. Each reader applies only the amount needed
+  from the caption's current bottom, so a caption already above the target stays in place.
 - **Rise only.** `player_hud::caption_rise::CaptionRise`, a field of `HudMotion`, holds the lowest S of every state
   visited since the first section opened, so a second section or a taller one lifts the limit, a shorter one or the
   close of one of two holds it, and the last close returns it to P. It is aimed from the screen's tick

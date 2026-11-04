@@ -1,18 +1,19 @@
 """The name-record aliases that make libass find the subtitle fonts (plan D6).
 
 Shared by `tools/cut-inter.py` (which writes `pkg/appfont-bold.ttf`) and `tools/cut-noto-subs.py`
-(which writes `pkg/fonts/subs/*.ttf` and re-applies the Inter alias idempotently), so a re-cut of
+(which writes `pkg/fonts/subs/*.ttf` and re-applies each Noto fallback alias idempotently), so a re-cut of
 either cannot silently drop it. `rust-modules/media/src/player/ass/fonts.rs` asserts the result on
 the shipped files.
 
 libass reads every Microsoft-platform name record with ID 1 (family) and ID 4 (full name) of a font,
 whatever its language (`get_font_info`, ass_fontselect.c): an extra record makes the face answer to
-a second family name. The records need three distinct languages, because fontTools refuses two
+a second family name. The records need distinct languages, because fontTools refuses two
 records with the same (platform, encoding, language, nameID):
 
   * English 0x0409 keeps the real name ("Inter", "Noto Sans Thai"), which UI tools and FreeType see.
   * German 0x0407 carries "PlxSubs" - the family the synthesized subtitle style asks for.
   * French 0x040C carries "Inter" on the Noto faces - the fallback family authored ASS names.
+  * Japanese 0x0411 carries "Open Sans" on the Noto faces - the selectable fallback family.
 
 The languages are deliberately NOT English variants. FreeType's `tt_face_get_name` (sfobjs.c) takes
 the first Windows record it finds and then replaces it with any later one whose
@@ -23,6 +24,7 @@ the first Windows record it finds and then replaces it with any later one whose
 ALIAS_FAMILY = "PlxSubs"
 LANG_PLXSUBS = 0x0407  # de-DE
 LANG_INTER = 0x040C    # fr-FR
+LANG_OPEN_SANS = 0x0411  # ja-JP
 PLATFORM_WINDOWS, ENCODING_UNICODE_BMP = 3, 1
 NAME_FAMILY, NAME_FULL = 1, 4
 
@@ -43,7 +45,8 @@ def add_plxsubs_alias(font) -> None:
 
 
 def add_noto_aliases(font) -> None:
-    """A Noto subtitle face answers to "PlxSubs" (0x0407) and "Inter" (0x040C) as well."""
+    """A Noto subtitle face answers to synthesized, Inter and Open Sans families as well."""
     add_plxsubs_alias(font)
     for name_id in (NAME_FAMILY, NAME_FULL):
         _set(font, "Inter", name_id, LANG_INTER)
+        _set(font, "Open Sans", name_id, LANG_OPEN_SANS)

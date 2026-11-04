@@ -38,7 +38,7 @@
 use super::{
     DolbyVisionMode, InstantDpadSeeking, DeckPress, DirectPlayMode, HdrOverlayBrightness, LastLibrary, LibraryViews, NativeAudioRefusal, NextEpisodeMode, OpaqueExtensions,
     PlaintextConsent, HoldHintTaught, PlaybackQuality, ServerKeyPin, Session, SkipInterval, SubtitleOffsetEntry, SubtitleOffsets, SubtitlePosition,
-    SubtitleSize, SubtitleTone, UiResolution, UnderPosters,
+    SubtitleFont, SubtitleSize, SubtitleTone, UiResolution, UnderPosters,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -99,6 +99,9 @@ pub struct Preferences {
     /// serializes exactly as it did before.
     #[serde(default, deserialize_with = "de_soft_subtitle_size", skip_serializing_if = "is_default_subtitle_size")]
     pub subtitle_size: SubtitleSize,
+    /// Typeface for client-rendered text subtitles. Absence keeps the existing Inter appearance.
+    #[serde(default, deserialize_with = "de_soft_subtitle_font", skip_serializing_if = "is_default_subtitle_font")]
+    pub subtitle_font: SubtitleFont,
     /// **The client-rendered subtitle caption's vertical placement.** A frozen fallback like
     /// [`Preferences::subtitle_tone`]. Absence is Low — see [`SubtitlePosition`]'s own doc. Skipped at
     /// the default for the same reason as [`Preferences::subtitle_size`].
@@ -529,6 +532,8 @@ setting!(UnderPostersPref: UnderPosters = under_posters, "under_posters", Profil
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(SubtitleSizePref: SubtitleSize = subtitle_size, "subtitle_size", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Optimistic), parse Soft);
+setting!(SubtitleFontPref: SubtitleFont = subtitle_font, "subtitle_font", Profile fallback LegacyInstallKey,
+    account false, live true, settings Some(SettingsWrite::Optimistic), parse Soft);
 setting!(SubtitlePositionPref: SubtitlePosition = subtitle_position, "subtitle_position", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Optimistic), parse Soft);
 setting!(HdrOverlayBrightnessPref: HdrOverlayBrightness = hdr_overlay_brightness, "hdr_overlay_brightness",
@@ -638,6 +643,7 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<DirectPlayModePref>(),
     Descriptor::of::<SubtitleTonePref>(),
     Descriptor::of::<SubtitleSizePref>(),
+    Descriptor::of::<SubtitleFontPref>(),
     Descriptor::of::<SubtitlePositionPref>(),
     Descriptor::of::<HdrOverlayBrightnessPref>(),
     Descriptor::of::<NextEpisodeModePref>(),
@@ -1285,6 +1291,16 @@ where
 /// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
 fn is_default_subtitle_size(size: &SubtitleSize) -> bool {
     *size == SubtitleSize::default()
+}
+
+fn de_soft_subtitle_font<'de, D>(d: D) -> Result<SubtitleFont, D::Error>
+where D: Deserializer<'de> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value::<SubtitleFont>(value).unwrap_or_default())
+}
+
+fn is_default_subtitle_font(font: &SubtitleFont) -> bool {
+    *font == SubtitleFont::default()
 }
 
 /// The subtitle position is a preference too: a spelling this build does not know degrades to Low.

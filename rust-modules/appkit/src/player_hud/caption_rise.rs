@@ -4,12 +4,12 @@
 //! presented value reaches the caption readers inside the [`HudBand`] they already take
 //! ([`HudBand::with_rise`]), so no writer into the media layer exists.
 //!
-//! **The rule.** A caption's bottom limit is `min(P, S - 12)` while any section is open: P is the HUD-up
-//! limit of the viewer's Position and S the resting top of everything the HUD has open
-//! ([`HudGeometry::open_top`](super::geometry::HudGeometry::open_top)). It is kept as a RISE, `P - limit`
-//! per Position ([`HudBand::rise_to_clear`]), so the three Positions are three springs on one shared
-//! stiffness: a single spring on S would leave a Middle or High caption waiting for the section to reach
-//! it and then creeping, where each Position's own limit moves from the first appear frame.
+//! **The rule.** The HUD has one safe edge for every Position. An open section raises that edge to
+//! `S - 12`, where S is the resting top of everything the HUD has open
+//! ([`HudGeometry::open_top`](super::geometry::HudGeometry::open_top)). Readers only apply the rise
+//! needed from a caption's actual position, so a caption already above the target stays there.
+//! `HudBand::rise_to_clear` stores the maximum rise in each Position slot; the three springs share
+//! the same target and stiffness so section motion begins consistently for every Position.
 //!
 //! **Rise only.** While sections stay open the target only grows: the block top held is the lowest S of
 //! every state visited since the first section opened ([`CaptionRise::follow`]), so a second section or a
@@ -25,7 +25,7 @@ use plx_machine::motion;
 use plx_media::player::text_style::HudBand;
 use plx_ui::popover::K_APPEAR;
 
-/// The rise per Position (Low, Middle, High) and the spring that moves it.
+/// The maximum rise per Position slot and the spring that moves it.
 #[derive(Clone, Copy, Debug)]
 pub struct CaptionRise {
     rise: [f32; 3],

@@ -3,15 +3,16 @@
 //! a profile in.
 use super::prefs_characterisation_tests::{picked, sign_in};
 use super::*;
-use plx_plex::plex::session::{SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref};
+use plx_plex::plex::session::{SubtitleFont, SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref};
 use std::sync::mpsc;
 
 /// Restore the two atomics the tests move, whatever the outcome.
-struct Restore(SubtitleSize, SubtitlePosition);
+struct Restore(SubtitleFont, SubtitleSize, SubtitlePosition);
 impl Drop for Restore {
     fn drop(&mut self) {
-        restore_subtitle_size(self.0);
-        restore_subtitle_position(self.1);
+        restore_subtitle_font(self.0);
+        restore_subtitle_size(self.1);
+        restore_subtitle_position(self.2);
     }
 }
 
@@ -27,7 +28,8 @@ fn select_publishes_the_live_value_before_the_write_and_persists_it() {
     let _g = plx_base::testlock::serial();
     let session = plx_plex::plex::session::TempSession::new("select-style");
     sign_in(&session);
-    let _restore = Restore(subtitle_size(), subtitle_position());
+    let _restore = Restore(subtitle_font(), subtitle_size(), subtitle_position());
+    restore_subtitle_font(SubtitleFont::Inter);
     restore_subtitle_size(SubtitleSize::from_percent(100));
     restore_subtitle_position(SubtitlePosition::TvScreen);
 
@@ -52,7 +54,7 @@ fn select_never_republishes_when_the_write_completes() {
     let _g = plx_base::testlock::serial();
     let session = plx_plex::plex::session::TempSession::new("select-no-republish");
     sign_in(&session);
-    let _restore = Restore(subtitle_size(), subtitle_position());
+    let _restore = Restore(subtitle_font(), subtitle_size(), subtitle_position());
     restore_subtitle_size(SubtitleSize::from_percent(100));
 
     let (tx, rx) = mpsc::channel();
@@ -69,7 +71,7 @@ fn select_reports_a_failed_write_and_keeps_the_live_value() {
     let _g = plx_base::testlock::serial();
     let session = plx_plex::plex::session::TempSession::new("select-failed");
     sign_in(&session);
-    let _restore = Restore(subtitle_size(), subtitle_position());
+    let _restore = Restore(subtitle_font(), subtitle_size(), subtitle_position());
     restore_subtitle_size(SubtitleSize::from_percent(100));
     // the session file's parent is a regular file, so no write can land
     let dir = std::env::temp_dir().join(format!("plxnative-select-blocked-{}", std::process::id()));

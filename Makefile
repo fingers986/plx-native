@@ -1183,6 +1183,10 @@ ICONS     = $(if $(filter stable,$(FLAVOR)),pkg/icon.png pkg/largeIcon.png,$(ICO
 LAB_FILES = $(if $(LAB),pkg/lab.json,)
 APP_FILES = pkg/plxnative $(SENTRY_HANDLER) $(APPINFO) $(ICONS) pkg/splash.png \
             pkg/appfont.ttf pkg/appfont-bold.ttf pkg/appfont-cjk.ttf pkg/appfont-emoji.ttf pkg/OFL.txt \
+            pkg/subtitle-open-sans-regular.ttf pkg/subtitle-open-sans-bold.ttf \
+            pkg/OpenSans-OFL.txt \
+            pkg/subtitle-sf-pro-text-regular.otf pkg/subtitle-sf-pro-text-bold.otf \
+            pkg/subtitle-sf-pro-text-regular-italic.otf pkg/subtitle-sf-pro-text-bold-italic.otf \
             pkg/appfont-arabic.ttf pkg/appfont-arabic-bold.ttf pkg/appfont-hebrew.ttf pkg/appfont-hebrew-bold.ttf \
             pkg/le-roots.pem \
             THIRD-PARTY-NOTICES.md LICENSING.md \

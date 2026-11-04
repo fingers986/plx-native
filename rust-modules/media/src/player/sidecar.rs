@@ -8,7 +8,7 @@
 //! fonts must never pass through a text parser). SubRip and WebVTT are converted on the fetch worker
 //! to an ASS script of the viewer's synthesized style (`text_ass::script_from_srt`/`_vtt`, charset
 //! by `sub_charset`), and render through the same libass worker as an embedded text track; the
-//! script is restyled lazily when the viewer's size or position pick changes.
+//! script is restyled lazily when the viewer's font, size or position pick changes.
 //!
 //! # Why its own store, and not `ass_source`
 //!
@@ -839,6 +839,7 @@ mod tests {
         TextStyle {
             size: if current.size == SubtitleSize::from_percent(125) { SubtitleSize::from_percent(80) } else { SubtitleSize::from_percent(125) },
             position: if current.position == SubtitlePosition::TvScreen { SubtitlePosition::VideoFrame } else { SubtitlePosition::TvScreen },
+            ..current
         }
     }
 
