@@ -3,7 +3,7 @@
 //! a profile in.
 use super::prefs_characterisation_tests::{picked, sign_in};
 use super::*;
-use plx_plex::plex::session::{SubtitleFont, SubtitleFontPref, SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref};
+use plx_plex::plex::session::{SubtitleFont, SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref};
 use std::sync::mpsc;
 
 /// Restore the two atomics the tests move, whatever the outcome.

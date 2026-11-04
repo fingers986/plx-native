@@ -32,7 +32,7 @@ use super::*;
 use plx_plex::plex::session::{
     self as session, own_prefs, stored_effective, AudioEnhancementsPref, DeckPress, DeckPressPref,
     DirectPlayModePref, NextEpisodeMode, NextEpisodeModePref, ProfileSetting, QualityPref, Seat, SkipInterval,
-    SkipIntervalPref, SubtitleFont, SubtitleFontPref, SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone,
+    SkipIntervalPref, SubtitleFont, SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone,
     SubtitleTonePref,
 };
 use plx_plex::plex::AudioEnhancements;
