@@ -4998,9 +4998,7 @@ mod lifecycle_regression_tests {
                 command,
                 &mut app.player,
                 &mut app.adapters.player,
-                &mut app.repause_at,
                 now,
-                &mut app.refresh_hubs,
                 &mut app.pages,
                 &mut app.bridge,
             );
@@ -5058,9 +5056,7 @@ mod lifecycle_regression_tests {
                 HudCommand::OpenMore(MorePage::Root),
                 &mut app.player,
                 &mut app.adapters.player,
-                &mut app.repause_at,
                 now,
-                &mut app.refresh_hubs,
                 &mut app.pages,
                 &mut app.bridge,
             );
@@ -5165,9 +5161,7 @@ mod lifecycle_regression_tests {
             command,
             &mut app.player,
             &mut app.adapters.player,
-            &mut app.repause_at,
             now,
-            &mut app.refresh_hubs,
             &mut app.pages,
             &mut app.bridge,
         );
@@ -5237,9 +5231,7 @@ mod lifecycle_regression_tests {
                 HudCommand::OpenMore(MorePage::Root),
                 &mut app.player,
                 &mut app.adapters.player,
-                &mut app.repause_at,
                 100,
-                &mut app.refresh_hubs,
                 &mut app.pages,
                 &mut app.bridge,
             );
@@ -5402,9 +5394,7 @@ mod lifecycle_regression_tests {
                 HudCommand::ToggleSection(Section::Info),
                 &mut app.player,
                 &mut app.adapters.player,
-                &mut app.repause_at,
                 now,
-                &mut app.refresh_hubs,
                 &mut app.pages,
                 &mut app.bridge,
             );
@@ -5433,9 +5423,7 @@ mod lifecycle_regression_tests {
             HudCommand::ToggleSection(Section::Info),
             &mut app.player,
             &mut app.adapters.player,
-            &mut app.repause_at,
             100,
-            &mut app.refresh_hubs,
             &mut app.pages,
             &mut app.bridge,
         );
@@ -5470,9 +5458,7 @@ mod lifecycle_regression_tests {
             HudCommand::ToggleSection(Section::Info),
             &mut app.player,
             &mut app.adapters.player,
-            &mut app.repause_at,
             100,
-            &mut app.refresh_hubs,
             &mut app.pages,
             &mut app.bridge,
         );
@@ -5506,9 +5492,7 @@ mod lifecycle_regression_tests {
             HudCommand::ToggleSection(Section::Chapters),
             &mut app.player,
             &mut app.adapters.player,
-            &mut app.repause_at,
             100,
-            &mut app.refresh_hubs,
             &mut app.pages,
             &mut app.bridge,
         );
