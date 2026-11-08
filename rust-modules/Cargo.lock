@@ -866,7 +866,7 @@ dependencies = [
 
 [[package]]
 name = "plxnative-modules"
-version = "0.9.2"
+version = "0.9.3"
 dependencies = [
  "image",
  "libc",
