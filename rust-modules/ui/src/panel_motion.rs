@@ -372,12 +372,17 @@ impl PanelMotion {
     /// under that rect's clip. `live` is drawn at `natural`, each leaving page at the rect it was
     /// laid out at, each on its own alpha and offset; a page too faint to see is not drawn.
     pub fn draw(&self, p: Painter, natural: Rect, radius: f32, live: &TableView, measure: &dyn Measure) {
+        self.draw_with_title_hover(p, natural, radius, live, measure, 1.0);
+    }
+
+    /// Paint the panel while optionally enlarging the live page's drill-in title under the pointer.
+    pub fn draw_with_title_hover(&self, p: Painter, natural: Rect, radius: f32, live: &TableView, measure: &dyn Measure, title_scale: f32) {
         let shown = self.shown(natural);
         p.rect(shown, radius, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
         match &self.slide {
             None => {
                 let _clip = ClipScope::open_in(p, shown);
-                live.draw(p, natural, measure);
+                live.draw_with_title_hover(p, natural, measure, title_scale);
             }
             Some(s) => {
                 let inset = Rect::new(
@@ -391,7 +396,7 @@ impl PanelMotion {
                     layer.table.draw(p.alpha(layer.alpha).translate(layer.x.pos, 0.0), layer.rect, measure);
                 }
                 if s.live_alpha > VISIBLE {
-                    live.draw(p.alpha(s.live_alpha).translate(s.live_x.pos, 0.0), natural, measure);
+                    live.draw_with_title_hover(p.alpha(s.live_alpha).translate(s.live_x.pos, 0.0), natural, measure, title_scale);
                 }
             }
         }

@@ -497,6 +497,9 @@ impl Screen<FixtureHost> for FixtureScreen {
     fn strip_reachable(&self) -> bool {
         self.arg != FixtureArg::Snapped
     }
+    fn strip_hoverable(&self) -> bool {
+        true
+    }
     fn chrome_tuck(&self) -> f32 {
         self.tuck
     }

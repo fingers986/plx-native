@@ -76,6 +76,8 @@ const MAX_HOLD_MS: u32 = 1000;
 /// long press stays a deliberate no-op, which is why the cancellation lives here rather than at the
 /// call sites that act on it.
 pub const LONG_MS: u32 = 500;
+/// Start moving a held card toward its resting viewport before the menu threshold.
+pub const PREPARE_SCROLL_MS: u32 = 250;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Phase {
@@ -242,6 +244,8 @@ impl Press {
     /// held-menu chain short-circuits on this one test instead of each of its arms declining in turn.
     /// **This is the one the hold menu opens on** (`app.rs`'s press block → `screens::item_menu`): firing
     /// while the key is still down is what makes it read as a hold rather than a delayed tap.
+    pub(crate) fn down_at(&self) -> u32 { self.down_at }
+
     pub fn is_long(&self, now: u32) -> bool {
         let s = self;
         s.holdable && s.phase == Phase::Down && now.wrapping_sub(s.down_at) >= LONG_MS
@@ -257,14 +261,7 @@ impl Press {
             .then(|| now.wrapping_sub(self.down_at))
     }
 
-    /// The current / most-recent press crossed into a press-and-hold (latched at [`LONG_MS`]; stays true
-    /// until the next [`begin`]) — the AFTER-THE-FACT form of [`is_long`], for a caller that wants to
-    /// branch tap-vs-hold on the release rather than act the instant the threshold is crossed.
-    ///
-    /// Nothing reads it today: the item menu deliberately opens on the live [`is_long`] instead, so the
-    /// panel is up while the finger is still down. Kept because the latch it reports is what makes the
-    /// distinction observable at all, and a screen whose hold action can only run on release (one that
-    /// must not fire mid-press) needs exactly this.
+    /// Whether this press crossed the long-press threshold.
     pub fn was_long(&self) -> bool {
         self.long
     }
@@ -303,8 +300,12 @@ impl Press {
     /// surface (a Library chip, the account menu) springs back under it too but is not a long
     /// hold: a tap stays motion-only.
     pub fn tick(&mut self, now: u32, dt: f32) {
+        self.tick_with_hold(now, dt, false);
+    }
+
+    pub(crate) fn tick_with_hold(&mut self, now: u32, dt: f32, deferred: bool) {
         let phase = self.phase;
-        self.step(now, dt);
+        self.step(now, dt, deferred);
         if self.long && !crate::popover::lift_owns() {
             let target = if self.phase == Phase::Down { DIP } else { REST };
             if self.phase != phase || !plx_machine::idle::settled(self.sp.pos, target, self.sp.vel) {
@@ -313,7 +314,7 @@ impl Press {
         }
     }
 
-    fn step(&mut self, now: u32, dt: f32) {
+    fn step(&mut self, now: u32, dt: f32, deferred: bool) {
         let s = &mut *self;
         match s.phase {
             Phase::Idle => {}
@@ -338,7 +339,7 @@ impl Press {
                 let released = s.release_at != 0 && reached(now, s.down_at.wrapping_add(MIN_DIP_MS));
                 let lost = s.got_beat && now.wrapping_sub(s.alive) > LOST_MS;
                 let capped = now.wrapping_sub(s.down_at) > MAX_HOLD_MS;
-                if released || lost || capped {
+                if !deferred && (released || lost || capped) {
                     s.phase = Phase::Up;
                     if s.want_commit {
                         s.commit_at = now.wrapping_add(COMMIT_MS).max(1);
