@@ -44,6 +44,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 
 mod profile_prefs;
+mod play_version_memory;
 #[cfg(test)]
 mod profile_prefs_tests;
 mod track_memory;
@@ -55,6 +56,7 @@ pub use profile_prefs::{
     effective, own_prefs, persist_profile_pref, put_own, stored_effective, ProfilePrefs, ProfilePrefsPref,
     ProfilePrefsRecord, ProfileSetting, ProfileWrite,
 };
+pub use play_version_memory::{PlayVersionEntry, PlayVersionPref};
 pub use track_memory::{
     AudioMemo, SubtitleMemo, SubtitleTrackMemo, TrackMemoryEntry, TrackMemoryPref, CAP as TRACK_MEMORY_CAP,
 };
@@ -332,6 +334,11 @@ pub struct Preferences {
     /// [`ProfileMemory::upsert_with`], which prunes foreign stamps and holds the household budget.
     #[serde(default, deserialize_with = "super::de_soft_vec", skip_serializing_if = "Vec::is_empty")]
     pub track_memory: Vec<ProfileList<TrackMemoryEntry>>,
+    /// A profile's last chosen PMS media version for an item, keyed by server machine id and
+    /// ratingKey. Written through the per-item memory door; a missing or unavailable version
+    /// safely falls back to Plex's default version.
+    #[serde(default, deserialize_with = "super::de_soft_vec", skip_serializing_if = "Vec::is_empty")]
+    pub play_versions: Vec<ProfileList<PlayVersionEntry>>,
     /// **The sync-timing correction a profile last tuned for an item**, per profile, keyed by
     /// (machine id, ratingKey) — never a track id: within one playback a track CHANGE still zeros
     /// the live offset (`route::commit_subtitle_selection`'s own doc), so by the time this is
@@ -672,6 +679,7 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     // The memory-door tenants (lists with no value API).
     Descriptor::of::<TrackMemoryPref>(),
     Descriptor::of::<SubtitleOffsetsPref>(),
+    Descriptor::of::<PlayVersionPref>(),
 ];
 
 impl Session {
