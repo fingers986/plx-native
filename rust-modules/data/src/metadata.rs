@@ -60,6 +60,16 @@ impl<'a> MetadataView<'a> {
     pub fn now_playing(&self) -> Option<&'a NowPlaying> {
         self.state.now.as_ref()
     }
+    /// Player-only metadata captured before opening a catalog Detail page. The Detail screen may
+    /// replace `current`/`now` while it is on top; the Player keeps reading this stable snapshot.
+    pub fn player_info(&self) -> Option<&'a PlayerInfoSnapshot> {
+        self.state.player_info.as_ref()
+    }
+    pub fn player_now_playing(&self) -> Option<&'a NowPlaying> {
+        self.state.player_info.as_ref()
+            .map(|snapshot| snapshot.now_playing.as_ref())
+            .unwrap_or_else(|| self.state.now.as_ref())
+    }
     pub fn playing(&self) -> Option<&'a PlayingItem> {
         self.state.playing.as_ref()
     }
@@ -160,6 +170,9 @@ pub struct MetadataState {
     detail_stamp: crate::viewledger::Stamp,
     current: Option<Detail>,
     now: Option<NowPlaying>,
+    /// A small, Player-owned view of playback metadata. The catalog's single `current` Detail is
+    /// free to change while a Detail page is pushed above a live Player.
+    player_info: Option<PlayerInfoSnapshot>,
     playing: Option<PlayingItem>,
     /// Segments the user has already skipped in THIS playback — see the retired `SKIPPED` static's
     /// doc.
@@ -1295,8 +1308,9 @@ pub enum MarkerKind {
 }
 
 /// A server-detected intro / recap / credits segment of the playing item (`?includeMarkers=1`), or
-/// a recap synthesized from a specifically named recap chapter. Drives the in-player Skip prompt
-/// and — for an episode with something queued after it — the moment the Up Next control takes over.
+/// a segment synthesized from a specifically named chapter when PMS did not provide that marker.
+/// Drives the in-player Skip prompt and — for an episode with something queued after it — the
+/// moment the Up Next control takes over.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Marker {
@@ -1341,51 +1355,91 @@ fn convert_markers(markers: &[plx_plex::plex::Marker], duration_ms: i64) -> Vec<
         .collect()
 }
 
-/// Plex does not always expose recap as a `Marker[]` entry. Some libraries instead have a named
-/// `Chapter[]` segment. Treat an explicitly named recap chapter as a marker only when PMS did not
-/// provide a recap marker, and use the chapter's end (or the following chapter's start) as the
-/// seek target. Generic chapters are never guessed from their timing alone.
+/// PMS does not always expose every skippable segment as a `Marker[]` entry. Some files instead
+/// have explicitly named `Chapter[]` segments. Use those as a fallback, independently by kind, only
+/// when PMS did not provide that marker. The chapter's end (or the following chapter's start, then
+/// the item duration) supplies the seek target. Generic chapters are never guessed from timing alone.
 fn convert_item_markers(
     markers: &[plx_plex::plex::Marker],
     chapters: &[plx_plex::plex::Chapter],
     duration_ms: i64,
 ) -> Vec<Marker> {
     let mut converted = convert_markers(markers, duration_ms);
-    if converted.iter().any(|m| m.kind == MarkerKind::Recap) {
-        return converted;
-    }
-    let recap_chapters = chapters.iter().filter(|c| is_recap_chapter(&c.tag));
-    for chapter in recap_chapters {
-        let end_ms = if chapter.end_time_offset > chapter.start_time_offset {
-            chapter.end_time_offset
-        } else {
-            chapters
-                .iter()
-                .filter(|next| next.start_time_offset > chapter.start_time_offset)
-                .map(|next| next.start_time_offset)
-                .min()
-                .unwrap_or(duration_ms)
+    let server_kinds = [
+        MarkerKind::Intro,
+        MarkerKind::Recap,
+        MarkerKind::Credits,
+    ]
+    .map(|kind| converted.iter().any(|marker| marker.kind == kind));
+
+    for chapter in chapters {
+        let Some(kind) = chapter_marker_kind(&chapter.tag) else {
+            continue;
         };
+        let kind_index = match kind {
+            MarkerKind::Intro => 0,
+            MarkerKind::Recap => 1,
+            MarkerKind::Credits => 2,
+        };
+        if server_kinds[kind_index] {
+            continue;
+        }
+
+        let end_ms = chapter_end_ms(chapter, chapters, duration_ms);
         if chapter.start_time_offset >= 0 && end_ms > chapter.start_time_offset {
             converted.push(Marker {
-                kind: MarkerKind::Recap,
+                kind,
                 start_ms: chapter.start_time_offset,
                 end_ms,
-                final_seg: false,
+                final_seg: kind == MarkerKind::Credits
+                    && duration_ms > 0
+                    && end_ms >= duration_ms - FINAL_SLACK_MS,
             });
         }
     }
     converted
 }
 
-fn is_recap_chapter(title: &str) -> bool {
+fn chapter_end_ms(
+    chapter: &plx_plex::plex::Chapter,
+    chapters: &[plx_plex::plex::Chapter],
+    duration_ms: i64,
+) -> i64 {
+    if chapter.end_time_offset > chapter.start_time_offset {
+        return chapter.end_time_offset;
+    }
+    chapters
+        .iter()
+        .filter(|next| next.start_time_offset > chapter.start_time_offset)
+        .map(|next| next.start_time_offset)
+        .min()
+        .unwrap_or(duration_ms)
+}
+
+fn chapter_marker_kind(title: &str) -> Option<MarkerKind> {
     let title = title.trim().to_ascii_lowercase();
-    title == "recap"
-        || title.starts_with("recap:")
-        || title.starts_with("recap -")
-        || title == "previously on"
-        || title.starts_with("previously on ")
-        || title.starts_with("previously on:")
+    if is_named_segment(&title, &["intro", "opening", "opening credits"]) {
+        Some(MarkerKind::Intro)
+    } else if is_named_segment(
+        &title,
+        &["credit", "credits", "end credits", "closing credits"],
+    ) {
+        Some(MarkerKind::Credits)
+    } else if is_named_segment(&title, &["recap", "previously on"]) {
+        Some(MarkerKind::Recap)
+    } else {
+        None
+    }
+}
+
+fn is_named_segment(title: &str, names: &[&str]) -> bool {
+    names.iter().any(|name| {
+        title == *name
+            || title
+                .strip_prefix(name)
+                .is_some_and(|suffix| suffix.starts_with(':') || suffix.starts_with(" -"))
+            || (*name == "previously on" && title.starts_with("previously on "))
+    })
 }
 
 /// Record that `m` has been skipped, so it is never offered again for this item.
@@ -2200,6 +2254,59 @@ pub struct NowPlaying {
     pub thumb: String, // 16:9 still (episode) / landscape art (movie)
     pub detail_rk: String, // "Go to Show"/"Go to Movie" target
 }
+
+/// The Info card's catalog fields copied when Go to Show/Movie opens a Detail page. This keeps
+/// only what the Player draws, rather than cloning the whole Detail tree and its episode/related
+/// windows.
+#[derive(Clone, Debug)]
+pub struct PlayerDetailInfo {
+    pub sid: plx_plex::plex::ServerId,
+    pub rk: String,
+    pub is_show: bool,
+    pub title: String,
+    pub summary: String,
+    pub year: i64,
+    pub dur_ms: i64,
+    pub rating: String,
+    pub thumb: String,
+    pub art: String,
+    pub genres: Vec<String>,
+}
+
+/// Stable per-Player information used by its title, Info card and Go to Show/Movie command.
+#[derive(Clone, Debug)]
+pub struct PlayerInfoSnapshot {
+    pub detail: Option<PlayerDetailInfo>,
+    pub now_playing: Option<NowPlaying>,
+}
+
+fn capture_player_info(state: &mut MetadataState) {
+    if state.player_info.is_some() {
+        return;
+    }
+    let detail = state.current.as_ref().map(|d| PlayerDetailInfo {
+        sid: d.sid,
+        rk: d.rk.clone(),
+        is_show: d.is_show,
+        title: d.title.clone(),
+        summary: d.summary.clone(),
+        year: d.year,
+        dur_ms: d.dur_ms,
+        rating: d.rating.clone(),
+        thumb: d.thumb.clone(),
+        art: d.art.clone(),
+        genres: d.genres.clone(),
+    });
+    state.player_info = Some(PlayerInfoSnapshot {
+        detail,
+        now_playing: state.now.clone(),
+    });
+}
+
+fn clear_player_info(state: &mut MetadataState) {
+    state.player_info = None;
+}
+
 fn set_now_playing(state: &mut MetadataState, np: Option<NowPlaying>) {
     state.now = np;
 }
@@ -2888,6 +2995,7 @@ fn playing_item_of(
 fn retire_playing(state: &mut MetadataState) {
     set_now_playing(state, None);
     retire_playing_item(state);
+    clear_player_info(state);
 }
 
 /// Retire ONLY the track/marker/chapter store, leaving the `NowPlaying` caption alone — what a NEW
@@ -2902,6 +3010,7 @@ fn retire_playing(state: &mut MetadataState) {
 fn retire_playing_item(state: &mut MetadataState) {
     state.playing = None;
     state.skipped.clear();
+    clear_player_info(state);
 }
 
 /// MAIN THREAD: add one subtitle the server just installed to the playing item. Only for the same
@@ -4166,6 +4275,10 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
         MetadataCmd::CancelRelated => cancel_related(adapter),
         MetadataCmd::SetNowPlaying(np) => {
             set_now_playing(state, np);
+            true
+        }
+        MetadataCmd::CapturePlayerInfo => {
+            capture_player_info(state);
             true
         }
         MetadataCmd::ApplyView { at, edit } => match edit {
@@ -5929,6 +6042,17 @@ mod marker_tests {
             is_final: is_final as i64,
         }
     }
+
+    fn chapter(tag: &str, start: i64, end: i64) -> plx_plex::plex::Chapter {
+        plx_plex::plex::Chapter {
+            index: 1,
+            start_time_offset: start,
+            end_time_offset: end,
+            tag: tag.to_string(),
+            thumb: String::new(),
+        }
+    }
+
     /// An episode's markers as the live server actually returns them (2026-07-29): an intro and a
     /// `final` credits marker, in that wire order — credits FIRST, which is why nothing here may
     /// assume the array is sorted by time.
@@ -5960,6 +6084,45 @@ mod marker_tests {
         assert!(convert_markers(&[wire("intro", 500, 500, false)], 0).is_empty());
         assert!(convert_markers(&[wire("intro", 900, 100, false)], 0).is_empty());
         assert!(convert_markers(&[wire("credits", -5, 100, true)], 0).is_empty());
+    }
+
+    #[test]
+    fn named_chapters_supply_intro_recap_and_final_credits_fallbacks() {
+        let chapters = [
+            chapter("Intro", 1_000, 90_000),
+            chapter("Recap", 100_000, 140_000),
+            chapter("Credit", 900_000, 1_000_000),
+        ];
+        let markers = convert_item_markers(&[], &chapters, 1_000_000);
+
+        assert_eq!(markers.len(), 3);
+        assert_eq!(markers[0].kind, MarkerKind::Intro);
+        assert_eq!((markers[0].start_ms, markers[0].end_ms), (1_000, 90_000));
+        assert_eq!(markers[1].kind, MarkerKind::Recap);
+        assert_eq!(markers[2].kind, MarkerKind::Credits);
+        assert!(markers[2].final_seg, "the named credits reach the item end");
+    }
+
+    #[test]
+    fn server_marker_wins_only_for_its_own_kind() {
+        let chapters = [
+            chapter("Intro", 100, 500),
+            chapter("Credits", 9_000, 10_000),
+        ];
+        let server_intro = wire("intro", 200, 600, false);
+        let markers = convert_item_markers(&[server_intro], &chapters, 10_000);
+
+        assert_eq!(markers.len(), 2);
+        assert_eq!((markers[0].kind, markers[0].start_ms), (MarkerKind::Intro, 200));
+        assert_eq!((markers[1].kind, markers[1].start_ms), (MarkerKind::Credits, 9_000));
+    }
+
+    #[test]
+    fn a_named_chapter_without_an_end_uses_the_next_chapter_start() {
+        let chapters = [chapter("Intro", 1_000, 0), chapter("Scene 1", 75_000, 0)];
+        let markers = convert_item_markers(&[], &chapters, 120_000);
+        assert_eq!(markers.len(), 1);
+        assert_eq!((markers[0].start_ms, markers[0].end_ms), (1_000, 75_000));
     }
 
     #[test]
