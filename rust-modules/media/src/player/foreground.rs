@@ -182,7 +182,7 @@ pub fn drive_foreground<A: ForegroundActuator>(
     let _cycle = plx_telemetry::telemetry::window::CycleScope::enter();
     let run = run_foreground(lifecycle, ps, actuator, ForegroundEvent::Input(input));
     match run.handled {
-        Handled::No => ForegroundActivation::Ordinary,
+        Handled::No | Handled::DeferredPrepare | Handled::DeferredHold => ForegroundActivation::Ordinary,
         Handled::Yes if run.launched => ForegroundActivation::Launched,
         Handled::Yes => ForegroundActivation::Handled,
     }
@@ -268,7 +268,7 @@ pub fn poll_foreground_load<A: ForegroundActuator>(
         ForegroundEvent::LoadStatus { attempt, status },
     );
     match (run.handled, run.settled) {
-        (Handled::No, _) => ForegroundPollOutcome::Inactive,
+        (Handled::No | Handled::DeferredPrepare | Handled::DeferredHold, _) => ForegroundPollOutcome::Inactive,
         (Handled::Yes, None) => ForegroundPollOutcome::Pending,
         (Handled::Yes, Some(true)) => ForegroundPollOutcome::Started,
         (Handled::Yes, Some(false)) => ForegroundPollOutcome::Failed,

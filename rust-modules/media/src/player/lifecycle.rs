@@ -890,7 +890,7 @@ mod foreground_resume_tests {
         let handled = lifecycle.step(&ForegroundEvent::ParkFlight, &mut fx);
         match handled {
             Handled::Yes => assert_eq!(fx, vec![ForegroundEffect::DropFlight]),
-            Handled::No => assert!(fx.is_empty()),
+            Handled::No | Handled::DeferredPrepare | Handled::DeferredHold => assert!(fx.is_empty()),
         }
         handled == Handled::Yes
     }
