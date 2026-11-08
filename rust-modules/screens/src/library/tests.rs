@@ -1448,10 +1448,9 @@ fn assert_back_glides(fixture: &Fixture, deep_index: usize) {
     assert!(page.scroll.pos <= 0.5, "and it arrives");
 }
 
-/// **A hover moves focus, never the grid; a click brings the grid to its card.** The reported
-/// bug: a Magic Remote hover seated the row it touched at the top of the screen, like a key does,
-/// so every hover moved the page up to a screenful and a hover after an edge glide threw the glide
-/// away. A key still seats its row at rest.
+/// **A hover focuses without moving the grid; a click activates at the pointer's current view.**
+/// The page still seats rows for D-pad navigation, while pointer clicks avoid scrolling the poster
+/// into a different position before opening it.
 #[test]
 fn a_hover_moves_no_grid_and_a_click_brings_it_to_its_card() {
     let _guard = plx_base::testlock::serial();
@@ -1477,7 +1476,7 @@ fn a_hover_moves_no_grid_and_a_click_brings_it_to_its_card() {
     deliver(&mut page, &mut engine, &fixture, ScreenEvent::Input(plx_machine::machine::InputEvent {
         at: Tick::default(), source: plx_machine::machine::Source::Script,
         kind: InputKind::Click { x: 0.0, y: 0.0, hit: Some(row3.elem) } }));
-    assert_eq!(page.scroll_target, page.target_layout.row_reveal(3), "a click brings the page to its card");
+    assert_eq!(page.scroll_target, rest2, "a click does not scroll the grid before activating the poster");
     point(&mut page, &mut engine, row4, By::Dir);
     assert_eq!(page.scroll_target, page.target_layout.row_reveal(4), "a key seats its row at rest");
 }

@@ -209,6 +209,7 @@ pub enum Listing {
 
 /// A retained page body, also remountable from its entry-owned LibraryMemory.
 pub struct LibraryScreen {
+    pending_item_menu: Option<FocusKey<u32>>,
     /// Which listing the page shows. Fixed at mount by the `AppArg` that mounted it, so it is not
     /// part of the canon: `LibraryCollections` / `LibraryRecommended` already say it.
     listing: Listing,
@@ -365,7 +366,7 @@ impl LibraryScreen {
             type_before_collections: None, unfiltered: None, filtered: None,
             switched: false, enter_remembered: false, section: None, epoch: None, query: None, grid_reset_pending: false,
             layout, target_layout: layout,
-            scroll: Spring::at(0.0), scroll_target: 0.0, handoff: plx_ui::scroll_chrome::Handoff::new(), capsule_text: plx_ui::scroll_chrome::CapsuleText::default(), restore_scroll: None,
+            scroll: Spring::at(0.0), scroll_target: 0.0, pending_item_menu: None, handoff: plx_ui::scroll_chrome::Handoff::new(), capsule_text: plx_ui::scroll_chrome::CapsuleText::default(), restore_scroll: None,
             viewports: Vec::new(), seat_wanted: None,
             pending: PendingTransactions::default(), page_fade: Xfade::new(), grid_fade: Xfade::new(),
             readout: Readout::Loading, live: true, buried: false, initial: true, provisional: None, placed: Vec::new(), sweep_down: true,
@@ -822,10 +823,15 @@ impl LibraryScreen {
             }
         }
         self.relayout(Some(key));
-        // A hover moves focus, never the page: the pointer scrolls by the screen's edges (and a
-        // click by what it clicked, `Input`'s `Click` arm).
+        // A hover normally moves focus without moving the page; entering the terminal grid row is
+        // the exception, revealing the document end so the final posters and their labels are
+        // fully visible. A click still reveals the clicked row in `Input`'s `Click` arm.
         let want = if by == By::Pointer {
-            None
+            self.pair.detail.index_of(key.elem).and_then(|index| {
+                let row = index / self.layout.cols();
+                (self.target_layout.rows > 0 && row + 1 == self.target_layout.rows)
+                    .then_some(self.target_layout.max_scroll())
+            })
         } else if let Some(index) = self.pair.detail.index_of(key.elem) {
             // held in the coordinates `scroll` is in until the grid's tick rebases both by a landing
             Some(self.target_layout.row_reveal(index / self.layout.cols()) - self.pair.detail.pending_shift(cx))
@@ -1248,6 +1254,12 @@ impl LibraryScreen {
 impl<H: LibraryLike> Machine<H> for LibraryScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        if matches!(ev, ScreenEvent::Cover | ScreenEvent::Input(plx_machine::machine::InputEvent {
+            kind: InputKind::Wheel { .. } | InputKind::Key { key: Key::Back, edge: Edge::Down, .. }, ..
+        })) {
+            self.pending_item_menu = None;
+        }
+
         let handled = self.step_event(ev, cx, fx);
         handled
     }
@@ -1468,6 +1480,8 @@ impl LibraryScreen {
                     self.ground.key(colours, plx_ui::widgets::PageGround::CARD_W, dt);
                     self.step_header(cx, dt);
                     self.scroll.step(self.scroll_target, K_SCROLL, dt);
+
+
                     // A page still dissolving in shows its seat unpopped: the lift starts on the
                     // dissolve's last frame, where it can be seen, instead of playing out under the
                     // fade or the held image of a route dip (the page arrives in its first poster).
@@ -1530,10 +1544,46 @@ impl LibraryScreen {
                 fx.push(Fx::App(AppFx::StoreWork(StoreWork::Browse)));
             }
             ScreenEvent::Activate(elem) => return self.activate(*elem, false, cx, fx),
+            ScreenEvent::PressPrepare(_) => {
+                self.pending_item_menu = None;
+                if let Some(key) = cx.focus.current {
+                    if self.focused_item(Some(key), cx).is_some_and(|item| !item.rk.is_empty()) {
+                        self.reveal(key, By::Dir, cx);
+                        self.pending_item_menu = Some(key);
+                        fx.invalidate(Provenance::Input);
+                        return Handled::DeferredPrepare;
+                    }
+                }
+                return Handled::No;
+            }
             ScreenEvent::PressHold(_) => {
-                return self.command(LibraryCmd::ItemMenu, cx, fx);
+                self.pending_item_menu = None;
+                if let Some(key) = cx.focus.current {
+                    if self.focused_item(Some(key), cx).is_some_and(|item| !item.rk.is_empty()) {
+                        self.reveal(key, By::Dir, cx);
+                        self.pending_item_menu = Some(key);
+                        fx.invalidate(Provenance::Input);
+                        return Handled::DeferredHold;
+                    }
+                }
+                return Handled::No;
+            }
+            ScreenEvent::PressHoldReady(_) => {
+                let Some(key) = self.pending_item_menu.filter(|key| Some(*key) == cx.focus.current) else {
+                    self.pending_item_menu = None;
+                    return Handled::Yes;
+                };
+                if (self.scroll.pos - self.scroll_target).abs() > 1.0 {
+                    return Handled::No;
+                }
+                self.scroll.jump(self.scroll_target);
+                self.relayout(Some(key));
+                self.pending_item_menu = None;
+                self.activate(key.elem, true, cx, fx);
+                return Handled::Yes;
             }
             ScreenEvent::PressCommit(_) => {
+                self.pending_item_menu = None;
                 return cx.focus.current.map_or(Handled::No, |key| self.activate(key.elem, false, cx, fx));
             }
             ScreenEvent::Input(input) => {
@@ -1560,14 +1610,6 @@ impl LibraryScreen {
                     && cx.focus.current.is_some_and(|key| key.entry == self.entry && region_of_elem(key.elem) == Some(KeyRegion::Rail)) {
                     self.reseat(FocusTarget::ContainerGroup(self.pair.groups_config().detail), fx);
                     return Handled::Yes;
-                }
-                // A click brings the page to the card it clicked, the way a key's move does.
-                if let InputKind::Click { hit: Some(hit), .. } = input.kind {
-                    if let Some(index) = self.pair.detail.index_of(hit) {
-                        self.scroll_target = self.target_layout.row_reveal(index / self.layout.cols())
-                            - self.pair.detail.pending_shift(cx);
-                        fx.invalidate(Provenance::Input);
-                    }
                 }
                 if let InputKind::Wheel { dy } = input.kind {
                     self.scroll_target = (self.scroll_target - dy * self.layout.grid_pitch())
