@@ -277,11 +277,11 @@ mod root_back_tests {
         }
     }
 
-    /// A real Home instance opens its exit confirmation on the first root BACK. EntryId/InstanceId
-    /// prove the root was neither replaced nor torn down, focus lands on Cancel, and the platform
-    /// is not asked to exit until the user confirms.
+    /// A real Home instance owns its root decision and emits exactly the request whose production
+    /// performer is `back_at_root`. EntryId/InstanceId prove the root was neither replaced nor
+    /// torn down, and the container's root fallback is not accidentally entered a second time.
     #[test]
-    fn owned_home_root_back_opens_exit_confirmation_without_moving_the_root() {
+    fn owned_home_root_back_reaches_platform_home_without_moving_the_root() {
         let _guard = plx_base::testlock::serial();
         plx_platform::tv::home::release_root_press();
         let before = plx_platform::tv::home::home_requests();
@@ -298,10 +298,12 @@ mod root_back_tests {
             plx_machine::machine::Tick { ms: 16, dt_us: 16_000 }, vec![back_input(16)]);
         assert!(!report.back_at_root, "Home answered its own root BACK exactly once");
         let requests = rig.take_reqs();
-        assert!(requests.is_empty(), "the first BACK only opens the confirmation");
-        assert_eq!(d.input.engine.current(plx_machine::machine::InputOwner::Entry(entry)).map(|key| key.elem), Some(0x7ffe_0011),
-            "focus moves to the confirmation's Cancel button");
-        assert_eq!(plx_platform::tv::home::home_requests(), before, "the platform is untouched before confirmation");
+        assert!(matches!(requests.as_slice(),
+            [plx_screens::registry::LoopReq::BackAtRoot]));
+        for request in requests {
+            assert!(crate::app::run::reduce_navigation_request(request, &mut d).is_ok());
+        }
+        assert_eq!(plx_platform::tv::home::home_requests(), before + 1);
         assert_eq!(d.nav.top_page().map(|page| page.id), Some(entry));
         assert_eq!(d.nav.instance_of(entry), Some(instance));
         plx_platform::tv::home::release_root_press();

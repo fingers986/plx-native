@@ -697,7 +697,7 @@ mod tests {
         let s = local(Session { account_token: "acct".into(), ..Default::default() });
         let acc = s.account(None);
         assert_eq!(rows_of(&acc, true).iter().map(|a| label(*a)).collect::<Vec<_>>(),
-            vec!["Settings"]);
+            vec!["Settings", "Sign out"]);
         assert_eq!(rows_of(&acc, false)[0], Action::ChangeProfile);
 
         let _serial = plx_base::testlock::serial();
@@ -713,8 +713,10 @@ mod tests {
     }
 
     /// **A menu never opens with its focus on a destructive action.** #237 hid *Change profile*
-    /// on a refused roster, which used to leave *Sign out* as the first row. Sign out is now
-    /// available only on the Change Profile page; the account menu falls back to Settings.
+    /// on a refused roster, which left *Sign out* as the first row — and the menu seats its focus on
+    /// the first row, so one stray OK signed the user out (seen on the TV). The opening row skips
+    /// destructive rows; so does the fallback when the focused row is taken away under an open
+    /// menu (the verdict landing while *Change profile* is focused).
     #[test]
     fn a_refused_roster_never_opens_the_menu_on_sign_out() {
         let _serial = plx_base::testlock::serial();
@@ -730,7 +732,7 @@ mod tests {
             "the menu opened focused on Sign out");
         assert_eq!(menu.form.selected_id(), Some(&Action::Settings));
         assert_eq!(menu.form.opening_key(), Some(Action::Settings.key()),
-            "the focus fallback lands on Settings");
+            "the focus fallback lands on Sign out");
 
         // The verdict landing under an open menu whose focus sits on Change profile.
         let mut menu = AccountMenuScreen::new(EntryId(0));
@@ -738,7 +740,7 @@ mod tests {
         assert_eq!(menu.form.selected_id(), Some(&Action::ChangeProfile), "rig");
         tick(&mut menu, &published(true));
         assert_eq!(menu.form.selected_id(), Some(&Action::Settings),
-            "a removed row's focus fell onto Settings");
+            "a removed row's focus fell onto Sign out");
     }
 
     fn owner(title: &str) -> HomeUserRef {
@@ -785,9 +787,9 @@ mod tests {
             account_token: "synthetic-token".into(), ..Default::default() }));
         menu.built = false;
         menu.build(false);
-        // A session refresh keeps Settings in its seat with the same stable focus key.
+        // Sign out arrives LAST behind a rule, so Settings holds its seat — and still its key
         assert_eq!(menu.form.index_of_key(RowKey(settings_key)), Some(1));
-        assert_eq!(menu.form.index_of_key(RowKey(Action::SignOut.focus_key())), None);
+        assert!(menu.form.index_of_key(RowKey(Action::SignOut.focus_key())) > Some(1));
         assert_eq!(menu.form.index_of_key(RowKey(Action::SignIn.focus_key())), None,
             "an old Sign in key cannot become the new Sign out action");
     }
@@ -832,7 +834,7 @@ mod tests {
         });
         let (name, rows) = menu(&s, Some(&UserRef::default()));
         assert_eq!(name, "Gleb");
-        assert_eq!(rows, vec!["Change profile", "Settings"]);
+        assert_eq!(rows, vec!["Change profile", "Settings", "Sign out"]);
     }
 
     /// A picked managed profile names the header even though the roster also could.
@@ -849,7 +851,7 @@ mod tests {
         };
         let (name, rows) = menu(&s, Some(&active));
         assert_eq!(name, "Kid");
-        assert_eq!(rows, vec!["Change profile", "Settings"]);
+        assert_eq!(rows, vec!["Change profile", "Settings", "Sign out"]);
     }
 
     /// The roster hop looks for a NAMED entry, admin first: an admin tile that happens to carry an
@@ -875,7 +877,7 @@ mod tests {
         });
         let (name, rows) = menu(&s, Some(&UserRef::default()));
         assert_eq!(name, "Account");
-        assert_eq!(rows, vec!["Change profile", "Settings"]);
+        assert_eq!(rows, vec!["Change profile", "Settings", "Sign out"]);
     }
 
     /// A server-only session (no plex.tv token) is still signed IN — it is streaming — but cannot
@@ -893,7 +895,7 @@ mod tests {
         });
         let (name, rows) = menu(&s, None);
         assert_eq!(name, "Gleb");
-        assert_eq!(rows, vec!["Settings"]);
+        assert_eq!(rows, vec!["Settings", "Sign out"]);
     }
 
     /// The seam the mount actually uses: the crate-global active profile really does reach the
@@ -1042,19 +1044,23 @@ mod tests {
         assert_eq!(ids(account_form(&named_inputs).1), rows_of(&named, false));
     }
 
-    /// **Sign out is absent from the account menu.** The Change Profile page owns sign-out so a
-    /// stray press in this menu cannot trigger it.
+    /// **Sign out is the last row, behind a separator.** The account menu used to put it one Down
+    /// from the landing row; now the rows go to places, a rule closes them, and the one destructive
+    /// row ends the menu in EVERY signed-in state (lab diagnostics included).
     #[test]
-    fn sign_out_is_absent_from_the_account_menu() {
+    fn sign_out_is_last_behind_a_separator() {
         let s = local(Session { account_token: "acct".into(), ..Default::default() });
         for (inputs, why) in [
             (AccountInputs::of(&s.account(None), false), "signed in"),
             (AccountInputs::of(&s.account(None), true), "roster refused"),
             (AccountInputs { lab: true, ..AccountInputs::of(&s.account(None), false) }, "lab build"),
         ] {
-            let actions = ids(account_form(&inputs).1);
-            assert!(!actions.contains(&Action::SignOut), "{why}");
-            assert!(!actions.is_empty(), "{why}: remaining account actions are present");
+            let mut t = FormTable::<Action, Action, Infallible>::new(crate::registry::BAND);
+            t.set(account_form(&inputs).1, None);
+            let n = t.table.n_rows() as usize;
+            assert_eq!(t.id_at(n - 1).copied(), Some(Action::SignOut), "{why}: Sign out is the last row");
+            assert!(t.id_at(n - 2).is_none(), "{why}: a separator, not a row, sits above Sign out");
+            assert!(t.id_at(n - 3).is_some(), "{why}: and the rows it closes sit above that");
         }
         assert!(!rows_of(&Session::default().account(None), false).contains(&Action::SignOut));
     }

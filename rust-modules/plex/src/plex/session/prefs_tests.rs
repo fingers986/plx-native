@@ -13,7 +13,7 @@ use super::prefs::{DolbyVisionModePref, InstantDpadSeekingPref, AudioEnhancement
     LastLibraryRow, LibraryViewsRow, NextEpisodeModePref, PlaintextConsentRow, QualityPref, ServerKeyPinsRow,
     HdrOverlayBrightnessPref, SkipIntervalPref, SubtitleFontPref, SubtitleOffsetsPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref,
     SubtitleCustomDistancePref, SubtitleVideoFrameDistancePref, SubtitleTvScreenDistancePref,
-    HoldHintTaughtPref, TrailerAutoplayPref, UiResolutionPref, PlayVersionPref};
+    HoldHintTaughtPref, TrailerAutoplayPref, UiResolutionPref};
 use super::{
     DolbyVisionMode, InstantDpadSeeking, CanonicalSessionPreferences, DeckPress, UnderPosters, UnderPostersDetails, DirectPlayMode, LastLibrary, LibraryViews, NextEpisodeMode,
     PlaintextChoice, PlaintextConsent, PlaybackQuality, Preferences, ServerKeyPin, Session, SkipInterval,
@@ -123,8 +123,8 @@ fn every_marker_names_its_own_field() {
     check_row::<LastHeroBlurPref>(Some([[0.5, 0.25, 0.125]; 4]));
     check_row::<UiResolutionPref>(UiResolution::Hd720);
     check_row::<HoldHintTaughtPref>(HoldHintTaught { card: true, pill: false });
-    // The table lists the Setting rows, the five ListRow rows below, the three memory-door rows
-    // (`TrackMemoryPref`, whose field check is
+    // The table lists exactly these nineteen `Setting` rows, the five list rows below, the two
+    // memory-door rows (`TrackMemoryPref`, whose field check is
     // `track_memory_tests::the_list_row_names_its_own_field`, and `SubtitleOffsetsPref`, checked by
     // `the_subtitle_offsets_row_names_its_own_field`) and the per-profile record list
     // (`ProfilePrefsPref`, `profile_prefs_tests::nothing_picked_serializes_to_no_key`): a row needs
@@ -132,10 +132,7 @@ fn every_marker_names_its_own_field() {
     check_row::<SubtitleCustomDistancePref>(Some(100));
     check_row::<SubtitleVideoFrameDistancePref>(Some(80));
     check_row::<SubtitleTvScreenDistancePref>(Some(120));
-    let play_versions = DESCRIPTORS.iter().find(|d| d.key == PlayVersionPref::KEY).expect("play_versions has a descriptor");
-    assert_eq!((play_versions.scope, play_versions.account_bound, play_versions.live, play_versions.settings, play_versions.parse),
-        (Scope::PerItem, true, false, None, Parse::SoftVec));
-    assert_eq!(DESCRIPTORS.len(), 22 + 5 + 3 + 1);
+    assert_eq!(DESCRIPTORS.len(), 22 + 5 + 2 + 1);
 }
 
 /// The list rows do what `check_row` proves for the `Copy` ones: the marker names its own field
@@ -366,7 +363,6 @@ fn garbage_fixtures() -> Vec<(&'static str, Vec<Value>)> {
         ("track_memory", not_a_list()),
         ("subtitle_offsets", not_a_list()),
         ("profile_prefs", not_a_list()),
-        ("play_versions", not_a_list()),
     ]
 }
 
@@ -394,7 +390,6 @@ fn good_element(key: &str) -> Value {
         "track_memory" => json!({"user":"u1","account":"a","items":[{"machine_id":"m","show_rk":"42",
             "audio":{"lang":"eng","tag":"","commentary":false,"ad":false,"codec":"eac3","channels":6,"title":""}}]}),
         "profile_prefs" => json!({"user":"u1","account":"a","prefs":{"subtitle_size":125}}),
-        "play_versions" => json!({"user":"u1","account":"a","items":[{"machine_id":"m1","rating_key":"42","media_id":7}]}),
         other => panic!("{other}: a SoftVec row needs a valid element in `good_element`"),
     }
 }

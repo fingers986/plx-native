@@ -206,18 +206,6 @@ fn a_hostname_resolves_and_the_host_header_carries_the_name_not_the_address() {
         b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
     )
     .expect("bind 127.0.0.1");
-    // Some containerized/macOS runners ship no localhost entry in their resolver database.
-    // Preserve the offline suite there: release the one-shot listener through the literal path,
-    // then report why the hostname half could not run. When localhost resolves, the actual
-    // hostname connect below remains a hard assertion.
-    if unsafe { resolve("localhost", port as c_int) }.is_none() {
-        let (mut hs, rv) = open_against(port);
-        assert_eq!(rv, 0, "the loopback listener still answers without a resolver alias");
-        http_close(&mut *hs);
-        let _ = h.join();
-        eprintln!("skipping hostname-connect assertion: this runner cannot resolve localhost");
-        return;
-    }
     let (mut hs, rv) = open_host_against("localhost", port);
     assert_eq!(
         rv, 0,

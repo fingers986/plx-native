@@ -223,10 +223,9 @@ fn until_tuck_between(r: &mut World, lo: f32, hi: f32) {
 /// Each state mounts its own world, one after the other (a world holds the serial lock, which is not
 /// re-entrant, so the last one is gone before the next is mounted).
 fn a_click_on_the_chip_lands_only_where_the_bar_is_drawn(name: &str, mount: fn() -> World, deep: fn(&mut World)) {
+    use plx_ui::widgets::CHIP_FRAME;
     let menu_after = |r: &mut World, x: f32, y: f32| { r.click(x, y); super::account_menu_up(&r.d) };
-    // The clickable chrome member is the account capsule, not just the avatar. Even at rest it
-    // includes the shared tab-track inset around CHIP_FRAME.
-    let rest = plx_ui::widgets::chip_cap(0.0, 0.0);
+    let rest = CHIP_FRAME;
 
     {
         let mut r = mount();

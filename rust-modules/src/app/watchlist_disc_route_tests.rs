@@ -46,7 +46,7 @@ fn menu_up(w: &World) -> bool {
 
 /// **The Home hero's disc, by keys:** Right from Play reaches the disc, OK sends plex.tv exactly one
 /// add for the hero's title and the disc wears the filled face, OK again sends the removal and the
-/// face goes back, and BACK opens the Home exit confirmation without writing anything.
+/// face goes back, and BACK opens nothing and writes nothing.
 #[test]
 fn the_home_heros_disc_adds_then_removes_the_title_by_keys() {
     let mut w = World::home_with_disc("r14-home-disc", HEX);
@@ -75,7 +75,7 @@ fn the_home_heros_disc_adds_then_removes_the_title_by_keys() {
     w.press(Key::Back);
     assert!(w.on(&AppArg::Home), "BACK on the disc leaves Home on top");
     assert!(!menu_up(&w), "and opens no menu");
-    assert_eq!(w.elem(), Some(0x7ffe_0011), "Home's exit confirmation takes focus on Cancel");
+    assert_eq!(w.elem(), disc, "with focus where it was");
     assert_eq!(w.writes().len(), 2, "and writes nothing");
 }
 
