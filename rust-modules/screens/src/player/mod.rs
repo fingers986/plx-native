@@ -391,12 +391,42 @@ impl PlayerScreen {
             &mut self.row,
             plx_ui::Painter::root(),
         );
+        // Keep the clock inside the full transport HUD so its visibility follows the HUD timer.
+        // The standalone Intro/Recap countdown deliberately shows only its pill, without the clock.
+        if !skip_only {
+            self.draw_local_clock();
+        }
         if !drew && !self.render.no_state_logged {
             self.render.no_state_logged = true;
             plx_base::eventlog::log(
                 "hud: the package has no state for this frame; nothing is drawn or placed for it",
             );
         }
+    }
+
+    /// The local time shares the app's top-row height and the transport's right alignment.
+    fn draw_local_clock(&self) {
+        let Some((hour, minute)) = self.model.local_time_hm else { return; };
+        let label = [
+            b'0' + hour / 10,
+            b'0' + hour % 10,
+            b':',
+            b'0' + minute / 10,
+            b'0' + minute % 10,
+            0,
+        ];
+        let size = plx_ui::theme::size::BODY;
+        let center_y = plx_ui::widgets::TOP_BAR_Y + plx_ui::widgets::TAB_PILL_H * 0.5;
+        let baseline = plx_gfx::text::text_vcenter_y(size, 1, center_y);
+        plx_ui::Painter::root().text(
+            label.as_ptr() as *const std::ffi::c_char,
+            plx_appkit::player_hud::classic::CTRL_RIGHT,
+            baseline,
+            size,
+            plx_ui::theme::TEXT_PRIMARY,
+            2,
+            1,
+        );
     }
 
     /// **Every element this screen's `Focusable` declares and the frame DRAWS, registered as a
@@ -438,7 +468,11 @@ impl PlayerScreen {
             }
             // The repair alert's buttons are ordinary pressable controls (hover parks focus, the
             // press dips and commits on release); the transport's are `Direct` — see `draw`.
-            let (hover, activate) = if g.id == GROUP_REPAIR || g.id == GROUP_SECTION {
+            let (hover, activate) = if g.id == GROUP_SCRUB {
+                // The broad scrub band already owns direct click/drag seeking. Hover also seats
+                // the focus ring so the user can see that the pointer entered a seek target.
+                (Hover::Focus, Activate::Direct)
+            } else if matches!(g.id, GROUP_REPAIR | GROUP_SECTION | GROUP_ROW | GROUP_TABS) {
                 (Hover::Focus, Activate::Press)
             } else {
                 (Hover::Ignore, Activate::Direct)
@@ -546,6 +580,10 @@ impl PlayerScreen {
         // picture nobody is drawing — playback spends ~99% of its time with the HUD auto-hidden,
         // where the frame is already 0 draw calls, and a report there is the gate turned off.
         if hud_up {
+            if let Some((hour, minute)) = self.model.local_time_hm {
+                mix(u64::from(hour));
+                mix(u64::from(minute));
+            }
             mix(pos as u64);
             mix(plx_media::player::seek_display_ns() as u64);
             mix(plx_media::player::TX.scrub_ns.load(Relaxed) as u64);
@@ -797,7 +835,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
         // (its Tick waits for the Tick arm: it steps after the sections' appear springs, below)
         let strip_ev = if matches!(ev, ScreenEvent::Tick(_)) { None } else { self.step_strip(ev, cx, fx) };
         match ev {
-            // The app performed a `toggle_section` command (a tab's OK or click, a package's disc).
+            // The app performed a `toggle_section` command (a tab's committed OK/click, a package's disc).
             ScreenEvent::App(AppMsg::HudSection(section)) => {
                 self.toggle_section(*section, cx, fx);
                 Handled::Yes
@@ -863,6 +901,14 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                     }
                     // an open section's button: its command, and the section closes
                     Some(GROUP_SECTION) => self.section_pressed(focused, cx, fx),
+                    Some(GROUP_TABS) => {
+                        if let Some(tab) = focused.and_then(|e| e.checked_sub(player_hud::ELEM_TAB_BASE)) {
+                            self.hud.nav.tab = tab as i32;
+                            if let Some(section) = Section::of_tab(tab as i32) {
+                                Self::ask(fx, PlayerReq::Command(HudCommand::ToggleSection(section)));
+                            }
+                        }
+                    }
                     _ => self.row_pressed(focused, fx),
                 }
                 Handled::Yes
@@ -894,7 +940,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                 // spring advanced in the draw would run at a rate that depended on which overlay
                 // was open (`HudMotion::step`'s own doc).
                 self.row
-                    .step(self.eff_slot(), self.hud.nav.focus, self.hud.nav.btn, tick.dt(), tick.ms,
+                    .step(self.eff_slot(), self.hud.nav.focus, self.hud.nav.btn, self.hud.nav.tab, tick.dt(), tick.ms,
                 );
                 // …and the sections' appear springs, pointed at the sections that are open (a write to
                 // `hud.sections` that did not tell them is caught up here) and stepped once per frame.
@@ -1167,10 +1213,9 @@ impl PlayerScreen {
                 let tab = e - ELEM_TAB_BASE;
                 self.hud.nav.focus = GROUP_TABS;
                 self.hud.nav.tab = tab as i32;
-                self.seat_elem(fx, e);
-                if let Some(section) = Section::of_tab(tab as i32) {
-                    Self::ask(fx, PlayerReq::Command(HudCommand::ToggleSection(section)));
-                }
+                // Tab stops use Activate::Press. The dispatcher owns the click dip and sends
+                // PressCommit after it settles; toggling here would close the tab before that
+                // feedback can be seen and would double-activate it on commit.
                 Handled::Yes
             }
             // an open section's own stops are pressed by the engine (`PressCommit`), not clicked
@@ -1442,11 +1487,9 @@ impl PlayerScreen {
     /// row element is left to the engine (`Handled::No`), whose press machinery dips the control
     /// and delivers `PressCommit` on the spring-back ([`Self::row_pressed`] performs it), an open section's card
     /// or button is the engine's press too (`Handled::No`, committed as [`Self::chapter_pressed`] /
-    /// [`Self::section_pressed`]), a tab TOGGLES its section (Info for the first, Chapters for the second: open
-    /// or close, asked as `HudCommand::ToggleSection`), and everything else, the scrubber included, is the
-    /// play/pause toggle — as the old ladder's `else` arm. The scrubber and the tabs stay `Handled::Yes`: the
-    /// scrubber's OK means the toggle or a target, which a bare press cannot carry, and a tab asks at once with
-    /// no dip to wait for.
+    /// [`Self::section_pressed`]), and a tab uses that same animated press path before toggling its section.
+    /// Everything else, the scrubber included, is the play/pause toggle — as the old ladder's `else` arm. The
+    /// scrubber stays `Handled::Yes`: its OK means the toggle or a target, which a bare press cannot carry.
     fn key_ok<H: AppLike>(&mut self, now: u32, focused: Option<u32>, fx: &mut Effects<'_, H>,
     ) -> Handled {
         // During an automatic Intro/Recap countdown the pill is visible by itself, without the
@@ -1467,13 +1510,13 @@ impl PlayerScreen {
         {
             // an open section's card or button: the engine's press dips it and commits (`PressCommit`)
             handled = Handled::No;
-        } else if let Some(tab) = focused
+        } else if focused
             .filter(|e| Self::hud_group_of(*e) == Some(GROUP_TABS))
-            .map(|e| e - player_hud::ELEM_TAB_BASE)
+            .is_some()
         {
-            if let Some(section) = Section::of_tab(tab as i32) {
-                Self::ask(fx, PlayerReq::Command(HudCommand::ToggleSection(section)));
-            }
+            // Let the focus engine run the tab's press dip and deliver PressCommit, just like
+            // Info/Chapter clicks. Toggling here would skip that animation.
+            handled = Handled::No;
         } else {
             let req = self.toggle_play(None, now);
             Self::ask(fx, req);
@@ -3628,7 +3671,11 @@ mod step_ladder_tests {
                     page.repair_alert.close();
                     continue;
                 }
-                assert!(!reqs.is_empty(), "{name}: a click on {elem} asked for nothing");
+                if (ELEM_TAB_BASE..ELEM_FAILURE_BASE).contains(&elem) {
+                    assert!(reqs.is_empty(), "{name}: a tab click waits for its press to commit: {reqs:?}");
+                } else {
+                    assert!(!reqs.is_empty(), "{name}: a click on {elem} asked for nothing");
+                }
                 assert!(!reqs.iter().any(|r| matches!(r, PlayerReq::Transport(_))), "{name}: {elem} -> {reqs:?}");
                 assert!(page.hud.until >= 1_000 + input::HUD_LINGER_MS, "{name}: a click re-arms the linger");
                 if player_hud::row_index(elem).is_some() {
@@ -3636,7 +3683,8 @@ mod step_ladder_tests {
                     assert_eq!(reqs, vec![PlayerReq::ArmControlRow]);
                 }
                 if elem == ELEM_TAB_BASE {
-                    assert_eq!(reqs, vec![PlayerReq::Command(HudCommand::ToggleSection(Section::Info))], "{name}: Info");
+                    assert_eq!(page.hud.nav.focus, GROUP_TABS, "{name}: Info click seats the tab");
+                    assert_eq!(page.hud.nav.tab, 0, "{name}: Info click seats the clicked tab");
                 }
             }
         }
@@ -4761,7 +4809,7 @@ mod scrub_ownership_tests {
             v
         };
         let step = |page: &mut PlayerScreen, now: u32| {
-            page.row.step(ControlSlot::Discs(player_hud::Controls::NONE), GROUP_SCRUB, 0, 0.016, now,
+            page.row.step(ControlSlot::Discs(player_hud::Controls::NONE), GROUP_SCRUB, 0, 0, 0.016, now,
             )
         };
         let mut page = page_on_the_bar();
@@ -4798,7 +4846,7 @@ mod scrub_ownership_tests {
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
         assert!(!page.hud.visible_at_press, "the fixture: the transport is hidden");
         let step = |page: &mut PlayerScreen, now: u32| {
-            page.row.step(ControlSlot::Discs(player_hud::Controls::NONE), GROUP_SCRUB, 0, 0.016, now,
+            page.row.step(ControlSlot::Discs(player_hud::Controls::NONE), GROUP_SCRUB, 0, 0, 0.016, now,
             )
         };
 
