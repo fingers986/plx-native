@@ -20,6 +20,13 @@ const N_ACTIONS: usize = 2;
 /// itself otherwise. What the Info card's second action opens, and what the `go_to_detail`
 /// command opens and is enabled by. `None` when nothing playing has one.
 pub fn detail_rk<'a>(meta: metadata::MetadataView<'a>) -> Option<&'a str> {
+    if let Some(snapshot) = meta.player_info() {
+        return snapshot.now_playing.as_ref()
+            .map(|n| n.detail_rk.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| snapshot.detail.as_ref().map(|d| d.rk.as_str()))
+            .filter(|s| !s.is_empty());
+    }
     meta.now_playing()
         .map(|n| n.detail_rk.as_str())
         .filter(|s| !s.is_empty())
@@ -31,6 +38,11 @@ pub fn detail_rk<'a>(meta: metadata::MetadataView<'a>) -> Option<&'a str> {
 /// A trailer session does not install a playing-leaf descriptor, so with `now_playing` absent
 /// the loaded page is the parent — a show's trailer still says Go to Show.
 fn is_episode(meta: metadata::MetadataView<'_>) -> bool {
+    if let Some(snapshot) = meta.player_info() {
+        return snapshot.now_playing.as_ref()
+            .map(|n| n.is_episode)
+            .unwrap_or_else(|| snapshot.detail.as_ref().is_some_and(|d| d.is_show));
+    }
     meta.now_playing()
         .map(|n| n.is_episode)
         .unwrap_or_else(|| meta.current().is_some_and(|d| d.is_show))
@@ -106,6 +118,37 @@ pub(crate) struct InfoContent<'a> {
 
 /// The playing item's [`InfoContent`], or `None` when nothing playing has a name to show.
 pub(crate) fn info_content<'a>(meta: metadata::MetadataView<'a>) -> Option<InfoContent<'a>> {
+    if let Some(snapshot) = meta.player_info() {
+        let np = snapshot.now_playing.as_ref();
+        let d = snapshot.detail.as_ref();
+        if np.is_none() && d.is_none() {
+            return None;
+        }
+        let is_ep = np.is_some_and(|n| n.is_episode);
+        let big_title = np.map(|n| n.title.clone()).or_else(|| d.map(|x| x.title.clone())).unwrap_or_default();
+        let ep_name = np.map(|n| n.ep_title.clone()).unwrap_or_default();
+        let summary = np.map(|n| n.summary.clone()).filter(|s| !s.is_empty())
+            .or_else(|| d.map(|x| x.summary.clone())).unwrap_or_default();
+        let thumb = np.map(|n| n.thumb.clone()).filter(|s| !s.is_empty())
+            .or_else(|| d.map(|x| if !x.art.is_empty() { x.art.clone() } else { x.thumb.clone() }))
+            .unwrap_or_default();
+        let (audio, subs): (&[metadata::Stream], &[metadata::Stream]) = match meta.playing() {
+            Some(t) => (&t.audio, &t.subs),
+            None => (&[], &[]),
+        };
+        return Some(InfoContent {
+            title: if is_ep { ep_name } else { big_title },
+            summary,
+            year: np.map(|n| n.year).or_else(|| d.map(|x| x.year)).unwrap_or(0),
+            dur_ms: np.map(|n| n.dur_ms).or_else(|| d.map(|x| x.dur_ms)).unwrap_or(0),
+            rating: np.map(|n| n.rating.clone()).filter(|s| !s.is_empty())
+                .or_else(|| d.map(|x| x.rating.clone())).unwrap_or_default(),
+            thumb,
+            genres: d.map(|x| x.genres.as_slice()).unwrap_or(&[]),
+            audio,
+            subs,
+        });
+    }
     let np = meta.now_playing();
     let d = meta.current();
     if np.is_none() && d.is_none() {
