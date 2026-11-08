@@ -437,7 +437,8 @@ fn the_more_title_band_is_a_pointer_only_stop_and_slides_with_its_page() {
     tick(&mut page, 1_016);
     let mid = stops_of(&page);
     let title = mid.iter().find(|s| s.key.elem == TITLE_KEY).expect("a pushed page registers its title stop");
-    assert_eq!(title.hover, plx_ui::screen::Hover::Ignore, "pointer-only: hovering it moves no focus");
+    assert_eq!(title.hover, plx_ui::screen::Hover::Ignore, "title hover feedback stays pointer-local and never parks focus");
+    assert_eq!(title.activate, plx_ui::screen::Activate::Direct, "a pointer click backs out directly");
     assert!(title.rect.x > title.rest_rect.x, "mid-slide the stop is where the page is DRAWN");
     let cx = cx();
     let placed = Focusable::<TestHost>::place(&page, &TITLE_KEY, &cx, At::Drawn).expect("replay can place the title key");
@@ -655,7 +656,8 @@ fn clicking_the_title_band_pops_one_page() {
     open_row(&mut page, TrackRow::Style);
     let stops = stops_of(&page);
     let title = stops.iter().find(|s| s.key.elem == TITLE_KEY).expect("a pushed page registers its title stop");
-    assert_eq!(title.hover, plx_ui::screen::Hover::Ignore, "pointer-only: hovering it moves no focus");
+    assert_eq!(title.hover, plx_ui::screen::Hover::Ignore, "title hover feedback stays pointer-local and never parks focus");
+    assert_eq!(title.activate, plx_ui::screen::Activate::Direct, "a pointer click backs out directly");
     let cx = cx();
     let placed = Focusable::<TestHost>::place(&page, &TITLE_KEY, &cx, At::Drawn).expect("replay can place the title key");
     assert_eq!((placed.rect.x, placed.rect.y), (title.rect.x, title.rect.y), "place and stop agree");

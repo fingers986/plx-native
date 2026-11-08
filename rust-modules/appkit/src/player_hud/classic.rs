@@ -586,11 +586,16 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
     let e = hud_env();
     let white = look.fill;
     let dim = theme::TEXT_SECONDARY;
+    let clock_ink = if matches!(bar.knob, Knob::Focused | Knob::Held) { white } else { dim };
     let track = look.track_ink;
     let sx = look.track.x;
     let sw = look.track.w;
-    let sy = look.track.y;
-    let sh = look.track.h;
+    let base_sy = look.track.y;
+    let base_sh = look.track.h;
+    // Keep the full-width hit geometry fixed, but make the visible track easier to identify when
+    // focus enters the scrub region. The playhead itself gets its focused knob and halo below.
+    let sh = if bar.knob == Knob::Focused { base_sh * 1.5 } else { base_sh };
+    let sy = base_sy + (base_sh - sh) * 0.5;
     let dispos = bar.pos_ns;
     let dur = bar.dur_ns;
     let now = bar.now;
@@ -642,7 +647,7 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
 
     // elapsed under the playhead (':' centered on the knob, clamped to the bar); remaining at the
     // right — hidden once the moving elapsed label would overlap it (near the end of the movie).
-    let ty = sy + CLOCK_TOP;
+    let ty = base_sy + CLOCK_TOP;
     // A grown knob clock keeps its BASELINE, so it grows upward and never into the remaining clock's
     // line. It is a CROSSFADE of two ladder rungs (the resting CAPTION and the one above it), each
     // laid out at its own size, never a tweened size or a scaled texture; the extents the rest of
@@ -654,7 +659,7 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
     let (mut el_l, mut el_r) = (f32::INFINITY, f32::NEG_INFINITY);
     for (sz, face_a) in crate::scrub_preview::clock_faces(look.clock_size, bar.clock_grow).into_iter().flatten() {
         let ety = plx_gfx::text::baseline_y(sz, 1, look.clock_size, 1, ty);
-        let (l, r) = draw_clock(p.alpha(face_a), &elapsed, clock_x, ety, sz, white, sx, sx + sw, measure,
+        let (l, r) = draw_clock(p.alpha(face_a), &elapsed, clock_x, ety, sz, clock_ink, sx, sx + sw, measure,
         );
         el_l = el_l.min(l);
         el_r = el_r.max(r);
@@ -678,7 +683,7 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
     let rem_shown = el_r + 20.0 < rem_l;
     if rem_shown {
         if let Ok(cs) = CString::new(rem.as_str()) {
-            p.text(cs.as_ptr(), sx + sw, ty, look.clock_size, dim, 2, 0);
+            p.text(cs.as_ptr(), sx + sw, ty, look.clock_size, clock_ink, 2, 1);
         }
     }
     // transport state indicator just past the elapsed clock — the four-state READ-OUT resolved by

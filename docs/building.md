@@ -76,6 +76,12 @@ asked for by name:
 make FLAVOR=stable RELEASE=1 ipk   # pkg/com.beb.plxnative_<version>_arm.ipk — what a release publishes
 ```
 
+For owner-requested TV test packages, use this stable release command by default as well. Do not
+substitute a debug or nightly package unless the owner explicitly asks for one. After packaging,
+add the requested date/time and change-description suffix to the IPK filename only; do not alter
+the app's version metadata. The target removes matching `_arm.ipk` files, so preserve and restore
+existing packages with their original contents and filesystem timestamps before finishing.
+
 `make FLAVOR=stable ipk` on its own is refused: the stable id is release-only. Add
 `FLAVOR=stable RELEASE=1` to **every** command that builds or packages something you intend to ship
 — `RELEASE=1` drops the developer feature set (the on-screen frame counter and the whole `/tmp`

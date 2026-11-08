@@ -1435,7 +1435,12 @@ impl TableView {
     /// Draw as a PANEL: a popover or menu whose `frame` is a real edge, so rows are scissored to it
     /// and fade out before the scissor can reach their ink ([`Self::bottom_edge_alpha`]).
     pub fn draw(&self, p: Painter, frame: Rect, measure: &dyn plx_machine::machine::Measure) {
-        self.draw_in(p, frame, false, measure)
+        self.draw_in(p, frame, false, measure, 1.0)
+    }
+
+    /// Draw the panel with the pointer-only drill-in title enlargement.
+    pub fn draw_with_title_hover(&self, p: Painter, frame: Rect, measure: &dyn plx_machine::machine::Measure, scale: f32) {
+        self.draw_in(p, frame, false, measure, scale)
     }
 
     /// Draw as a PAGE's content column (`TablePart`, the Filmography page): `frame` ends at the
@@ -1444,10 +1449,10 @@ impl TableView {
     /// below it empty). The TOP still dissolves ([`Self::top_edge_alpha`]), and layout, scrolling
     /// and hit rects are the same as [`Self::draw`]'s — only what is DRAWN below `frame` differs.
     pub fn draw_page(&self, p: Painter, frame: Rect, measure: &dyn plx_machine::machine::Measure) {
-        self.draw_in(p, frame, true, measure)
+        self.draw_in(p, frame, true, measure, 1.0)
     }
 
-    fn draw_in(&self, p: Painter, frame: Rect, page: bool, measure: &dyn plx_machine::machine::Measure) {
+    fn draw_in(&self, p: Painter, frame: Rect, page: bool, measure: &dyn plx_machine::machine::Measure, title_scale: f32) {
         if self.n_rows() == 0 {
             Label::new(
                 plx_platform::i18n::msg::widgets_tracks_empty_c().as_ptr(),
@@ -1540,11 +1545,13 @@ impl TableView {
                     let band =Rect::new(content_x, sy + HEADER_CAP_INSET, (text_right - content_x).max(0.0), baseline - cap_top);
                     if let Some((title, x0)) = self.title_run(measure) {
                         let glyph = CString::new(TITLE_BACK_GLYPH).unwrap_or_default();
-                        Label::new(glyph.as_ptr(), hsz, self.header_ink).v(VAlign::CapTop).draw(p, band);
                         let text_band = Rect::new(band.x + x0, band.y, (band.w - x0).max(0.0), band.h);
                         let text = plx_gfx::text::elide_by(&title, text_band.w, false, |t| measure.width_str(t, hsz, false));
+                        let cluster = Rect::new(band.x, band.y, (x0 + measure.width_str(&text, hsz, false)).min(band.w), band.h);
+                        let title_p = p.zoomed(crate::Zoom::about(cluster, (0.5, 0.5), title_scale.max(0.01)));
+                        Label::new(glyph.as_ptr(), hsz, self.header_ink).v(VAlign::CapTop).draw(title_p, band);
                         if let Ok(cs) = CString::new(text) {
-                            Label::new(cs.as_ptr(), hsz, self.header_ink).v(VAlign::CapTop).draw(p, text_band);
+                            Label::new(cs.as_ptr(), hsz, self.header_ink).v(VAlign::CapTop).draw(title_p, text_band);
                         }
                     }
                 }

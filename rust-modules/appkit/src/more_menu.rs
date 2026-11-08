@@ -790,13 +790,22 @@ impl MoreMenuState {
     }
 
     pub fn draw(&mut self, appear: f32, measure: &dyn plx_machine::machine::Measure) {
+        self.draw_with_title_feedback(appear, measure, 1.0);
+    }
+
+    pub fn draw_with_title_feedback(
+        &mut self,
+        appear: f32,
+        measure: &dyn plx_machine::machine::Measure,
+        title_scale: f32,
+    ) {
         // rises INTO place from the side of the disc that opened it, the shared entry distance. The
         // dim under it is the container's (`PlayerOverlayScreen::scrim`, `theme::underlay::DIM_SHEET`),
         // painted at the end of the player's page pass — not here.
         let natural = self.panel_rect(measure);
         let (dx, dy) = plx_ui::popover::Popover::rise_offset(self.side.get(), plx_ui::popover::Popover::RISE, appear);
         let p = plx_ui::Painter::root().alpha(appear).translate(dx, dy);
-        self.motion.draw(p, natural, 24.0, &self.form.table, measure);
+        self.motion.draw_with_title_hover(p, natural, 24.0, &self.form.table, measure, title_scale);
     }
 }
 

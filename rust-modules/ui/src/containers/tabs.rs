@@ -3,8 +3,9 @@
 //! root; a pill is `NavOp::SelectTab`, which covers-and-mints over the existing root rather than
 //! replacing it (`NavOp::Root` is the other half of that split: a true replace, root included,
 //! for a sign-in/sign-out/profile-switch reset rather than a peer press). The page declares
-//! `strip_reachable()` (Home: false while snapped
-//! to the grid) and a `Link{STRIP, Down, <entry group>}`; both are `Screen` methods with defaults.
+//! `strip_reachable()` (Home: false while snapped to the grid) and a
+//! `Link{STRIP, Down, <entry group>}`; pointer hover of visible chrome is independently governed
+//! by `strip_hoverable()`.
 //! A pill's activation is `ScreenEvent::Activate` on the page.
 //!
 //! The application publishes strip members by stable control identity, with drawn and target

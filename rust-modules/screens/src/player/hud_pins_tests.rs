@@ -2478,20 +2478,6 @@ mod sections {
             Shown { group, held, btn, tab, open: self.open_sections() }
         }
 
-        /// **What the app does with `ArmControlRow`** (a click on the control row): the press dips, and the loop's commit
-        /// frame performs the command of the row item the cursor holds (`app::playback::activate_player_row`). Here the
-        /// part that reaches the page: a `toggle_section` is answered with the addressed event, as `perform` does for the
-        /// command OK asks.
-        fn perform_armed_row(&mut self) {
-            if !self.rig.perform || !self.rig.reqs.contains(&PlayerReq::ArmControlRow) {
-                return;
-            }
-            let btn = self.screen().hud.nav.btn;
-            if let Some(HudCommand::ToggleSection(section)) = self.screen().row_command(btn) {
-                let page = MachineId::Instance(self.d.top_page().expect("the player page is mounted"));
-                self.d.emit(page, Fx::Deliver(page, Delivery::Screen(ScreenEvent::App(AppMsg::HudSection(section)))));
-            }
-        }
     }
 
     /// The reference with `section` opened from its disc, `how`, and the disc's row index. A click needs a drawn
@@ -3078,7 +3064,6 @@ mod sections {
             let now = self.now;
             self.frame(now, vec![pointer_event(plx_machine::machine::InputKind::Click { x, y, hit: None }, now)]);
             self.frame(now + 60, vec![key_up(Key::Ok, tick(now + 60))]);
-            self.perform_armed_row();
             self.settle(now + 60);
             self.now += 600;
         }

@@ -220,6 +220,8 @@ pub enum MetadataCmd {
     /// discarded when it lands, and one landed but not yet installed is dropped.
     CancelRelated,
     SetNowPlaying(Option<crate::metadata::NowPlaying>),
+    /// Preserve the lightweight Player Info context before a Detail page replaces the catalog slot.
+    CapturePlayerInfo,
     /// The optimistic half of a view-state change on the loaded item, its episodes and Related.
     ApplyView { at: crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit },
     /// The playback plan's leaf (`route.rs`).

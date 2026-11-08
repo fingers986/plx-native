@@ -5423,6 +5423,8 @@ pub struct TabPill {
     pub label: *const c_char,
     pub sz: c_int,
     pub focused: bool,
+    scale: f32,
+    press_scale: f32,
     /// A standalone tab can name the open panel while that panel owns actionable focus.
     selected: bool,
     style: TabStyle,
@@ -5449,6 +5451,8 @@ impl TabPill {
             label,
             sz,
             focused: false,
+            scale: 1.0,
+            press_scale: 1.0,
             selected: false,
             style: TabStyle::Button,
             note: TabNote::None,
@@ -5474,6 +5478,15 @@ impl TabPill {
     }
     pub fn focused(mut self, f: bool) -> Self {
         self.focused = f;
+        self
+    }
+    /// Visible enlargement around the pill's centre and the shared control press dip.
+    pub fn scale(mut self, scale: f32) -> Self {
+        self.scale = scale.max(0.0);
+        self
+    }
+    pub fn press_scale(mut self, scale: f32) -> Self {
+        self.press_scale = scale.max(0.0);
         self
     }
     /// Keep the active standalone tab visible without borrowing its input-focus treatment.
@@ -5648,7 +5661,15 @@ impl TabPill {
 }
 impl View for TabPill {
     fn draw(&self, _e: &Env, p: Painter) {
-        let r = self.frame;
+        // `Painter::scaled` is focus/hit geometry metadata; primitives do not paint through it.
+        // Apply the pop to the actual pill instead, about its centre, and scale the label and note
+        // with it so focus and the press dip are visible on every standalone pill.
+        let scale = (self.scale * self.press_scale).max(0.01);
+        let r = self.frame.scaled(scale);
+        // Focus and press enlarge the control face around its centre. Keep the label at its
+        // designed type size; this matches the other player controls, whose emphasis comes from
+        // the face and ink treatment rather than growing the text itself.
+        let sz = self.sz;
         let (fill, ink, bold_mix) = self.face();
         if let Some(bg) = fill.filter(|_| !self.ink_only) {
             let rad = r.h * 0.5;
@@ -5681,10 +5702,10 @@ impl View for TabPill {
         // relationship the eye reads here; the few px of slack left inside the pill's own padding
         // on an unbolded tab is the same slack the label alone already had. The tick does move with
         // the weight's one step (a pixel or two, on that frame), which is the same step the label makes.
-        let nw = Self::note_w(self.note);
+        let nw = Self::note_w(self.note) * scale;
         let frame = Rect::new(r.x, r.y, r.w - nw, r.h);
         let run = |p: Painter, bold: bool| {
-            let mut lab = Label::new(self.label, self.sz, ink).h(HAlign::Center);
+            let mut lab = Label::new(self.label, sz, ink).h(HAlign::Center);
             if bold {
                 lab = lab.bold();
             }
@@ -5702,12 +5723,12 @@ impl View for TabPill {
         // the label in `p.alpha(..)`: the header row, whose weight never changes, paints it the same
         // way. The standalone and boolean models land on 0 or 1 and so are unchanged.
         let lw = run(p, bold_mix >= 0.5);
-        let nx = r.x + (r.w - nw) * 0.5 + lw * 0.5 + NOTE_GAP;
+        let nx = r.x + (r.w - nw) * 0.5 + lw * 0.5 + NOTE_GAP * scale;
         let note_ink = theme::with_a(ink, NOTE_INK_A);
         match self.note {
             TabNote::None => {}
             TabNote::Done => {
-                let d = NOTE_TICK_D;
+                let d = NOTE_TICK_D * scale;
                 crate::icons::draw(
                     p,
                     crate::icons::Icon::Check,

@@ -117,17 +117,23 @@ fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
             let _back = Back(prior);
             let mut out = Vec::new();
             let mut present = plx_machine::present::Present::new();
-            let event = if held {
-                ScreenEvent::PressHold(PressId(7))
-            } else {
-                ScreenEvent::Activate(key.elem)
+            let mut step = |event: ScreenEvent<TestHost>| {
+                page.step(&event, &cx(&engine),
+                    &mut Effects::new(&mut out, MachineId::Instance(InstanceId(20)), &mut present))
             };
-            let handled = page.step(
-                &event,
-                &cx(&engine),
-                &mut Effects::new(&mut out, MachineId::Instance(InstanceId(20)), &mut present),
-            );
-            assert_eq!(handled, Handled::Yes);
+            if held {
+                assert_eq!(step(ScreenEvent::PressPrepare(PressId(7))), Handled::DeferredPrepare);
+                assert_eq!(step(ScreenEvent::PressHold(PressId(7))), Handled::DeferredHold);
+                drop(step);
+                page.scroll.jump(page.scroll_target);
+                let mut step = |event: ScreenEvent<TestHost>| {
+                    page.step(&event, &cx(&engine),
+                        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(20)), &mut present))
+                };
+                assert_eq!(step(ScreenEvent::PressHoldReady(PressId(7))), Handled::Yes);
+            } else {
+                assert_eq!(step(ScreenEvent::Activate(key.elem)), Handled::Yes);
+            }
             let requests: Vec<_> = out
                 .into_iter()
                 .filter_map(|effect| match effect.fx {

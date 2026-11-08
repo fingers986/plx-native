@@ -36,6 +36,8 @@ thread_local! {
     static REPLAY: Cell<Option<u32>> = const { Cell::new(None) };
     /// The last read of the platform's calendar date and the minute (of the frame clock) it was read in.
     static TODAY: Cell<Option<(u32, Option<[i32; 3]>)>> = const { Cell::new(None) };
+    /// The last local wall-clock time published to the player HUD and its frame-clock minute.
+    static LOCAL_TIME: Cell<Option<(u32, Option<(u8, u8)>)>> = const { Cell::new(None) };
 }
 
 /// The date every replay frame answers: a recording has no calendar of its own, and a fixed one keeps
@@ -79,6 +81,19 @@ pub(crate) fn today() -> Option<[i32; 3]> {
     let date = plx_platform::i18n::local_calendar_today();
     TODAY.with(|c| c.set(Some((minute, date))));
     date
+}
+
+/// The TV's local hour/minute, read at most once per minute and passed to the HUD as presentation data.
+/// Deterministic replays omit a live wall clock rather than showing host-dependent time.
+pub(crate) fn local_time_hm() -> Option<(u8, u8)> {
+    if REPLAY.with(|c| c.get()).is_some() { return None; }
+    let minute = now() / 60_000;
+    if let Some((at, time)) = LOCAL_TIME.with(|c| c.get()) {
+        if at == minute { return time; }
+    }
+    let time = plx_platform::i18n::local_clock_hm();
+    LOCAL_TIME.with(|c| c.set(Some((minute, time))));
+    time
 }
 
 #[cfg(test)]

@@ -26,6 +26,9 @@ pub type BitmapLookup = fn(i64) -> Option<(i32, i32, Vec<plx_media::player::SubR
 /// field quotes the exact expression `src/app/run.rs` samples it with.
 #[derive(Clone, Copy, Debug)]
 pub struct HudModel {
+    /// The television's local wall-clock hour/minute, supplied by the application clock door.
+    /// `None` during deterministic replays or if the platform clock cannot be read.
+    pub local_time_hm: Option<(u8, u8)>,
     /// `plx_media::player::TX.paused.load(Relaxed)`: the viewer is logically paused. Drives the
     /// title's reveal and the playbar's state mark.
     pub paused: bool,
@@ -81,6 +84,7 @@ impl Default for HudModel {
     /// (Medium, Low, white), no subtitle track (-1) and no cue.
     fn default() -> Self {
         Self {
+            local_time_hm: None,
             paused: false,
             scrub_ns: -1,
             playpos_ns: 0,

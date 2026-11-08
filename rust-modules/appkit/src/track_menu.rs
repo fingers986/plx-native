@@ -2308,6 +2308,15 @@ impl TrackMenuState {
     }
 
     pub fn draw(&mut self, appear: f32, measure: &dyn plx_machine::machine::Measure) {
+        self.draw_with_title_feedback(appear, measure, 1.0);
+    }
+
+    pub fn draw_with_title_feedback(
+        &mut self,
+        appear: f32,
+        measure: &dyn plx_machine::machine::Measure,
+        title_scale: f32,
+    ) {
         // The appear fade/rise — the container drives the phase and the appear spring. The dim
         // over the video plane is the container's too (`PlayerOverlayScreen::scrim`,
         // `theme::underlay::DIM_PLAYER`), painted at the end of the player's page pass.
@@ -2318,7 +2327,7 @@ impl TrackMenuState {
         // frosted panel card — near-opaque dark (no true backdrop blur on the GLES plane, so a solid
         // dark card approximates it); only a hint of video shows through. ONE background at the
         // animated rect, the page(s) under its clip (`PanelMotion::draw`).
-        self.motion.draw(p, natural, 28.0, &self.form.table, measure);
+        self.motion.draw_with_title_hover(p, natural, 28.0, &self.form.table, measure, title_scale);
     }
 }
 

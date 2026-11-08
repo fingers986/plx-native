@@ -655,6 +655,11 @@ impl Grid {
         self.spec.rests
     }
 
+    /// Number of columns in the grid, used by page owners that reveal a terminal row on pointer focus.
+    pub fn columns_count(&self) -> usize {
+        self.spec.cols
+    }
+
     /// A resting grid's scroll for its focused row, held to a document that ends at `end` (the
     /// owner's furthest scroll with this focus): `poster_grid::rest_scroll`, the Library's rule.
     /// `None` while focus is not in the grid.

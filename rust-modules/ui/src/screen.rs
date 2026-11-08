@@ -131,12 +131,19 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn prepare(&mut self, b: &mut Budget, cx: &Cx<'_, H>);
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>);
     fn render(&self) -> RenderStrategy;
+    fn blocks_chrome_input(&self) -> bool { false }
+    fn draw_over_chrome(&mut self, _f: &mut DrawFrame<'_, '_, H>) {}
     /// Whether remounting an evicted child surface can read this page's identity-matched data.
     fn covered_surfaces_ready(&self) -> bool { true }
-    /// May directional navigation or hover seat the container's strip (§6.2)? Home answers
-    /// `false` while snapped to the grid; visible strip controls still accept direct clicks.
+    /// May directional navigation seat the container's strip (§6.2)? Home answers `false` while
+    /// snapped to the grid; pointer hover is governed separately by `strip_hoverable`.
     fn strip_reachable(&self) -> bool {
         true
+    }
+    /// May pointer hover focus the visible strip when directional navigation cannot reach it?
+    /// Defaults to the same policy; Home overrides this while its grid is scrolled.
+    fn strip_hoverable(&self) -> bool {
+        self.strip_reachable()
     }
     /// **Does the page scroll itself by a wheel?** A page that answers `true` moves its own
     /// scroll on `InputKind::Wheel` (fractional `dy` included, focus staying where it is), so the

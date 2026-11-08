@@ -169,6 +169,7 @@ pub(super) enum Readout {
 
 /// The Recommended page: a vertical stack of the library's hub rows.
 pub struct RecommendedScreen {
+    pending_item_menu: Option<FocusKey<u32>>,
     pub(super) entry: EntryId,
     instance: InstanceId,
     kind: SecKind,
@@ -368,7 +369,7 @@ impl RecommendedScreen {
             run: ShelfRun::default(),
             target_run: ShelfRun::default(),
             scroll: Spring::at(0.0),
-            scroll_target: 0.0,
+            scroll_target: 0.0, pending_item_menu: None,
             restore_scroll: None,
             viewports: Vec::new(),
             initial: true,
@@ -1117,8 +1118,12 @@ impl RecommendedScreen {
                 if matches!(by, By::Dir | By::Pointer) { self.initial = false; }
                 if *by == By::Pointer {
                     // Hover moves focus within the current viewport; it does not seat the page
-                    // at the hovered shelf. Directional navigation still reveals its focus.
+                    // at the hovered shelf. The terminal shelf is the exception: show the page
+                    // end when pointer focus enters it so its cards and captions are not clipped.
                     self.relayout(Some(*to));
+                    if self.shelves.last().is_some_and(|row| row.elems.contains(&to.elem)) {
+                        self.scroll_target = max_scroll(&self.target_run);
+                    }
                 } else {
                     self.reveal_focus(*to, *by, cx);
             }
@@ -1146,6 +1151,8 @@ impl RecommendedScreen {
                     // them costs a lookup each, not a spring step.
                     self.shelves_on(ev, cx, fx);
                     self.scroll.step(self.scroll_target, K_SCROLL, dt);
+
+
                     self.relayout(focused);
                     let hint = self.hint_input(cx);
                     self.hold_hint.step(hint, tick.ms, dt, &mut |ev| fx.note(ev));
@@ -1164,8 +1171,46 @@ impl RecommendedScreen {
                 fx.push(Fx::App(AppFx::StoreWork(StoreWork::Browse)));
             }
             ScreenEvent::Activate(elem) => return self.activate(*elem, false, cx, fx),
-            ScreenEvent::PressHold(_) => return self.command(LibraryCmd::ItemMenu, cx, fx),
+            ScreenEvent::PressPrepare(_) => {
+                self.pending_item_menu = None;
+                if let Some(key) = cx.focus.current {
+                    if self.focused_item(Some(key), cx).is_some_and(|item| !item.rk.is_empty()) {
+                        self.reveal_focus(key, By::Dir, cx);
+                        self.pending_item_menu = Some(key);
+                        fx.invalidate(Provenance::Input);
+                        return Handled::DeferredPrepare;
+                    }
+                }
+                return Handled::No;
+            }
+            ScreenEvent::PressHold(_) => {
+                self.pending_item_menu = None;
+                if let Some(key) = cx.focus.current {
+                    if self.focused_item(Some(key), cx).is_some_and(|item| !item.rk.is_empty()) {
+                        self.reveal_focus(key, By::Dir, cx);
+                        self.pending_item_menu = Some(key);
+                        fx.invalidate(Provenance::Input);
+                        return Handled::DeferredHold;
+                    }
+                }
+                return Handled::No;
+            }
+            ScreenEvent::PressHoldReady(_) => {
+                let Some(key) = self.pending_item_menu.filter(|key| Some(*key) == cx.focus.current) else {
+                    self.pending_item_menu = None;
+                    return Handled::Yes;
+                };
+                if (self.scroll.pos - self.scroll_target).abs() > 1.0 {
+                    return Handled::No;
+                }
+                self.scroll.jump(self.scroll_target);
+                self.relayout(Some(key));
+                self.pending_item_menu = None;
+                self.activate(key.elem, true, cx, fx);
+                return Handled::Yes;
+            }
             ScreenEvent::PressCommit(_) => {
+                self.pending_item_menu = None;
                 return cx.focus.current.map_or(Handled::No, |key| self.activate(key.elem, false, cx, fx));
             }
             ScreenEvent::Input(input) => {
@@ -1214,6 +1259,12 @@ impl RecommendedScreen {
 impl<H: LibraryLike> Machine<H> for RecommendedScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        if matches!(ev, ScreenEvent::Cover | ScreenEvent::Input(plx_machine::machine::InputEvent {
+            kind: InputKind::Wheel { .. } | InputKind::Key { key: Key::Back, edge: Edge::Down, .. }, ..
+        })) {
+            self.pending_item_menu = None;
+        }
+
         self.step_event(ev, cx, fx)
     }
 }

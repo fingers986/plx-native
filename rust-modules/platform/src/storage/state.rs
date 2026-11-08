@@ -185,6 +185,7 @@ pub const ACCOUNT_BOUND_PREFERENCES: &[&str] = &[
     "server_key_pins",
     "plaintext_consent",
     "track_memory",
+    "play_versions",
     "profile_prefs",
     "subtitle_offsets",
     "library_sorts",

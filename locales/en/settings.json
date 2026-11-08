@@ -105,6 +105,26 @@
     "value": "Sign in",
     "description": "Settings, account, onboarding or privacy UI: settings.account.sign_in"
   },
+  "settings.account.sign_out_question": {
+    "value": "Sign out?",
+    "description": "Confirmation dialog"
+  },
+  "settings.account.sign_out_body": {
+    "value": "Do you want to sign out of Plex?",
+    "description": "Confirmation dialog"
+  },
+  "settings.exit.question": {
+    "value": "Exit PlxNative?",
+    "description": "Confirmation dialog"
+  },
+  "settings.exit.body": {
+    "value": "Do you want to close the app?",
+    "description": "Confirmation dialog"
+  },
+  "settings.exit.action": {
+    "value": "Exit",
+    "description": "Confirmation dialog"
+  },
   "settings.account.sign_out": {
     "value": "Sign out",
     "description": "Settings, account, onboarding or privacy UI: settings.account.sign_out"

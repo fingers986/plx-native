@@ -1513,6 +1513,7 @@ mod tests {
             if ms == 656 { input.release(ms); }
             for event in input.tick(ms, 0.016) {
                 match event {
+                    PressEvent::Prepare(..) => {}
                     PressEvent::Hold(id, _, _) => {
                         holds += 1;
                         let (handled, out, _) = step_screen(&mut s, &ScreenEvent::PressHold(id), Some(key));
@@ -1520,6 +1521,7 @@ mod tests {
                         assert!(!has_content(&out, |_| true));
                     }
                     PressEvent::Commit(_, _, _) => commits += 1,
+                    PressEvent::HoldReady(..) => {}
                 }
             }
         }

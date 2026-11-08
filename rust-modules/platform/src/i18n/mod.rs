@@ -713,6 +713,18 @@ pub fn local_calendar_today() -> Option<[i32; 3]> {
     local_calendar_date(i64::try_from(seconds).ok()?)
 }
 
+/// The local wall-clock hour and minute for the television's configured time zone.
+/// The application clock door caches this once per minute before publishing it to screens.
+pub fn local_clock_hm() -> Option<(u8, u8)> {
+    let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    let stamp = libc::time_t::try_from(seconds).ok()?;
+    let mut out = std::mem::MaybeUninit::<libc::tm>::uninit();
+    // SAFETY: both pointers are valid for localtime_r; the result is read only on success.
+    if unsafe { libc::localtime_r(&stamp, out.as_mut_ptr()) }.is_null() { return None; }
+    let local = unsafe { out.assume_init() };
+    Some((u8::try_from(local.tm_hour).ok()?, u8::try_from(local.tm_min).ok()?))
+}
+
 /// A Unix timestamp as a calendar date in the operating system's timezone. Called while building
 /// cached presentation labels, never by data parsers or once per card per frame. Checked time_t conversion
 /// matters on the 32-bit television: an unrepresentable date remains unknown.

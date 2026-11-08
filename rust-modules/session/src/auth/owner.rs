@@ -168,6 +168,7 @@ pub enum Command {
     Retry,
     RestartWait { phase: Phase, qr_generation: u64, reply: ReplyTo },
     StartSwitch(Picker),
+    OpenProfileSwitch,
     SelectProfile { index: usize, pin: Option<String> },
     SelectProfileWithReply { index: usize, pin: Option<String>, reply: ReplyTo },
     DismissPinError,
@@ -1894,7 +1895,7 @@ impl SessionMachine {
         true
     }
 
-    fn start_switch(&mut self, picker: Picker, emit: &mut impl FnMut(SessionFx)) -> bool {
+    fn start_switch(&mut self, picker: Picker, keep_active: bool, emit: &mut impl FnMut(SessionFx)) -> bool {
         if matches!(self.state.authority, BootstrapAuthority::DevPms { .. }) {
             // A dev-token session has no account behind it to list a roster with. The account
             // menu still offers *Change profile* (it reads the on-disk sign-in), and the app has
@@ -1918,7 +1919,7 @@ impl SessionMachine {
             self.replace_publication();
             return true;
         }
-        if super::detaches_active_profile(picker) { self.publish_profile(None, emit); }
+        if !keep_active && super::detaches_active_profile(picker) { self.publish_profile(None, emit); }
         self.state.error.clear();
         if self.state.users.is_empty() {
             self.state.users = self.state.persisted.home_users.iter().map(UserTile::of_ref).collect();
@@ -1990,6 +1991,11 @@ impl SessionMachine {
         true
     }
 
+    pub fn can_cancel_profile_switch(&self) -> bool {
+        self.state.phase == Phase::Profiles && self.state.picker == Picker::ChangeProfile
+            && self.state.active_profile.is_some()
+    }
+
     fn back(&mut self, reply: ReplyTo, emit: &mut impl FnMut(SessionFx)) -> bool {
         // AUTH-03: while an unacknowledged persistence warning is showing, BACK must not clear it
         // or resume — clearing it here would silently re-admit `needs_ready_commit`/`take_ready`
@@ -1999,6 +2005,18 @@ impl SessionMachine {
         // clear it; BACK here is the platform root press only.
         if self.state.persistence_warning.is_some() {
             emit(SessionFx::BackReply { to: reply, resumed: false });
+            return true;
+        }
+        // The in-app picker keeps the already authenticated profile installed until a
+        // successful switch. Cancel its outstanding roster work and return to that session.
+        if self.can_cancel_profile_switch() {
+            let resumed = self.advance_epoch(emit).is_some();
+            if resumed {
+                self.state.phase = Phase::Ready;
+                self.state.error.clear();
+                self.replace_publication();
+            }
+            emit(SessionFx::BackReply { to: reply, resumed });
             return true;
         }
         let dead_end = self.state.roster_dead_end();
@@ -2861,7 +2879,8 @@ impl<H: SessionHost> plx_machine::machine::Machine<H> for SessionMachine {
                 if handled { self.replace_publication(); }
                 handled
             }
-            SessionEvent::Command(Command::StartSwitch(picker)) => self.start_switch(*picker, &mut emit),
+            SessionEvent::Command(Command::StartSwitch(picker)) => self.start_switch(*picker, false, &mut emit),
+            SessionEvent::Command(Command::OpenProfileSwitch) => self.start_switch(Picker::ChangeProfile, true, &mut emit),
             SessionEvent::Command(Command::SelectProfile { index, pin }) => self.select_profile(*index, pin.clone(), &mut emit),
             SessionEvent::Command(Command::SelectProfileWithReply { index, pin, reply }) => {
                 let accepted = self.select_profile(*index, pin.clone(), &mut emit);
