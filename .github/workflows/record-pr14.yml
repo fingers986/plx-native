@@ -24,10 +24,12 @@ jobs:
           old = '''; sleep "$STEP" ;;'''
           new = '''; sleep "$STEP"; echo "After key $tok"; grep '^focus ' "$log" | tail -1 || true ;;'''
           assert s.count(old) == 1
-          p.write_text(s.replace(old, new))
+          s = s.replace(old, new)
+          flow = 'record_flow 1 boot-home-chip-grid '
+          assert s.count(flow) == 1
+          p.write_text(s.replace(flow, 'BOOT_SETTLE=8 STEP=2 ' + flow))
           PY
-          FOCUS_BOOT_SETTLE=8 FOCUS_STEP=2 bash tests/focusfp.sh --rec --only 1
-          MOCK_PORT=32501 bash tests/focusfp.sh --rec --only 6,12 || { cat "$OUT/mock_pms.log"; exit 1; }
+          bash tests/focusfp.sh --rec --only 1,6,12
           for fixture in 1-boot-home-chip-grid 6-settings-family 12-filmography-detail-return; do
             source="$OUT/root-${fixture%%-*}/plxnative-recordings/latest"
             python3 tools/plxnative-rec check "$source"
