@@ -202,9 +202,6 @@ fn account_form(inputs: &AccountInputs) -> (String, Form<Action, Action, Infalli
     for (action, offered) in rows {
         sec = sec.item_if(offered, action, RowKind::Button, action, action_row(action));
     }
-    if signed_in {
-        sec = sec.separator().item(Action::SignOut, RowKind::Button, Action::SignOut, action_row(Action::SignOut));
-    }
     (header, Form::new().section(sec))
 }
 
@@ -712,7 +709,7 @@ mod tests {
         tick(&mut menu, &published(true));
         assert!(!menu_rows(&menu).contains(&Action::ChangeProfile),
             "a verdict landing under an open menu takes the row away");
-        assert!(menu_rows(&menu).contains(&Action::SignOut));
+        assert!(!menu_rows(&menu).contains(&Action::SignOut));
     }
 
     /// **A menu never opens with its focus on a destructive action.** #237 hid *Change profile*
@@ -730,7 +727,7 @@ mod tests {
         let mut menu = AccountMenuScreen::new(EntryId(0));
         tick(&mut menu, &published(true));
         assert!(!menu_rows(&menu).contains(&Action::ChangeProfile), "rig: the roster was refused");
-        assert_eq!(menu_rows(&menu), [Action::Settings, Action::SignOut], "rig: Sign out is behind Settings");
+        assert_eq!(menu_rows(&menu), [Action::Settings], "Settings is the only remaining action");
         assert_ne!(menu.form.selected_id(), Some(&Action::SignOut),
             "the menu opened focused on Sign out");
         assert_eq!(menu.form.selected_id(), Some(&Action::Settings));
@@ -773,7 +770,7 @@ mod tests {
         assert!(!menu_rows(&menu).contains(&Action::SignOut));
         plx_plex::plex::session::save(&saved);
         tick(&mut menu, &published(false));
-        assert!(menu_rows(&menu).contains(&Action::SignOut));
+        assert!(!menu_rows(&menu).contains(&Action::SignOut));
         assert!(!menu_rows(&menu).contains(&Action::SignIn));
         assert_eq!(menu.header, "Synthetic owner");
     }
@@ -1016,9 +1013,9 @@ mod tests {
             [Action::SignIn, Action::Settings]);
         let s = local(Session { account_token: "acct".into(), ..Default::default() });
         assert_eq!(rows_of(&s.account(None), false),
-            [Action::ChangeProfile, Action::Settings, Action::SignOut]);
+            [Action::ChangeProfile, Action::Settings]);
         assert_eq!(rows_of(&local(Session::default()).account(None), false),
-            [Action::Settings, Action::SignOut]);
+            [Action::Settings]);
     }
 
     /// **The menu does not head itself with what the chip above it already says** (N-c: "DEMO" over the

@@ -78,9 +78,18 @@ fn selection_pin_and_signout_are_typed_session_commands() {
         &published,
         InstanceId(17),
     );
-    assert!(signout_fx
-        .iter()
-        .any(|st| matches!(st.fx, Fx::App(AppFx::Session(auth::SessionCmd::SignOut)))));
+    assert!(!signout_fx.iter().any(|st|
+        matches!(st.fx, Fx::App(AppFx::Session(auth::SessionCmd::SignOut)))));
+    assert!(signout_screen.confirm_action.is_open());
+    let (_, confirmed) = step_ev_with(
+        &mut signout_screen,
+        &ScreenEvent::PressCommit(plx_machine::machine::PressId(3)),
+        Some(FocusKey { entry: EntryId(4), elem: 0x7ffe_0012 }),
+        &published,
+        InstanceId(17),
+    );
+    assert!(confirmed.iter().any(|st|
+        matches!(st.fx, Fx::App(AppFx::Session(auth::SessionCmd::SignOut)))));
 
     let mut locked_screen = ProfilesScreen::new(EntryId(5), published.read());
     let mut pin_effects = Vec::<Stamped<SessionHost>>::new();

@@ -92,6 +92,14 @@ pub fn cx(focus: Option<FocusKey<u32>>) -> Cx<'static, SessionHost> {
 /// Live read/command tests use the explicit local [`SessionHost`] above.
 pub fn bare(pad: Pad) -> ProfilesScreen {
     ProfilesScreen {
+        confirm_action: plx_ui::decision_prompt::DecisionPrompt::new(
+            GroupId(0x7ffe_0010),
+            0x7ffe_0011,
+            0x7ffe_0012,
+            plx_platform::i18n::msg::settings_cancel_c(),
+            plx_platform::i18n::msg::settings_account_sign_out_c(),
+        ),
+        confirm_return: None,
         entry: EntryId(0),
         row: AvatarRow::new(),
         footer_pop: CtlPop::new(),

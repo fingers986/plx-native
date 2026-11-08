@@ -686,6 +686,8 @@ impl PendingSelection {
 }
 
 pub struct ProfilesScreen {
+    confirm_action: plx_ui::decision_prompt::DecisionPrompt,
+    confirm_return: Option<plx_machine::machine::FocusKey<u32>>,
     entry: EntryId,
     /// The avatar row's animation cache — focus-scale + scroll springs. A render cache, not
     /// logical state, exactly as `RootPage::table`'s `TableView` is: the engine owns WHICH avatar
@@ -735,6 +737,9 @@ impl ProfilesScreen {
     pub fn new(entry: EntryId, auth: auth::SessionRead<'_>) -> Self {
         let snapshot = auth.0;
         let mut s = Self {
+            confirm_action: plx_ui::decision_prompt::DecisionPrompt::new(GroupId(0x7ffe_0010), 0x7ffe_0011, 0x7ffe_0012, plx_platform::i18n::msg::settings_cancel_c(), plx_platform::i18n::msg::settings_account_sign_out_c()),
+            confirm_return: None,
+
             entry,
             row: AvatarRow::new(),
             footer_pop: CtlPop::new(),
@@ -1524,9 +1529,11 @@ impl<H: AppLike> Focusable<H> for ProfilesView<'_> {
 
 impl<H: AppLike> Focusable<H> for ProfilesScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        if self.confirm_action.groups(out, cx.measure) { return; }
         Focusable::<H>::groups(&self.focus_view(), cx, out)
     }
     fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
+        if let Some(answer) = self.confirm_action.group_of(*key) { return answer; }
         Focusable::<H>::group_of(&self.focus_view(), key, cx)
     }
     fn neighbour(
@@ -1535,9 +1542,11 @@ impl<H: AppLike> Focusable<H> for ProfilesScreen {
         dir: Dir,
         cx: &Cx<'_, H>,
     ) -> Step<u32> {
+        if let Some(answer) = self.confirm_action.neighbour(key, dir) { return answer; }
         Focusable::<H>::neighbour(&self.focus_view(), key, dir, cx)
     }
     fn place(&self, key: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
+        if let Some(answer) = self.confirm_action.place(*key, cx.measure) { return answer; }
         Focusable::<H>::place(&self.focus_view(), key, cx, at)
     }
     fn reconcile(
@@ -1545,6 +1554,7 @@ impl<H: AppLike> Focusable<H> for ProfilesScreen {
         key: plx_machine::machine::FocusKey<u32>,
         cx: &Cx<'_, H>,
     ) -> plx_machine::machine::FocusKey<u32> {
+        if let Some(answer) = self.confirm_action.reconcile(key) { return answer; }
         Focusable::<H>::reconcile(&self.focus_view(), key, cx)
     }
     fn seat(
@@ -1553,6 +1563,7 @@ impl<H: AppLike> Focusable<H> for ProfilesScreen {
         from: Placed,
         cx: &Cx<'_, H>,
     ) -> plx_machine::machine::FocusKey<u32> {
+        if let Some(answer) = self.confirm_action.seat(group, self.entry) { return answer; }
         Focusable::<H>::seat(&self.focus_view(), group, from, cx)
     }
 }
@@ -1560,6 +1571,28 @@ impl<H: AppLike> Focusable<H> for ProfilesScreen {
 impl<H: AuthLike> Machine<H> for ProfilesScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        use plx_ui::decision_prompt::PromptStep;
+        if let ScreenEvent::Tick(tick) = ev {
+            self.confirm_action.update(tick.dt());
+        }
+        match self.confirm_action.step(ev, cx) {
+            PromptStep::Pass => {}
+            PromptStep::Done(handled) => {
+                fx.invalidate(Provenance::Input);
+                return handled;
+            }
+            PromptStep::Answer(yes) => {
+                let previous = self.confirm_return.take();
+                if yes {
+                    fx.push(Fx::App(AppFx::Session(auth::SessionCmd::SignOut)));
+                } else if let Some(key) = previous {
+                    fx.push(Fx::Deliver(fx.from(), Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::Elem(key) }))));
+                }
+                fx.invalidate(Provenance::Input);
+                return Handled::Yes;
+            }
+        }
+
         match ev {
             ScreenEvent::Tick(t) => {
                 self.tick(*t, cx, fx);
@@ -1601,7 +1634,9 @@ impl<H: AuthLike> Machine<H> for ProfilesScreen {
                     // the same request the BACK key's arm below makes — one door, two ways in
                     Commit::Back => self.request_root_back(fx),
                     Commit::SignOut => {
-                        fx.push(Fx::App(AppFx::Session(auth::SessionCmd::SignOut)));
+                        self.confirm_return = cx.focus.current;
+                    self.confirm_action.open(plx_platform::i18n::msg::settings_account_sign_out_question_c(), plx_platform::i18n::msg::settings_account_sign_out_body());
+                    fx.push(Fx::Deliver(fx.from(), Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(GroupId(0x7ffe_0010)) }))));
                     }
                     Commit::Select(i) => self.select(i, fx),
                     Commit::Nothing => {}
@@ -1662,9 +1697,14 @@ impl<H: AuthLike> Machine<H> for ProfilesScreen {
                 plx_machine::machine::RequestId(request),
                 AppMsg::BackReply {
                     correlation,
-                    resumed: _resumed,
+                    resumed,
                 },
-            ) if request == correlation => Handled::Yes,
+            ) if request == correlation => {
+                if *resumed {
+                    fx.push(Fx::Nav(plx_machine::machine::NavOp::Pop));
+                }
+                Handled::Yes
+            },
             ScreenEvent::Async(
                 plx_machine::machine::RequestId(request),
                 AppMsg::SelectionReply {
@@ -1747,20 +1787,22 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
             }
             let rect = self.row.draw(p, i, base, Self::avatar_art(u), false, f.measure);
             Self::draw_name(p, u, cx_, false, f.measure);
-            f.stop(
-                p,
-                Stop {
-                    key: plx_machine::machine::FocusKey {
-                        entry: self.entry,
-                        elem: i as u32,
+            if !self.confirm_action.visible() {
+                f.stop(
+                    p,
+                    Stop {
+                        key: plx_machine::machine::FocusKey {
+                            entry: self.entry,
+                            elem: i as u32,
+                        },
+                        rect,
+                        rest_rect: base,
+                        clip: extent,
+                        hover: Hover::Focus,
+                        activate: Activate::Press,
                     },
-                    rect,
-                    rest_rect: base,
-                    clip: extent,
-                    hover: Hover::Focus,
-                    activate: Activate::Press,
-                },
-            );
+                );
+            }
         }
         if let Some(i) = focused_i {
             let u = &users[i];
@@ -1774,23 +1816,26 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
             Self::draw_name(p, u, cx_, true, f.measure);
             // the click dip folds into the focused avatar's pop (1.0 when idle)
             let rect = self.row.draw(p, i, base, Self::avatar_art(u), true, f.measure);
-            f.stop(
-                p,
-                Stop {
-                    key: plx_machine::machine::FocusKey {
-                        entry: self.entry,
-                        elem: i as u32,
+            if !self.confirm_action.visible() {
+                f.stop(
+                    p,
+                    Stop {
+                        key: plx_machine::machine::FocusKey {
+                            entry: self.entry,
+                            elem: i as u32,
+                        },
+                        rect,
+                        rest_rect: base,
+                        clip: extent,
+                        hover: Hover::Focus,
+                        activate: Activate::Press,
                     },
-                    rect,
-                    rest_rect: base,
-                    clip: extent,
-                    hover: Hover::Focus,
-                    activate: Activate::Press,
-                },
-            );
+                );
+            }
         }
 
         let stop = |f: &mut DrawFrame<'_, '_, H>, elem: u32, rect: Rect| {
+            if self.confirm_action.visible() { return; }
             f.stop(
                 p,
                 Stop {
@@ -1874,6 +1919,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
                 .tint(theme::TEXT_PRIMARY)
                 .draw(&Env::inert(), p);
         }
+        self.confirm_action.draw(f, self.entry);
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::Page
