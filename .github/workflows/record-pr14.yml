@@ -10,7 +10,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 50
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825ada76410c181273ba90b1
+      - uses: actions/checkout@v4
       - run: brew install sdl2_ttf cmake pkg-config
       - run: make sim-macos SIM_TDIR=rust-modules/target-sim-ci
       - name: Record three flows
@@ -18,7 +18,7 @@ jobs:
           export SIM_BIN="$GITHUB_WORKSPACE/rust-modules/target-sim-ci/debug/plxnative-sim"
           export OUT="$RUNNER_TEMP/plxnative-recordings"
           bash tests/focusfp.sh --rec --only 1,6,12
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      - uses: actions/upload-artifact@v4
         with:
           name: pr14-simulator-recordings
           path: ${{ runner.temp }}/plxnative-recordings/root-*/plxnative-recordings/
