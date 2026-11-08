@@ -5,8 +5,8 @@
 //! falling back to the frozen install-wide key beside it, see [`profile_prefs`]), and since A5
 //! every other preference key of the
 //! session (`auto_sign_in`, `last_hero_blur`, `ui_resolution`, `hold_hint_taught`, the two Account-scope lists, the
-//! two per-profile library lists and the two memory-door lists, `track_memory` and
-//! `subtitle_offsets`), that used to be spelled, field for field, in
+//! two per-profile library lists and the three memory-door lists, `track_memory`,
+//! `subtitle_offsets` and `play_versions`), that used to be spelled, field for field, in
 //! [`Session`] AND in the canonical (DB8) preference record: the struct field, the manual
 //! `Default`, the copy in and out of the canonical form, the getter and a `with_<x>` builder, ten
 //! sites per setting. The one key that remains outside it is `language` (its two forms differ on

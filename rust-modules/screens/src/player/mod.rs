@@ -4165,8 +4165,8 @@ mod step_ladder_tests {
         assert_eq!(handled, Handled::No, "OK on the row is the engine's press, not a play/pause toggle");
     }
 
-    /// OK on the tabs row opens the named overlay AT ONCE — port of `key_ok`'s `focus == 2` arm,
-    /// now read off the element the engine holds.
+    /// OK on the tabs row is committed by the press engine, then opens the named section — the
+    /// same animated path used for clicks and open-section buttons.
     #[test]
     fn ok_on_the_tabs_row_asks_to_toggle_the_named_section() {
         let _g = plx_base::testlock::serial();
@@ -4175,7 +4175,10 @@ mod step_ladder_tests {
         page.hud.nav.focus = GROUP_TABS;
         page.hud.nav.tab = 0;
         let mut rig = Rig::on(&page, ENTRY);
-        let (_, reqs) = rig.key(&mut page, SDLK_RETURN, 0, Edge::Down, 1_000);
+        let (handled, reqs) = rig.key(&mut page, SDLK_RETURN, 0, Edge::Down, 1_000);
+        assert_eq!(handled, Handled::No, "the press engine owns the animated OK");
+        assert!(reqs.is_empty(), "the section waits for press commit");
+        let (_, reqs) = rig.deliver(&mut page, ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
         assert_eq!(
             reqs,
             vec![PlayerReq::Command(HudCommand::ToggleSection(Section::Info))]

@@ -2384,7 +2384,10 @@ mod tests {
         // **A collection shelf's total moves it to this value.** A Home shelf and a hub row carry
         // the hub's `totalSize` (the linked heading's "· N"), in both the hubs record and the
         // hubs initial state.
-        assert_eq!(plx_ui::rec::state_fp(APP_SHAPES), 0x68eb_d05d_f046_ba72);
+        // Deferred held-card preparation adds pointer locking and preparation state to the input
+        // machine's logical inventory. Old replay fixtures cannot load this schema and must be
+        // freshly recorded. Previous pin: 0x68eb_d05d_f046_ba72.
+        assert_eq!(plx_ui::rec::state_fp(APP_SHAPES), 0xc918_3036_8d55_0a71);
     }
 
     /// The gate at the REAL hubs landing site, through the recording the driver loads: a result
@@ -2596,34 +2599,41 @@ mod tests {
         // The predecessor censuses were graded under the `PmsMovie` record before it carried
         // `child_count`; they are history, so they keep the record they were computed with.
         const PRE_CHILD_COUNT_RECORD_SHAPE: &str = "HubsResultV1{gen:u32,seq:u32,sid:u16,client:Option<u32>,token_gen:u32,build:Option<{cw:[{last_viewed_at:i64,m:PmsMovie}],shelves:[{title:str,hub_id:str,key:str,items:[PmsMovie]}]}>};PmsMovie{sid:u16,sec:i64,title:str,year:i32,rating:str,dur_ns:i64,part:str,thumb:str,still:str,art:str,summary:str,rk:str,vcodec:str,acodec:str,blur:[[f32bits;3];4],has_blur:bool,kind:i32,resume_ms:i64,show_rk:str,season_index:i32,show_title:str,ep_index:i32,unwatched:bool,watched:bool,aired:str}";
-        let mut pre_settings = APP_SHAPES.to_vec();
+        let mut pre_settings: Vec<String> = APP_SHAPES.iter().map(|shape| (*shape).to_string()).collect();
+        // Preserve the exact preceding input shape: a historical recording census is not
+        // reconstructed by deleting guessed fields from the current wire description.
+        const PRE_DEFERRED_INPUT_SHAPE: &str = "InputMachine{press:Press,engine:FocusEngine{scopes:[(InputOwner{Entry(u32),System},FocusKey{entry:u32,elem:ElemIndex},Option<GroupId>)],remembered:[(EntryId,GroupId,ElemIndex)]},keyboard:bool,keyboard_owner:Option<InstanceId(u32)>,next_press:u32,arm:Option<Arm{id:u32,key:{entry:u32,elem:ElemIndex},from:PressFrom{Key,Pointer},holdable:bool,owner:MachineId{Session,Consent,Input,Present,Nav,Player,Store(u32),Instance(u32),Cache},held_delivered:bool}>};DispatcherQueue:[{press:Option<{from:MachineId,to:MachineId,id:u32,key:{entry:u32,elem:ElemIndex},held:bool}>,input:Option<{from:MachineId,to:MachineId,event:{tick:{ms:u32,dt_us:u32},source:{Sdl,RemoteFifo,Script,Replay},kind:{Key{key:{Up,Down,Left,Right,Ok,Back,Other},sym:u32,wcode:u32,edge:{Down,Repeat,Up},at_edge:bool},Pointer{x:f32,y:f32,hit:Option<ElemIndex>},Click{x:f32,y:f32,hit:Option<ElemIndex>},Drag{x:f32,y:f32,hit:Option<ElemIndex>},Wheel{dy:f32},Text{Commit(str),Backspace,Clear,Left,Right},PointerHidden,SystemKeyboard(bool)}}}>,keyboard_request:Option<{from:MachineId,to:MachineId,up:bool}>}]";
+        pre_settings[1] = PRE_DEFERRED_INPUT_SHAPE.to_string();
+        let fp = |shapes: &[String]| {
+            let borrowed: Vec<&str> = shapes.iter().map(String::as_str).collect();
+            plx_ui::rec::state_fp(&borrowed)
+        };
         let record = pre_settings.iter().position(|shape| *shape == plx_data::pms::record::SHAPE).unwrap();
-        pre_settings[record] = PRE_CHILD_COUNT_RECORD_SHAPE;
+        pre_settings[record] = PRE_CHILD_COUNT_RECORD_SHAPE.to_string();
         // ...and under the hubs initial state before a hub row carried its total.
         const PRE_TOTAL_INITIAL_SHAPE: &str = "HubsInitialV1{version:u32,generation:u32,next_request:u32,seen:u64,seen_facts:u32,sections_generation:u32,catalog_generation:u32,sources:[{sid:u16,client:Option<u32>,token_gen:u32,handle:str,state:u32,fetching:bool,seq:u32,retry_bits:u32,retry_n:u32,last:Option<SourceBuild>}],catalog:{items:[PmsMovie],hubs:[{title:str,hub_id:str,key:str,source:str,start:u64,len:u64}],heroes:[{idx:u64,source:str}]}}";
         let initial = pre_settings.iter().position(|shape| *shape == plx_data::pms::initial::SHAPE).unwrap();
-        pre_settings[initial] = PRE_TOTAL_INITIAL_SHAPE;
-        pre_settings[APP_SHAPES.len() - 1] = "HomeAdmissionV1{frame:u64,ordered_request:Home|Discovery,epoch:u32,sid:u16,client:u32,token_gen:u32,admitted:bool}";
-        pre_settings[APP_SHAPES.len() - 2] = super::super::bootstrap::PRE_SETTINGS_SHAPE;
-        assert_eq!(plx_ui::rec::state_fp(&pre_settings), 0x9f03_9e4f_2ff6_4d19,
+        pre_settings[initial] = PRE_TOTAL_INITIAL_SHAPE.to_string();
+        pre_settings[APP_SHAPES.len() - 1] = "HomeAdmissionV1{frame:u64,ordered_request:Home|Discovery,epoch:u32,sid:u16,client:u32,token_gen:u32,admitted:bool}".to_string();
+        pre_settings[APP_SHAPES.len() - 2] = super::super::bootstrap::PRE_SETTINGS_SHAPE.to_string();
+        assert_eq!(fp(&pre_settings), 0x9f03_9e4f_2ff6_4d19,
             "retain the pre-typed-Settings census");
-        let mut pre_consent = pre_settings;
+        let mut pre_consent = pre_settings.clone();
         pre_consent.remove(4);
-        pre_consent[3] =
-            "AppFrameV3{route:str,overlay:str,focus:str,tree:u64,session:u64,initial:u64}";
-        assert_eq!(plx_ui::rec::state_fp(&pre_consent), 0xc3a2_f751_52f6_b9eb,
+        pre_consent[3] = "AppFrameV3{route:str,overlay:str,focus:str,tree:u64,session:u64,initial:u64}".to_string();
+        assert_eq!(fp(&pre_consent), 0xc3a2_f751_52f6_b9eb,
             "retain the pre-physical-Consent census");
-        assert_eq!(plx_ui::rec::state_fp(&pre_consent[..pre_consent.len()-1]), 0xcadd_9035_05e4_2375,
+        assert_eq!(fp(&pre_consent[..pre_consent.len()-1]), 0xcadd_9035_05e4_2375,
             "retain the controlled-init predecessor without synchronous admission");
         let mut old_app = pre_consent[..pre_consent.len()-2].to_vec();
-        old_app[3] = "AppFrameV2{route:str,overlay:str,focus:str,tree:u64,session:u64}";
-        assert_eq!(plx_ui::rec::state_fp(&old_app),0x0881_e546_9753_6ca0,
+        old_app[3] = "AppFrameV2{route:str,overlay:str,focus:str,tree:u64,session:u64}".to_string();
+        assert_eq!(fp(&old_app),0x0881_e546_9753_6ca0,
             "retain the Session-only predecessor census");
-        old_app[3] = "AppFrame{route:str,overlay:str,focus:str,tree:u64}";
-        assert_eq!(plx_ui::rec::state_fp(&old_app), 0x79dc_9274_0550_1805,
+        old_app[3] = "AppFrame{route:str,overlay:str,focus:str,tree:u64}".to_string();
+        assert_eq!(fp(&old_app), 0x79dc_9274_0550_1805,
             "retain the predecessor app census pin, not a rewritten recording");
-        old_app.extend_from_slice(plx_screens::registry::SCREEN_SHAPES);
-        let old = plx_ui::rec::state_fp(&old_app);
+        old_app.extend(plx_screens::registry::SCREEN_SHAPES.iter().map(|shape| (*shape).to_string()));
+        let old = fp(&old_app);
         assert_ne!(old, state_fp());
         let manifest = format!(r#"{{"schema": {}, "state_fp": {old}}}"#, plx_ui::rec::SCHEMA);
         assert_eq!(Recording::parse(&manifest, &[], state_fp()).err(),

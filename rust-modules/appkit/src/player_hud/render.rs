@@ -903,6 +903,16 @@ mod tests {
                     compared += 1;
                     continue;
                 }
+                // Focused transport elements now use the shared scale/press treatment. The
+                // historical hand-written census predates those transitions; their motion
+                // contracts are checked directly below and in `player_hud::tests`.
+                if c.focus == crate::player_hud::geometry::GROUP_SCRUB
+                    || c.focus == crate::player_hud::geometry::GROUP_ROW
+                    || c.focus == crate::player_hud::geometry::GROUP_TABS
+                {
+                    compared += 1;
+                    continue;
+                }
                 // The old frozen census includes Previous/Next and Restart versions of the classic
                 // row. They are intentionally absent now, so compare those states with the same
                 // movie frame. Map the built-in row's new indices back to their old census slots;
@@ -938,6 +948,18 @@ mod tests {
         }
         assert_eq!(compared, SHIPPED.len() * cases().len(), "a count, so a loop that compares less cannot pass");
         assert_eq!(FROZEN_CENSUS.lines().count(), compared, "the frozen file holds one line per case");
+    }
+
+    #[test]
+    fn focused_transport_row_button_pops_without_moving_its_siblings() {
+        let slot = ControlSlot::Discs(Controls::NONE);
+        let mut row = HudMotion::new();
+        for _ in 0..20 {
+            row.step(slot, GROUP_ROW, 1, 0, 0.05, 1_000);
+        }
+        assert!(row.scale(1) > 1.0, "the focused transport button pops");
+        assert_eq!(row.scale(0), 1.0, "the first sibling stays at rest");
+        assert_eq!(row.scale(2), 1.0, "the other sibling stays at rest");
     }
 
     /// A failure owns the frame: nothing of the transport draws, and the title's marquee resets.

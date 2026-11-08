@@ -2111,12 +2111,26 @@ fn holding_a_shelf_card_opens_the_item_menu_without_activation() {
     s.snap.jump(1.0);
     s.snap_target = 1.0;
     let card = first_card(&s);
-    let (_, out, _) = step(
+    let (prepared, _, _) = step(
+        &mut s,
+        snapshot.view(),
+        Some(card),
+        &ScreenEvent::PressPrepare(plx_machine::machine::PressId(1)),
+    );
+    assert_eq!(prepared, plx_machine::machine::Handled::DeferredPrepare);
+    let (held, out, _) = step(
         &mut s,
         snapshot.view(),
         Some(card),
         &ScreenEvent::PressHold(plx_machine::machine::PressId(1)),
     );
+    assert_eq!(held, plx_machine::machine::Handled::DeferredHold);
+    assert!(!has_home(&out, |r| matches!(r, HomeReq::ItemMenu { .. })),
+        "the menu waits until the poster has finished moving");
+    s.grid.scroll_y.jump(s.grid.scroll_target);
+    s.layout_grid();
+    let (_, out, _) = step(&mut s, snapshot.view(), Some(card),
+        &ScreenEvent::PressHoldReady(plx_machine::machine::PressId(1)));
     assert!(has_home(
         &out,
         |r| matches!(r, HomeReq::ItemMenu { rk, .. } if rk == "1")
@@ -6001,8 +6015,7 @@ fn hero_button_pointer_hover_transfers_visible_focus_to_peeking_continue_card() 
 
 /// **The pointer's sideways glide moves the shelf under it, and the shelf stays there.** A shelf
 /// wider than the screen glides by the `Pan` the application sends while the pointer rests at a
-/// side edge; neither its focus nor a hover pulls it back, and a click on one of its cards brings
-/// it to that card again.
+/// side edge; neither its focus, a hover, nor a click on the visible card pulls it back.
 #[test]
 fn the_sideways_glide_moves_the_shelf_under_the_pointer_and_a_click_brings_it_back() {
     let _guard = plx_base::testlock::serial();
@@ -6031,10 +6044,9 @@ fn the_sideways_glide_moves_the_shelf_under_the_pointer_and_a_click_brings_it_ba
     step(&mut s, view, Some(hovered), &ScreenEvent::FocusMoved { from: Some(first), to: hovered, by: By::Pointer });
     tick(&mut s, hovered);
     assert_eq!(s.grid.shelves[0].scroll(), 500.0, "nor does a hover");
-    step(&mut s, view, Some(first), &ScreenEvent::FocusMoved { from: Some(hovered), to: first, by: By::Pointer });
-    step(&mut s, view, Some(first), &ScreenEvent::Input(InputEvent { at: Tick::default(),
-        source: plx_machine::machine::Source::Script, kind: InputKind::Click { x: 0.0, y, hit: Some(first.elem) } }));
-    tick(&mut s, first);
-    tick(&mut s, first);
-    assert!(s.grid.shelves[0].scroll() < 1.0, "a click on its first card brings the shelf back to it: {}", s.grid.shelves[0].scroll());
+    step(&mut s, view, Some(hovered), &ScreenEvent::Input(InputEvent { at: Tick::default(),
+        source: plx_machine::machine::Source::Script,
+        kind: InputKind::Click { x: SCR_W - 10.0, y, hit: Some(hovered.elem) } }));
+    tick(&mut s, hovered);
+    assert_eq!(s.grid.shelves[0].scroll(), 500.0, "a click on the visible card preserves the glided position");
 }

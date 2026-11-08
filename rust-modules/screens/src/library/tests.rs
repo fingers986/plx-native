@@ -662,12 +662,20 @@ fn owned_card_stops_clip_pointer_hits_and_hold_the_engine_item() {
     input.engine.set(OWNER, chosen, page.group_of(&chosen.elem, &cx), By::Pointer);
     input.arm(PressArm { key: chosen, from: PressFrom::Pointer, holdable: true }, MachineId::Instance(InstanceId(19)), 0);
     let held = input.tick(plx_ui::press::LONG_MS + 1, 0.016);
-    assert!(matches!(held.as_slice(), [PressEvent::Hold(_, _, key)] if *key == chosen));
-    let PressEvent::Hold(id, _, _) = held[0] else { unreachable!() };
+    assert!(matches!(held.as_slice(), [PressEvent::Prepare(_, _), PressEvent::Hold(_, _, key)] if *key == chosen));
+    let PressEvent::Prepare(id, _) = held[0] else { unreachable!() };
     let mut out = Vec::new();
     let mut present = plx_machine::present::Present::new();
-    page.step(&ScreenEvent::PressHold(id), &fixture.cx(input.engine.current(OWNER)),
-        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+    assert_eq!(page.step(&ScreenEvent::PressPrepare(id), &fixture.cx(input.engine.current(OWNER)),
+        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present)), Handled::DeferredPrepare);
+    let PressEvent::Hold(id, _, _) = held[1] else { unreachable!() };
+    assert_eq!(page.step(&ScreenEvent::PressHold(id), &fixture.cx(input.engine.current(OWNER)),
+        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present)), Handled::DeferredHold);
+    input.arm.as_mut().unwrap().deferred_hold = true;
+    page.scroll.jump(page.scroll_target);
+    page.relayout(Some(chosen));
+    assert_eq!(page.step(&ScreenEvent::PressHoldReady(id), &fixture.cx(input.engine.current(OWNER)),
+        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present)), Handled::Yes);
     assert!(out.iter().any(|effect| matches!(&effect.fx,
         Fx::App(AppFx::Library(LibraryReq::ItemMenu { sid, rk, from_deck: false }))
             if *sid == plx_plex::plex::ServerId::from_raw(0) && rk == "2")));

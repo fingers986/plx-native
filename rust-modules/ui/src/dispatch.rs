@@ -1050,8 +1050,14 @@ where
                         }
                         if let (Some(e), Some(k)) = (owner_e, res.focus) {
                             let owner = InputOwner::Entry(e);
+                            let group = {
+                                let view = Self::owner_view(&self.nav, e);
+                                let Split { views, measure, .. } = rig.split();
+                                let cx = self.parts(tick).cx::<H>(views, measure);
+                                view.and_then(|view| view.group_of(&k.elem, &cx))
+                            };
                             if let Outcome::Moved { from, to, by } =
-                                self.input.engine.set(owner, k, None, super::screen::By::Pointer)
+                                self.input.engine.set(owner, k, group, super::screen::By::Pointer)
                             {
                                 if let Some(inst) = self.nav.instance_of(e) {
                                     head.push(Stamped {
