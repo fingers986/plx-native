@@ -1221,7 +1221,7 @@ impl Bridge {
     /// **Publish the strip's members and the pill that is the page's own** — one write, so the
     /// landing rule (`TabContainer::strip_selected`) cannot name a pill the members do not hold.
     fn publish_strip(&mut self, d: &mut Dispatcher<AppHost>, selected: i32) {
-        self.chrome.members(selected, Self::home_focus(d), self.strip.scroll_pos(), &mut d.nav.tabs.strip,
+        self.chrome.members(selected, Self::home_focus(d), self.strip.scroll_pos(), self.strip.chip_expand_pos(), &mut d.nav.tabs.strip,
         );
         d.nav.tabs.strip_selected = self.chrome.key_at(selected);
     }
@@ -2298,7 +2298,7 @@ impl Bridge {
                     return Handled::No
                 }
                 SessionEvent::Command(plx_session::auth::owner::Command::BackAtRoot { .. })
-                    if !self.session_adapter.claim_root_press() =>
+                    if !self.session.can_cancel_profile_switch() && !self.session_adapter.claim_root_press() =>
                 {
                     return Handled::No
                 }
@@ -4264,6 +4264,13 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
                 // and `NavStack::request` drops an exactly-redundant request before it touches the
                 // transition at all, so the guard here is what lets the NEXT line ask "has the
                 // picker actually landed" honestly.
+                // An in-app picker has a return page. Keep it until authentication commits.
+                if pages.nav.top_page().is_some_and(|page|
+                    matches!(page.arg, AppArg::Profiles)
+                        && pages.nav.tabs.stack.beneath_id(page.id).is_some())
+                {
+                    return;
+                }
                 nav_root_if_unsettled(pages, AppArg::Profiles);
                 // BEFORE the picker: the account is authorized, so the consent question is
                 // answerable, and the person holding the remote at this moment is the one who
@@ -4525,6 +4532,7 @@ pub(crate) fn nav_cancel(d: &mut Dispatcher<AppHost>) -> bool {
 ///
 /// `reset_for_profile` had no production caller at all before D1; see
 /// `switching_profile_leaves_the_container_holding_nothing_of_the_previous_profile`.
+#[cfg(test)]
 pub(crate) fn switch_profile(d: &mut Dispatcher<AppHost>) {
     d.reset_for_profile();
     d.request(MachineId::Nav, NavOp::Root(AppArg::Profiles));

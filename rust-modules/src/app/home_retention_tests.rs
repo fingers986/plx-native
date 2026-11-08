@@ -89,7 +89,7 @@ fn home_requests_keep_the_emitting_instance_and_captured_return_memory() {
     let source = MachineId::Instance(InstanceId(20));
     rig.app_return(source, ret.clone());
     let requests = vec![HomeReq::Play { sid, rk: "1".into(), resume_ns: 1_000_000 },
-        HomeReq::Detail { sid, rk: "1".into() }, HomeReq::ItemMenu { sid, rk: "1".into() }, HomeReq::Account,
+        HomeReq::Detail { sid, rk: "1".into() }, HomeReq::ItemMenu { sid, rk: "1".into(), opener: 1 }, HomeReq::Account,
         HomeReq::Tab(HomeTab::Home), HomeReq::Tab(HomeTab::Movies), HomeReq::Tab(HomeTab::Shows), HomeReq::Tab(HomeTab::Search)];
     let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(), owner: InputOwner::Entry(EntryId(1)) };
     let mut out = Vec::new();

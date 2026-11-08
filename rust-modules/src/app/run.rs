@@ -635,6 +635,7 @@ fn hud_model(
 ) -> plx_appkit::player_hud::model::HudModel {
     let playpos_ns = plx_media::player::playpos_ns();
     plx_appkit::player_hud::model::HudModel {
+        local_time_hm: clock::local_time_hm(),
         paused: plx_media::player::TX.paused.load(Relaxed),
         scrub_ns: plx_media::player::TX.scrub_ns.load(Relaxed),
         playpos_ns,
@@ -2647,11 +2648,8 @@ fn loop_requests(app: &mut App) {
             // `enter_profiles_from_onboard`'s doc.
             plx_screens::registry::LoopReq::AccountChangeProfile => {
                 super::bridge::execute_session_command(&mut app.pages,
-                    plx_session::auth::SessionCmd::StartSwitch(plx_session::auth::Picker::ChangeProfile));
-                // **`switch_profile`, not a bare `Root(Profiles)`.** Every page of the outgoing
-                // profile is dropped with its `ReturnState` and its body — see
-                // `switching_profile_leaves_the_container_holding_nothing_of_the_previous_profile`.
-                super::bridge::switch_profile(&mut app.pages);
+                    plx_session::auth::SessionCmd::OpenProfileSwitch);
+                super::bridge::nav_push(&mut app.pages, AppArg::Profiles);
             }
             plx_screens::registry::LoopReq::AccountSignIn => {
                 super::bridge::execute_session_command(&mut app.pages, plx_session::auth::SessionCmd::StartLogin);
@@ -3165,6 +3163,14 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
             plx_ui::profile::phase("profile.empty", || {});
             plx_ui::profile::phase("frame.ui", || {
                 plx_ui::guard(|| {
+                    let catalog_gain = if app.player.video_plane_bound
+                        && !plx_media::route::is_preview(&app.player.session)
+                    {
+                        let source_hdr = app.bridge.metadata_view().playing().is_some_and(|p| p.hdr);
+                        plx_media::route::overlay_gain(&app.player.session, source_hdr)
+                    } else {
+                        1.0
+                    };
                     if fr.player {
                         // `plx_platform::tv::window::clear_opaque_region()` used to be called here. It is
                         // §3.3 step 10's privileged call and belongs at the container library's
@@ -3198,16 +3204,19 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // outranks `Lifted` — see `bridge::player_hud_policy`).
                         let hud_policy = super::bridge::player_hud_policy(&app.pages);
                         let menu_open = super::bridge::player_overlay_up(&app.pages);
-                        let menu_can_resume = hud_policy == plx_screens::player::HudPolicy::Normal
-                            && !menu_open
-                            && !super::bridge::player_section_up(&app.pages);
-                        let (restore_scrub, hud_shown, hud_just_hidden) = if let Some(player) = super::bridge::player_mut(&mut app.pages) {
+                        let section_open = super::bridge::player_section_up(&app.pages);
+                        let menu_active = menu_open || section_open;
+                        // Releasing a menu's pause lease follows the menu lifecycle, not HUD
+                        // visibility. BACK may hide the HUD while a closing panel is still
+                        // fading; when that fade ends, playback must resume even with the HUD hidden.
+                        let menu_closed = super::playback::player_menu_pause_ready(menu_active, hud_policy);
+                        let (restore_scrub, hud_just_hidden) = if let Some(player) = super::bridge::player_mut(&mut app.pages) {
                             player.busy = busy;
                             let hud_was_up = player.hud_up(&app.player.session, fr.now);
                             let restore_scrub = player.set_hud_policy(hud_policy);
                             let hud_shown = player.hud_up(&app.player.session, fr.now);
-                            (restore_scrub, hud_shown, hud_was_up && !hud_shown)
-                        } else { (false, false, false) };
+                            (restore_scrub, hud_was_up && !hud_shown)
+                        } else { (false, false) };
                         if hud_just_hidden {
                             // HUD policy changes (including Timing / Custom Position capsules)
                             // can hide the transport without passing through HudState::hide.
@@ -3221,8 +3230,8 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         super::playback::settle_player_menu_pause(
                             &mut app.adapters.player,
                             &mut app.player,
-                            menu_open,
-                            menu_can_resume && hud_shown,
+                            menu_active,
+                            menu_closed,
                         );
                         // THE PAGE, and its panels: `Dispatcher::draw(.., true)` runs the page
                         // pass (subtitles, the transport, the read-out — `PlayerScreen::draw`) and
@@ -3239,14 +3248,14 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // only, alpha untouched). 1.0 for SDR, a re-encode, or the 100% default.
                         let source_hdr = app.bridge.metadata_view().playing().is_some_and(|p| p.hdr);
                         let gain = plx_media::route::overlay_gain(&app.player.session, source_hdr);
-                        plx_ui::output_gain(gain, || app.pages.draw(&mut app.bridge, true));
-                        // Skipped rather than drawn while one of the player's own panels is
-                        // up — `More` carries this very panel's own toggle, and the panel's
-                        // content routinely spans wide enough to reach any of their bottom-right
-                        // rects. See `bridge::player_diagnostics_visible` (issue #163).
-                        if super::bridge::player_diagnostics_visible(&app.pages) {
-                            app.diagnostics.draw();
-                        }
+                        plx_ui::output_gain(gain, || {
+                            app.pages.draw(&mut app.bridge, true);
+                            // Diagnostics stay visible under the same player-panel gate, while
+                            // their RGB receives the configured HDR overlay gain just like HUD.
+                            if super::bridge::player_diagnostics_visible(&app.pages) {
+                                app.diagnostics.draw();
+                            }
+                        });
                     } else {
                         // dev (`/tmp/plxnative-framecb`): the page's first clear is this route's
                         // first framebuffer command, so `gfx` brackets the back-buffer wait there.
@@ -3269,17 +3278,23 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         let page_owned = super::bridge::page_owned(&app.pages);
                         let host_replaced = super::bridge::host_replaced(&app.pages);
                         let plan = super::bridge::page_plan(host_replaced, page_owned);
+                        // A catalog page can sit above the live Player after Go to Show/Movie.
+                        // Its UI is still on the HDR graphics plane, so use the same overlay
+                        // brightness preference as the Player while that HDR video plane remains
+                        // bound. This changes only UI RGB, never alpha or the media signal.
                         // One dispatcher walk supplies declarations, strict source prefixes and
                         // the visible frame. Only the visible walk advances the host cache.
                         let mut page = |ceiling: Z| {
                             let _host = (!plx_ui::frame::backdrop::discovering() &&
                                 (ceiling == Z::ALL || plx_ui::popover::host::held_ceiling().is_some_and(|z| z < ceiling)))
                                 .then(plx_ui::popover::host::page_pass);
-                            if page_owned {
-                                app.pages.draw_with_glass_below(&mut app.bridge, &mut app.glass, true, ceiling);
-                            } else {
-                                plx_gfx::gfx::frame_clear(plx_ui::theme::CLEAR_RGB.0, plx_ui::theme::CLEAR_RGB.1, plx_ui::theme::CLEAR_RGB.2);
-                            }
+                            plx_ui::output_gain(catalog_gain, || {
+                                if page_owned {
+                                    app.pages.draw_with_glass_below(&mut app.bridge, &mut app.glass, true, ceiling);
+                                } else {
+                                    plx_gfx::gfx::frame_clear(plx_ui::theme::CLEAR_RGB.0, plx_ui::theme::CLEAR_RGB.1, plx_ui::theme::CLEAR_RGB.2);
+                                }
+                            });
                         };
                         {
                             let _declarations = plx_ui::frame::backdrop::discover(sources.clone());
@@ -3325,10 +3340,12 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // menu you cannot see. A control must be visible over the thing it
                         // controls. Two call sites, and the `else` covers every non-player route,
                         // so a new route still cannot be forgotten.
-                        app.diagnostics.draw();
+                        plx_ui::output_gain(catalog_gain, || app.diagnostics.draw());
                         // Owned pages already dispatched their surfaces in the visible walk.
                         if plan != super::bridge::PagePlan::Owned {
-                            app.pages.draw_with_glass_below(&mut app.bridge, &mut app.glass, false, Z::ALL);
+                            plx_ui::output_gain(catalog_gain, || {
+                                app.pages.draw_with_glass_below(&mut app.bridge, &mut app.glass, false, Z::ALL);
+                            });
                         }
                         // dev: the blurred route transition, then the load dial's glass surfaces.
                         // LAST on the non-player path, so the snapshot either takes is of the
@@ -3366,6 +3383,26 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                             );
                         }
                     }
+                    // Player owns its clock inside the transport HUD, so it disappears with that
+                    // HUD. The app clock belongs to non-player chrome; pages with the Home/Movies/
+                    // TV Shows bar align it to that row, while detail pages retain the old anchor.
+                    let route = app.route();
+                    if !matches!(&route,
+                        plx_screens::registry::AppArg::Player
+                        | plx_screens::registry::AppArg::PlayerOverlay(_)
+                    ) {
+                        let tab_row = matches!(&route,
+                            plx_screens::registry::AppArg::Profiles
+                            | plx_screens::registry::AppArg::Home
+                            | plx_screens::registry::AppArg::Library
+                            | plx_screens::registry::AppArg::LibraryCollections { .. }
+                            | plx_screens::registry::AppArg::LibraryRecommended { .. }
+                            | plx_screens::registry::AppArg::Search
+                            | plx_screens::registry::AppArg::Watchlist
+                            | plx_screens::registry::AppArg::Content(plx_screens::registry::ContentArg::Detail { .. })
+                        );
+                        plx_ui::output_gain(catalog_gain, || draw_app_local_clock(tab_row));
+                    }
                     plx_ui::anim::draw_overlay(); // dev diagnostic overlay (all routes)
                                                      // The lab upload read-out, over everything, on every route — including the
                                                      // player, where the two branches above diverge and this one must not.
@@ -3375,6 +3412,37 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                 });
             });
     (vx, vy, vw, vh)
+}
+
+/// Draw the TV's local time in the app chrome, using the same anchor and type treatment as the
+/// Player HUD clock. The frame clock module caches the platform read to once per minute.
+fn draw_app_local_clock(tab_row: bool) {
+    let Some((hour, minute)) = clock::local_time_hm() else { return; };
+    let label = [
+        b'0' + hour / 10,
+        b'0' + hour % 10,
+        b':',
+        b'0' + minute / 10,
+        b'0' + minute % 10,
+        0,
+    ];
+    let safe = plx_ui::consts::SAFE;
+    let size = plx_ui::theme::size::BODY;
+    let center_y = if tab_row {
+        plx_ui::widgets::TOP_BAR_Y + plx_ui::widgets::TAB_PILL_H * 0.5
+    } else {
+        safe.y + size as f32 * 0.5
+    };
+    let baseline = plx_gfx::text::text_vcenter_y(size, 1, center_y);
+    plx_ui::Painter::root().text(
+        label.as_ptr() as *const std::ffi::c_char,
+        plx_appkit::player_hud::classic::CTRL_RIGHT,
+        baseline,
+        size,
+        plx_ui::theme::TEXT_PRIMARY,
+        2,
+        1,
+    );
 }
 
 /// **A screen visit ended: report how the app felt on it (`route.left`) and start the next one
@@ -5227,11 +5295,11 @@ mod lifecycle_regression_tests {
         }
     }
 
-    /// **A folded Go to Show/Movie row performs `go_to_detail`**: the performer leaves playback for the page of the
-    /// playing item's `detail_rk` (the Info card's own destination), landing the Detail page on top and taking the
-    /// player down. The row's own gate (no row without a ratingKey) is `folded_tests::the_reference_folds_the_two_info_actions`.
+    /// **A folded Go to Show/Movie row performs `go_to_detail`**: the playing item's Detail page is pushed above
+    /// the current Player, so Back returns to the same live playback session. The row's own gate (no row without a
+    /// ratingKey) is `folded_tests::the_reference_folds_the_two_info_actions`.
     #[test]
-    fn go_to_detail_leaves_playback_for_the_playing_items_page() {
+    fn go_to_detail_preserves_playback_under_the_playing_items_page() {
         use plx_appkit::player_hud::command::HudCommand;
         use plx_screens::registry::ContentArg;
         let _serial = plx_base::testlock::serial();
@@ -5259,7 +5327,10 @@ mod lifecycle_regression_tests {
         }
         let top = app.pages.nav.top_page().expect("a page is on top");
         assert!(matches!(&top.arg, AppArg::Content(ContentArg::Detail { rk, .. }) if rk == "777"), "the item's own page is on top");
-        assert!(super::super::bridge::player(&app.pages).is_none(), "and the player is gone");
+        assert!(
+            app.pages.nav.tabs.stack.entries.iter().any(|entry| matches!(entry.arg, AppArg::Player)),
+            "the current player remains below the detail page for Back to restore"
+        );
     }
 
     /// **A folded From Beginning row performs the Info card's own action**: the performer seeks to 0, wherever the
