@@ -133,6 +133,10 @@ pub trait ScreenArg: Clone + LogicalState + 'static {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Handled {
     Yes,
+    /// A card began its early scroll preparation.
+    DeferredPrepare,
+    /// A poster accepted the hold and will open its menu once positioned.
+    DeferredHold,
     No,
 }
 
@@ -515,7 +519,9 @@ pub enum ScreenEvent<H: Host> {
     Suspend,
     Resume,
     Input(InputEvent<H::Elem>),
+    PressPrepare(PressId),
     PressHold(PressId),
+    PressHoldReady(PressId),
     PressCommit(PressId),
     Activate(H::Elem),
     Tick(Tick),
@@ -545,7 +551,9 @@ impl<H: Host> ScreenEvent<H> {
             ScreenEvent::Suspend => "suspend",
             ScreenEvent::Resume => "resume",
             ScreenEvent::Input(_) => "input",
+            ScreenEvent::PressPrepare(_) => "press_prepare",
             ScreenEvent::PressHold(_) => "press_hold",
+            ScreenEvent::PressHoldReady(_) => "press_hold_ready",
             ScreenEvent::PressCommit(_) => "press_commit",
             ScreenEvent::Activate(_) => "activate",
             ScreenEvent::Tick(_) => "tick",
