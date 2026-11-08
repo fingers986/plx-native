@@ -17,7 +17,12 @@ jobs:
         run: |
           export SIM_BIN="$GITHUB_WORKSPACE/rust-modules/target-sim-ci/debug/plxnative-sim"
           export OUT="$RUNNER_TEMP/plxnative-recordings"
-          bash tests/focusfp.sh --rec --only 1,6,12
+          bash tests/focusfp.sh --rec --only 1,6,12 || {
+            if test -f "$OUT/1-boot-home-chip-grid.fp"; then
+              cat "$OUT/1-boot-home-chip-grid.fp"
+            fi
+            exit 1
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: pr14-simulator-recordings
