@@ -655,13 +655,13 @@ pub(crate) fn player_requests(
             }
             PlayerReq::SeekTo(ns) => {
                 if player.player_menu_was_playing.is_some() {
-                    // A chapter pick from a section reached through More can seek while the
-                    // temporary menu pause is still held. Land there, but wait to resume until
-                    // the section closes and only the HUD remains.
-                    request_seek(ns);
-                } else {
-                    apply_seek_to(pa, ns);
+                    // Selecting a chapter means "watch from here", even when the film was
+                    // already paused before its menu opened. Consume the temporary menu lease
+                    // so the ordinary close path cannot restore that old pause after this PLAY.
+                    player.player_menu_was_playing = None;
+                    player.player_menu_seen_open = false;
                 }
+                apply_seek_to(pa, ns);
             }
             PlayerReq::BeginScrubPreview => begin_scrub_preview(pa, player),
             PlayerReq::CancelScrubPreview => cancel_scrub_preview(pa, player),
@@ -691,7 +691,7 @@ pub(crate) fn player_requests(
             // already played, so this performs at once (the pointer's `ArmControlRow` above dips
             // here and performs from the loop's commit frame, through the same two functions).
             PlayerReq::Command(command) => {
-                perform_hud_command(command, player, pa, repause_at, now, refresh_hubs, pages, bridge)
+                perform_hud_command(command, player, pa, now, pages, bridge)
             }
             PlayerReq::StandIn => {
                 if let Some(ctrl) = super::bridge::player(pages).map(|screen| screen.slot) {
@@ -1239,42 +1239,22 @@ fn from_beginning(pa: &mut plx_media::player::adapter::PlayerAdapter) {
     resume_if_paused(pa);
 }
 
-/// Leave playback for the page of `rk`, the Info card's *Go to Show/Movie* and the `go_to_detail`
-/// command. An empty `rk` does nothing.
+/// Show the page of `rk` above the current player, keeping the live playback session underneath.
+/// An empty `rk` does nothing. Back then returns to this same Player instance and playhead.
 fn go_to_detail(
-    player: &mut plx_media::player::machine::Player,
-    pa: &mut plx_media::player::adapter::PlayerAdapter,
-    repause_at: &mut i64,
-    refresh_hubs: &mut bool,
     rk: &str,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) {
-    // Leave playback through THE exit ritual, then override where it landed. This arm used
-    // to hand-roll the exit — overlays + stop_bufferfeed — which is three quarters of
-    // `exit_player` and silently dropped the other quarter: `route::cancel_play()` (a jump
-    // taken while a play resolve was still in flight left it to land later on Detail,
-    // starting audio the user cannot reach) and the armed hub refresh (Continue Watching
-    // kept the resume point from BEFORE this session — exactly the stale-CW bug
-    // `exit_player`'s doc warns a new exit path re-introduces). The override is the one
-    // real difference: the Info card's "Go to Show/Movie" always lands on THIS rk's page,
-    // whatever origin route the ritual would otherwise have chosen.
     if rk.is_empty() {
         return;
     }
-    // The played leaf's server, read BEFORE the exit ritual — `detail_rk` is that
-    // item's own show, so it is on the same machine, and the store this reads is torn
-    // down below.
-    let sid = bridge.metadata_view().playing()
-        .map(|p| p.sid)
+    let meta = bridge.metadata_view();
+    let sid = meta.playing().map(|p| p.sid)
+        .or_else(|| meta.player_info().and_then(|snapshot| snapshot.detail.as_ref().map(|d| d.sid)))
         .unwrap_or_else(plx_plex::plex::current_server);
-    exit_player(player, pa, repause_at, refresh_hubs, pages);
-    // A LANDING, not a navigation, so the page is SHOWN rather than pushed blindly:
-    // the exit above has usually already put this very page on top (the show playback
-    // started from), and `show_page` is a no-op there. It is also strictly better than
-    // the flag it replaces — a Library -> detail -> play -> "Go to Show" returns to
-    // the Library instead of to Home.
-    super::bridge::show_page(pages, AppArg::Content(
+    bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::CapturePlayerInfo);
+    super::bridge::nav_push(pages, AppArg::Content(
         plx_screens::registry::ContentArg::Detail { sid, rk: rk.to_owned() },
     ));
 }
@@ -1329,9 +1309,7 @@ pub(crate) fn perform_hud_command(
     command: plx_appkit::player_hud::command::HudCommand,
     player: &mut plx_media::player::machine::Player,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
-    repause_at: &mut i64,
     now: u32,
-    refresh_hubs: &mut bool,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) {
@@ -1380,7 +1358,14 @@ pub(crate) fn perform_hud_command(
         }
         // A section is the player page's own state: the performer addresses the page with the toggle, and the
         // page opens or closes it under the package's policy and seats its own focus.
-        HudCommand::ToggleSection(section) => super::bridge::toggle_player_section(pages, section),
+        HudCommand::ToggleSection(section) => {
+            let opening = super::bridge::player(pages)
+                .is_some_and(|screen| !screen.hud.sections.contains(section));
+            if opening {
+                begin_player_menu_pause(pa, player);
+            }
+            super::bridge::toggle_player_section(pages, section);
+        }
         HudCommand::FromBeginning => {
             if player.player_menu_was_playing.is_some() {
                 request_seek(0);
@@ -1390,7 +1375,7 @@ pub(crate) fn perform_hud_command(
         }
         HudCommand::GoToDetail => {
             if let Some(rk) = plx_appkit::info_panel::detail_rk(bridge.metadata_view()).map(str::to_owned) {
-                go_to_detail(player, pa, repause_at, refresh_hubs, &rk, pages, bridge);
+                go_to_detail(&rk, pages, bridge);
             }
         }
         HudCommand::ToggleStats => crate::app::diagnostics::toggle(),
@@ -1418,9 +1403,21 @@ fn begin_player_menu_pause(
     }
 }
 
-/// Release the menu's temporary pause only after a player overlay has been observed open and the
-/// caller confirms that the player has returned to its bare HUD. The open observation prevents a
-/// D-pad request from resuming in the frame before the dispatcher mounts its panel.
+/// A menu pause is settled when the menu lifecycle is finished and no overlay policy still owns
+/// the player's presentation. Whether the HUD is visible does not affect whether playback should
+/// resume.
+pub(crate) fn player_menu_pause_ready(
+    menu_active: bool,
+    hud_policy: plx_screens::player::HudPolicy,
+) -> bool {
+    !menu_active && hud_policy == plx_screens::player::HudPolicy::Normal
+}
+
+/// Release the menu's temporary pause only after a player overlay has been observed open and all
+/// player menus/sections have closed. HUD visibility is independent of transport intent: a quick
+/// BACK can hide the HUD while a panel fades, but must not strand the playback pause lease.
+/// The open observation prevents a D-pad request from resuming in the frame before the dispatcher
+/// mounts its panel.
 pub(crate) fn settle_player_menu_pause(
     pa: &mut plx_media::player::adapter::PlayerAdapter,
     player: &mut plx_media::player::machine::Player,
@@ -1440,6 +1437,24 @@ pub(crate) fn settle_player_menu_pause(
     player.player_menu_seen_open = false;
     if player.player_menu_was_playing.take() == Some(true) {
         set_transport_paused(pa, false);
+    }
+}
+
+#[cfg(test)]
+mod player_menu_pause_tests {
+    use super::player_menu_pause_ready;
+    use plx_screens::player::HudPolicy;
+
+    #[test]
+    fn closed_menu_releases_pause_even_when_the_hud_is_hidden() {
+        assert!(player_menu_pause_ready(false, HudPolicy::Normal));
+    }
+
+    #[test]
+    fn a_closing_menu_or_hidden_policy_keeps_the_pause_lease() {
+        assert!(!player_menu_pause_ready(true, HudPolicy::Normal));
+        assert!(!player_menu_pause_ready(false, HudPolicy::Hidden));
+        assert!(!player_menu_pause_ready(false, HudPolicy::Lifted));
     }
 }
 
@@ -1547,7 +1562,7 @@ pub(crate) unsafe fn activate_player_row(
         // the command of the control the PACKAGE placed at the cursor's index, as a press of it asks for
         let command = super::bridge::player(pages).and_then(|screen| screen.row_command(btn));
         if let Some(command) = command {
-            perform_hud_command(command, player, pa, repause_at, now, refresh_hubs, pages, bridge);
+            perform_hud_command(command, player, pa, now, pages, bridge);
         }
     } else {
         activate_stand_in(player, pa, repause_at, ctrl, now, refresh_hubs, pages, bridge);

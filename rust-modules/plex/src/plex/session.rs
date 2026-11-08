@@ -1126,12 +1126,17 @@ pub enum SubtitlePosition {
     TvScreen,
     #[serde(rename = "video_frame")]
     VideoFrame,
-    /// The viewer-set distance from the TV screen's lower edge, in pixels (40–180, step 5).
+    /// The viewer-set distance from the selected anchor's lower edge, in pixels (20–200, step 5).
     #[serde(rename = "custom")]
     Custom(u8),
 }
 
 impl SubtitlePosition {
+    /// Every position anchor uses this shared distance ladder in Settings and the Player.
+    pub const DISTANCE_MIN: u8 = 20;
+    pub const DISTANCE_MAX: u8 = 200;
+    pub const DISTANCE_STEP: u8 = 5;
+
     /// Every anchor in the order the picker lists them in.
     pub const LADDER: [SubtitlePosition; 3] = [
         SubtitlePosition::VideoFrame,
@@ -1153,7 +1158,9 @@ impl SubtitlePosition {
     }
 
     pub fn custom_gap(self) -> Option<u8> {
-        if let Self::Custom(px) = self { Some(px.clamp(40, 180) / 5 * 5) } else { None }
+        if let Self::Custom(px) = self {
+            Some(px.clamp(Self::DISTANCE_MIN, Self::DISTANCE_MAX) / Self::DISTANCE_STEP * Self::DISTANCE_STEP)
+        } else { None }
     }
 
     /// A cache key distinct for every supported custom distance as well as both fixed anchors.
@@ -1161,7 +1168,7 @@ impl SubtitlePosition {
         match self {
             Self::VideoFrame => 0,
             Self::TvScreen => 1,
-            Self::Custom(px) => 2 + (px.clamp(40, 180).saturating_sub(40) / 5),
+            Self::Custom(px) => 2 + (px.clamp(Self::DISTANCE_MIN, Self::DISTANCE_MAX).saturating_sub(Self::DISTANCE_MIN) / Self::DISTANCE_STEP),
         }
     }
 }
@@ -2524,7 +2531,8 @@ impl Session {
             SubtitlePosition::TvScreen => self.prefs.subtitle_tv_screen_distance,
             SubtitlePosition::Custom(_) => self.prefs.subtitle_custom_distance,
         };
-        value.unwrap_or(60).clamp(40, 180) / 5 * 5
+        value.unwrap_or(60).clamp(SubtitlePosition::DISTANCE_MIN, SubtitlePosition::DISTANCE_MAX)
+            / SubtitlePosition::DISTANCE_STEP * SubtitlePosition::DISTANCE_STEP
     }
 
     /// Which hold hints this install has been taught; see [`HoldHintTaught`].
@@ -2551,7 +2559,8 @@ impl Session {
 
     pub fn with_subtitle_distance(&self, position: SubtitlePosition, distance: u8) -> Self {
         let mut next = self.clone();
-        let distance = distance.clamp(40, 180) / 5 * 5;
+        let distance = distance.clamp(SubtitlePosition::DISTANCE_MIN, SubtitlePosition::DISTANCE_MAX)
+            / SubtitlePosition::DISTANCE_STEP * SubtitlePosition::DISTANCE_STEP;
         match position {
             SubtitlePosition::VideoFrame => next.prefs.subtitle_video_frame_distance = Some(distance),
             SubtitlePosition::TvScreen => next.prefs.subtitle_tv_screen_distance = Some(distance),
@@ -4415,7 +4424,8 @@ pub fn set_subtitle_custom_distance(distance: u8) -> bool {
 }
 
 pub fn set_subtitle_distance(position: SubtitlePosition, distance: u8) -> bool {
-    let distance = distance.clamp(40, 180) / 5 * 5;
+    let distance = distance.clamp(SubtitlePosition::DISTANCE_MIN, SubtitlePosition::DISTANCE_MAX)
+        / SubtitlePosition::DISTANCE_STEP * SubtitlePosition::DISTANCE_STEP;
     let mut already = false;
     let write = update_with_outcome(|current| {
         already = current.subtitle_distance(position) == distance;

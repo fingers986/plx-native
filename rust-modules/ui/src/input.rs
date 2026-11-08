@@ -42,12 +42,16 @@ pub struct Arm<K> {
     pub owner: MachineId,
     /// `PressHold` was delivered once.
     pub held_delivered: bool,
+    pub deferred_hold: bool,
+    pub preparing_hold: bool,
 }
 
 /// What the press machine asks the dispatcher to deliver after a step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PressEvent<K> {
+    Prepare(PressId, MachineId),
     Hold(PressId, MachineId, FocusKey<K>),
+    HoldReady(PressId, MachineId),
     Commit(PressId, MachineId, FocusKey<K>),
 }
 
@@ -69,9 +73,11 @@ pub struct InputMachine<K> {
     /// Who may release the accepted keyboard request, even after that instance is covered.
     /// This is an input binding, not a second focus cursor or adapter-owned decision.
     pub keyboard_owner: Option<plx_machine::machine::InstanceId>,
+    /// Keep pointer hover off the page whose held card just opened a menu.
+    pub pointer_lock: Option<FocusKey<K>>,
 }
 
-pub const STATE_SHAPE: &str = "InputMachine{press:Press,engine:FocusEngine{scopes:[(InputOwner{Entry(u32),System},FocusKey{entry:u32,elem:ElemIndex},Option<GroupId>)],remembered:[(EntryId,GroupId,ElemIndex)]},keyboard:bool,keyboard_owner:Option<InstanceId(u32)>,next_press:u32,arm:Option<Arm{id:u32,key:{entry:u32,elem:ElemIndex},from:PressFrom{Key,Pointer},holdable:bool,owner:MachineId{Session,Consent,Input,Present,Nav,Player,Store(u32),Instance(u32),Cache},held_delivered:bool}>};DispatcherQueue:[{press:Option<{from:MachineId,to:MachineId,id:u32,key:{entry:u32,elem:ElemIndex},held:bool}>,input:Option<{from:MachineId,to:MachineId,event:{tick:{ms:u32,dt_us:u32},source:{Sdl,RemoteFifo,Script,Replay},kind:{Key{key:{Up,Down,Left,Right,Ok,Back,Other},sym:u32,wcode:u32,edge:{Down,Repeat,Up},at_edge:bool},Pointer{x:f32,y:f32,hit:Option<ElemIndex>},Click{x:f32,y:f32,hit:Option<ElemIndex>},Drag{x:f32,y:f32,hit:Option<ElemIndex>},Wheel{dy:f32},Text{Commit(str),Backspace,Clear,Left,Right},PointerHidden,SystemKeyboard(bool)}}}>,keyboard_request:Option<{from:MachineId,to:MachineId,up:bool}>}]";
+pub const STATE_SHAPE: &str = "InputMachine{press:Press,engine:FocusEngine{scopes:[(InputOwner{Entry(u32),System},FocusKey{entry:u32,elem:ElemIndex},Option<GroupId>)],remembered:[(EntryId,GroupId,ElemIndex)]},keyboard:bool,keyboard_owner:Option<InstanceId(u32)>,pointer_lock:Option<FocusKey{entry:u32,elem:ElemIndex}>,next_press:u32,arm:Option<Arm{id:u32,key:{entry:u32,elem:ElemIndex},from:PressFrom{Key,Pointer},holdable:bool,owner:MachineId{Session,Consent,Input,Present,Nav,Player,Store(u32),Instance(u32),Cache},held_delivered:bool,deferred_hold:bool,preparing_hold:bool}>};DispatcherQueue:[{press:Option<{from:MachineId,to:MachineId,id:u32,key:{entry:u32,elem:ElemIndex},held:bool}>,input:Option<{from:MachineId,to:MachineId,event:{tick:{ms:u32,dt_us:u32},source:{Sdl,RemoteFifo,Script,Replay},kind:{Key{key:{Up,Down,Left,Right,Ok,Back,Other},sym:u32,wcode:u32,edge:{Down,Repeat,Up},at_edge:bool},Pointer{x:f32,y:f32,hit:Option<ElemIndex>},Click{x:f32,y:f32,hit:Option<ElemIndex>},Drag{x:f32,y:f32,hit:Option<ElemIndex>},Wheel{dy:f32},Text{Commit(str),Backspace,Clear,Left,Right},PointerHidden,SystemKeyboard(bool)}}}>,keyboard_request:Option<{from:MachineId,to:MachineId,up:bool}>}]";
 
 impl<K: Copy + Eq + Hash> Default for InputMachine<K> {
     fn default() -> Self {
@@ -90,6 +96,7 @@ impl<K: Copy + Eq + Hash> InputMachine<K> {
             next_press: 0,
             keyboard: false,
             keyboard_owner: None,
+            pointer_lock: None,
         }
     }
 
@@ -110,6 +117,8 @@ impl<K: Copy + Eq + Hash> InputMachine<K> {
             holdable: a.holdable,
             owner,
             held_delivered: false,
+            deferred_hold: false,
+            preparing_hold: false,
         });
         id
     }
@@ -150,18 +159,27 @@ impl<K: Copy + Eq + Hash> InputMachine<K> {
     /// One frame: the press spring and the hold/commit decisions.
     pub fn tick(&mut self, now: u32, dt: f32) -> Vec<PressEvent<K>> {
         let mut out = Vec::new();
-        self.press.tick(now, dt);
+        let deferred = self.arm.is_some_and(|arm| arm.deferred_hold);
+        self.press.tick_with_hold(now, dt, deferred);
         if !self.press.is_active() {
             self.dip_owner = None;
         }
         let Some(arm) = self.arm.as_mut() else {
             return out;
         };
+        if arm.holdable && !arm.preparing_hold
+            && self.press.held_ms(now).is_some_and(|held| held >= crate::press::PREPARE_SCROLL_MS)
+        {
+            arm.preparing_hold = true;
+            out.push(PressEvent::Prepare(arm.id, arm.owner));
+        }
         if arm.holdable && !arm.held_delivered && self.press.is_long(now) {
             arm.held_delivered = true;
             out.push(PressEvent::Hold(arm.id, arm.owner, arm.key));
         }
-        if self.press.take_commit(now) {
+        if arm.deferred_hold {
+            out.push(PressEvent::HoldReady(arm.id, arm.owner));
+        } else if self.press.take_commit(now) {
             out.push(PressEvent::Commit(arm.id, arm.owner, arm.key));
             self.arm = None;
         } else if !self.press.is_active() {
@@ -174,19 +192,20 @@ impl<K: Copy + Eq + Hash> InputMachine<K> {
     /// The press, engine and complete gesture identity are logical state. Only the double-
     /// buffered hit map is a render-side resource (rebuilt from recorded presented frames).
     pub fn write_with(&self, c: &mut Canon, elem: &dyn Fn(&K, &mut Canon)) {
-        let Self { press, engine, keyboard, keyboard_owner, next_press, arm, dip_owner: _, hit: _ } = self;
+        let Self { press, engine, keyboard, keyboard_owner, pointer_lock, next_press, arm, dip_owner: _, hit: _ } = self;
         press.write(c);
         engine.write_with(c, elem);
         c.bool(*keyboard);
         c.option(*keyboard_owner, |c, owner| { c.u32(owner.0); });
+        c.option(*pointer_lock, |c, key| { c.u32(key.entry.0); elem(&key.elem, c); });
         c.u32(*next_press);
         c.option(arm.as_ref(), |c, a| {
-            let Arm { id, key, from, holdable, owner, held_delivered } = a;
+            let Arm { id, key, from, holdable, owner, held_delivered, deferred_hold, preparing_hold } = a;
             c.u32(id.0).u32(key.entry.0);
             elem(&key.elem, c);
             c.u32(match from { PressFrom::Key => 0, PressFrom::Pointer => 1 }).bool(*holdable);
             owner.write_canon(c);
-            c.bool(*held_delivered);
+            c.bool(*held_delivered).bool(*deferred_hold).bool(*preparing_hold);
         });
     }
 }

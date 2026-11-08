@@ -211,8 +211,8 @@ pub fn popover_seat<S: PopoverPanel, E: IndexElem>(s: &S, entry: EntryId) -> Foc
     FocusKey { entry, elem: E::of_index(key.map_or(0, |k| k.0)) }
 }
 
-/// Register every selectable row's stop (a hover parks, a click activates) and the title band's
-/// pointer-only stop (no hover focus, never in the D-pad column; a click pops). Only the ACTIVE
+/// Register every selectable row's stop (a hover parks, a press activates) and the title band's
+/// pointer-only stop (hover gives feedback; a click pops, never D-pad navigation). Only the ACTIVE
 /// page registers, where it is drawn this frame: the slide's x offset and the animated card as the
 /// clip; the pointer is held while either moves.
 pub fn popover_register_stops<S: PopoverPanel, H: Host>(
@@ -254,6 +254,8 @@ pub fn popover_register_stops<S: PopoverPanel, H: Host>(
                 rect: moved(band),
                 rest_rect: band,
                 clip,
+                // Pointer-only title feedback is handled by the owning overlay; a direct click
+                // keeps it outside focus groups while still backing out of a drill-in page.
                 hover: Hover::Ignore,
                 activate: Activate::Direct,
             },

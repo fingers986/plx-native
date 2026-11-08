@@ -572,17 +572,19 @@ fn a_bar_the_nav_has_faded_out_registers_no_pointer_stops() {
 }
 
 #[test]
-fn a_folded_page_keeps_visible_strip_clicks_without_hover_reseating() {
+fn a_folded_page_allows_hover_focus_on_visible_strip_without_opening_dpad_route() {
     let (mut d, mut rig) = boot(FixtureArg::Snapped);
     d.nav.tabs.strip = vec![StripMember::new(STRIP_BASE, Rect::new(100.0, 10.0, 160.0, 48.0))];
-    let before = d.focus();
     d.draw(&mut rig, true);
     assert!(d.input.hit.front().iter().any(|s| s.key.elem == STRIP_BASE),
         "a visible strip is still clickable when directional entry is disabled");
     d.frame(&mut rig, tick(16), vec![pointer(150.0, 30.0, tick(16))], vec![], &mut NoTap);
-    assert_eq!(d.focus(), before, "hovering the strip cannot fold the page");
+    assert_eq!(d.focus(), Some(FocusKey { entry: d.nav.top_page().unwrap().id, elem: STRIP_BASE }),
+        "the visible tab gets pointer focus even though directional entry is disabled");
+    assert_eq!(d.focus_record().and_then(|(_, _, group)| group), Some(super::containers::tabs::STRIP.0),
+        "the hover-focused tab stays in the focus graph instead of falling back to the page");
     d.frame(&mut rig, tick(32), vec![click(150.0, 30.0, tick(32))], vec![], &mut NoTap);
-    assert_eq!(d.focus(), before);
+    assert_eq!(d.focus().map(|key| key.elem), Some(STRIP_BASE));
     assert!(events_of(&d, 0).contains("\"activate\""));
 }
 

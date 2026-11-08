@@ -105,6 +105,26 @@
     "value": "Sign in",
     "description": "Settings, account, onboarding or privacy UI: settings.account.sign_in"
   },
+  "settings.account.sign_out_question": {
+    "value": "Sign out?",
+    "description": "Confirmation dialog"
+  },
+  "settings.account.sign_out_body": {
+    "value": "Do you want to sign out of Plex?",
+    "description": "Confirmation dialog"
+  },
+  "settings.exit.question": {
+    "value": "Exit PlxNative?",
+    "description": "Confirmation dialog"
+  },
+  "settings.exit.body": {
+    "value": "Do you want to close the app?",
+    "description": "Confirmation dialog"
+  },
+  "settings.exit.action": {
+    "value": "Exit",
+    "description": "Confirmation dialog"
+  },
   "settings.account.sign_out": {
     "value": "Sign out",
     "description": "Settings, account, onboarding or privacy UI: settings.account.sign_out"
@@ -695,7 +715,7 @@
   },
   "settings.playback.subtitle_position.low": {
     "value": "Video frame",
-    "description": "Subtitle position picker option: keep the subtitle 60 px above the bottom of the video picture."
+    "description": "Subtitle position picker option: choose the subtitle's distance from the bottom of the video picture."
   },
   "settings.playback.subtitle_position.middle": {
     "value": "Middle",
@@ -703,11 +723,11 @@
   },
   "settings.playback.subtitle_position.high": {
     "value": "TV screen",
-    "description": "Subtitle position picker option: keep the subtitle 60 px above the bottom of the TV screen."
+    "description": "Subtitle position picker option: choose the subtitle's distance from the bottom of the TV screen."
   },
   "settings.playback.subtitle_position.custom": {
     "value": "Custom",
-    "description": "Subtitle position picker option: set a custom TV-screen bottom gap from 40 to 180 px in 5 px steps."
+    "description": "Subtitle position picker option: set a custom TV-screen bottom gap from 20 to 200 px in 5 px steps."
   },
   "settings.playback.subtitle_position.distance_px": {
     "value": "{distance} px",

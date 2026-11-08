@@ -74,7 +74,7 @@ use super::classic::{
     tab_of_section, Kicker, Playbar, PlaybarLook, TitleLook,
 };
 use super::command::{HudCommand, Section, SeekBy, TrackTab};
-use super::geometry::{frame_state, GROUP_ROW, GROUP_SECTION};
+use super::geometry::{frame_state, GROUP_ROW, GROUP_SECTION, GROUP_TABS};
 use super::model::HudModel;
 use super::motion::HudMotion;
 use super::sections;
@@ -85,7 +85,7 @@ use crate::hud_format::compile::{
 };
 use crate::skip_pill;
 use crate::up_next::{self, Countdown, Decor, Layout};
-use plx_machine::machine::{GroupId, Host};
+use plx_machine::machine::{FocusKey, GroupId, Host};
 use plx_ui::geom::IndexElem;
 use plx_ui::screen::DrawFrame;
 
@@ -356,7 +356,7 @@ fn walk<H: Host>(
                     None => sections::text(f, q, *rect, bind, *size, bold, ink, *alpha, *max_lines, *leading,
                     ),
                 },
-                DrawOp::Control(c) => draw_control(compiled, f, row, &e, q, state, c),
+                DrawOp::Control(c) => draw_control(compiled, f, df, row, &e, q, state, c),
                 DrawOp::UpNext { rects, .. } => {
                     if let ControlSlot::UpNext(_) = f.slot {
                         let layout = Layout {
@@ -480,7 +480,7 @@ fn draw_title(f: &Frame<'_>,
     };
     let right = main.x + main.w;
     let paused = f.model.paused;
-    if let Some(n) = f.meta.now_playing().filter(|n| n.is_real_episode) {
+    if let Some(n) = f.meta.player_now_playing().filter(|n| n.is_real_episode) {
         let kicker = CString::new(plx_ui::fmt::episode_kicker(n.season, n.index, &n.ep_title))
             .unwrap_or_default();
         // an interior-NUL title drew nothing before the title was factored out: it still does
@@ -581,15 +581,18 @@ fn section_open(state: &CompiledState, c: &crate::hud_format::compile::ControlRe
 }
 
 /// One control, at the rect the compile placed it.
-fn draw_control(
+fn draw_control<H: Host>(
     compiled: &Compiled,
     f: &Frame<'_>,
+    df: &DrawFrame<'_, '_, H>,
     row: &HudMotion,
     e: &plx_ui::Env,
     q: Painter,
     state: &CompiledState,
     c: &crate::hud_format::compile::ControlRect,
-) {
+) where
+    H::Elem: IndexElem,
+{
     match c.widget {
         // A disc of the replaced row: its stable declared index (`CompiledState::row_ids`) is the
         // control's identity for the springs and the cursor. Its command, and so its enabled bit, is the
@@ -635,12 +638,22 @@ fn draw_control(
             let labels = tab_labels(crate::chapters_panel::has_chapters(f.meta));
             let Some(Ok(label)) = usize::try_from(i).ok().and_then(|i| labels[i]).map(CString::new) else { return;
             };
-            let (focused, selected) = hud_tab_state(f.transport, f.focus, f.tab, i);
+            let (transport_focus, selected) = hud_tab_state(f.transport, f.focus, f.tab, i);
+            // A retained tab remains the section marker while the open page owns the middle, but
+            // it is still a live pointer/D-pad stop. Show its focus treatment whenever focus lands
+            // on it, including while that section is open; selection remains independently shown.
+            let focused = transport_focus || (f.focus == GROUP_TABS && f.tab == i);
             // the state the walk is in says which sections are open: their tabs read selected, whatever the
             // policy (a modal section hides the row, an inline one leaves it live)
             let selected = selected || section_open(state, c);
+            let key = FocusKey {
+                entry: f.entry,
+                elem: H::Elem::of_index(crate::player_hud::ELEM_TAB_BASE + i as u32),
+            };
             TabPill::new(label.as_ptr(), theme::size::BODY, c.rect)
                 .focused(focused)
+                .scale(row.tab_scale(i as usize))
+                .press_scale(df.cx.press.dip_of(&key))
                 .selected(selected)
                 .ground(ControlGround::Unkeyed)
                 .draw(e, q);
@@ -890,6 +903,16 @@ mod tests {
                     compared += 1;
                     continue;
                 }
+                // Focused transport elements now use the shared scale/press treatment. The
+                // historical hand-written census predates those transitions; their motion
+                // contracts are checked directly below and in `player_hud::tests`.
+                if c.focus == crate::player_hud::geometry::GROUP_SCRUB
+                    || c.focus == crate::player_hud::geometry::GROUP_ROW
+                    || c.focus == crate::player_hud::geometry::GROUP_TABS
+                {
+                    compared += 1;
+                    continue;
+                }
                 // The old frozen census includes Previous/Next and Restart versions of the classic
                 // row. They are intentionally absent now, so compare those states with the same
                 // movie frame. Map the built-in row's new indices back to their old census slots;
@@ -925,6 +948,18 @@ mod tests {
         }
         assert_eq!(compared, SHIPPED.len() * cases().len(), "a count, so a loop that compares less cannot pass");
         assert_eq!(FROZEN_CENSUS.lines().count(), compared, "the frozen file holds one line per case");
+    }
+
+    #[test]
+    fn focused_transport_row_button_pops_without_moving_its_siblings() {
+        let slot = ControlSlot::Discs(Controls::NONE);
+        let mut row = HudMotion::new();
+        for _ in 0..20 {
+            row.step(slot, GROUP_ROW, 1, 0, 0.05, 1_000);
+        }
+        assert!(row.scale(1) > 1.0, "the focused transport button pops");
+        assert_eq!(row.scale(0), 1.0, "the first sibling stays at rest");
+        assert_eq!(row.scale(2), 1.0, "the other sibling stays at rest");
     }
 
     /// A failure owns the frame: nothing of the transport draws, and the title's marquee resets.
@@ -1647,13 +1682,13 @@ mod tests {
             let slot = ControlSlot::Discs(Controls::NONE);
             let mut row = HudMotion::new();
             for _ in 0..20 {
-                row.step(slot, GROUP_SECTION, 1, 0.05, 1_000);
+                row.step(slot, GROUP_SECTION, 1, 0, 0.05, 1_000);
             }
             assert!(row.section_scale(1) > 1.0, "the focused section button pops: {}", row.section_scale(1));
             assert_eq!(row.section_scale(0), 1.0, "its sibling does not");
             assert_eq!(row.scale(1), 1.0, "and the control row's own springs are not the section's");
             for _ in 0..40 {
-                row.step(slot, GROUP_ROW, 1, 0.05, 1_000);
+                row.step(slot, GROUP_ROW, 1, 0, 0.05, 1_000);
             }
             assert_eq!(row.section_scale(1), 1.0, "focus moved off the section group: it settles");
         }
@@ -1666,7 +1701,7 @@ mod tests {
             let mut rest = HudMotion::new();
             let mut popped = HudMotion::new();
             for _ in 0..20 {
-                popped.step(slot, GROUP_SECTION, 0, 0.05, 1_000);
+                popped.step(slot, GROUP_SECTION, 0, 0, 0.05, 1_000);
             }
             let at_rest = info_frame_census(false, 0, GROUP_SECTION, 0, &mut rest);
             let lifted = info_frame_census(false, 0, GROUP_SECTION, 0, &mut popped);

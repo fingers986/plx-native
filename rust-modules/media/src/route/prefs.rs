@@ -44,7 +44,7 @@ use plx_plex::plex::session::{
     UnderPostersPref,
 };
 use plx_plex::plex::session::prefs::{
-    MemoryEntry, ProfileKeyed, ProfileList, ProfileMemory, ProfileRecords, SettingsWrite, TrackMemoryEntry,
+    MemoryEntry, PlayVersionEntry, ProfileKeyed, ProfileList, ProfileMemory, ProfileRecords, SettingsWrite, TrackMemoryEntry,
 };
 use plx_plex::plex::session::{self, Seat, Session, SubtitleOffsetEntry};
 use plx_plex::plex::AudioEnhancements;
@@ -609,10 +609,15 @@ fn reseed_mirror<E: MemoryTenant>(record: &Session) {
 }
 
 /// Every tenant of the memory door, once. (The profiles' own player values are reseeded beside them.)
-pub const MEMORY_ROWS: &[MemoryRow] = &[MemoryRow::of::<SubtitleOffsetEntry>(), MemoryRow::of::<TrackMemoryEntry>()];
+pub const MEMORY_ROWS: &[MemoryRow] = &[
+    MemoryRow::of::<SubtitleOffsetEntry>(),
+    MemoryRow::of::<TrackMemoryEntry>(),
+    MemoryRow::of::<PlayVersionEntry>(),
+];
 
 static SUBTITLE_OFFSETS: MemoryMirror<SubtitleOffsetEntry> = MemoryMirror::new();
 static TRACK_MEMORY: MemoryMirror<TrackMemoryEntry> = MemoryMirror::new();
+static PLAY_VERSIONS: MemoryMirror<PlayVersionEntry> = MemoryMirror::new();
 
 impl MemoryTenant for SubtitleOffsetEntry {
     fn mirror() -> &'static MemoryMirror<Self> {
@@ -687,6 +692,15 @@ impl MemoryTenant for TrackMemoryEntry {
     }
 }
 
+impl MemoryTenant for PlayVersionEntry {
+    fn mirror() -> &'static MemoryMirror<Self> {
+        &PLAY_VERSIONS
+    }
+    fn log_label() -> &'static str {
+        "play version"
+    }
+}
+
 /// Seed `E`'s mirror from `record` whatever it was seeded under before, so a test does not inherit
 /// another test's remembered entries (the mirror is a process global, and a restore under an
 /// unchanged tenure and stamp deliberately keeps it).
@@ -740,6 +754,23 @@ pub fn recall_all<E: MemoryTenant>(user: &str) -> Vec<E> {
         return Vec::new();
     }
     state.lists.position_of(user, &account).map(|at| state.lists[at].items.clone()).unwrap_or_default()
+}
+
+/// Store the last explicitly selected media version for this item/profile.
+pub fn remember_play_version(user: &str, machine_id: &str, rating_key: &str, media_id: i64) -> bool {
+    if machine_id.is_empty() || rating_key.is_empty() || media_id <= 0 {
+        return false;
+    }
+    let key = (machine_id.to_owned(), rating_key.to_owned());
+    remember::<PlayVersionEntry>(user, key.clone(), move |_| {
+        Some(PlayVersionEntry { machine_id: key.0.clone(), rating_key: key.1.clone(), media_id })
+    })
+}
+
+/// The remembered version for one item/profile, if there is one.
+pub fn recalled_play_version(user: &str, machine_id: &str, rating_key: &str) -> Option<i64> {
+    let key = (machine_id.to_owned(), rating_key.to_owned());
+    recall::<PlayVersionEntry>(user, &key).map(|entry| entry.media_id)
 }
 
 // ---- the write door -------------------------------------------------------------------------
@@ -949,7 +980,7 @@ pub fn select_subtitle_font(font: SubtitleFont, reply: Option<Sender<bool>>) {
 
 pub fn subtitle_position() -> SubtitlePosition {
     let custom = PLAYER_SUBTITLE_POSITION_OVERRIDE.load(Relaxed);
-    if (40..=180).contains(&custom) {
+    if (SubtitlePosition::DISTANCE_MIN..=SubtitlePosition::DISTANCE_MAX).contains(&custom) {
         SubtitlePosition::Custom(custom / 5 * 5)
     } else {
         match SubtitlePositionPref::live() {
@@ -972,7 +1003,11 @@ pub fn restore_subtitle_position(position: SubtitlePosition) {
     restore_live::<SubtitlePositionPref>(position)
 }
 pub fn set_player_subtitle_position_custom(distance: u8) {
-    PLAYER_SUBTITLE_POSITION_OVERRIDE.store(distance.clamp(40, 180) / 5 * 5, Relaxed);
+    PLAYER_SUBTITLE_POSITION_OVERRIDE.store(
+        distance.clamp(SubtitlePosition::DISTANCE_MIN, SubtitlePosition::DISTANCE_MAX)
+            / SubtitlePosition::DISTANCE_STEP * SubtitlePosition::DISTANCE_STEP,
+        Relaxed,
+    );
 }
 pub fn clear_player_subtitle_position_custom() {
     PLAYER_SUBTITLE_POSITION_OVERRIDE.store(u8::MAX, Relaxed);

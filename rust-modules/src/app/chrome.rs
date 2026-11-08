@@ -183,9 +183,9 @@ impl ChromeSnapshot {
     /// `scroll` is the shared strip's current offset (`StripRender::scroll_pos`, owned by
     /// `app::bridge::Bridge`) — a parameter because this snapshot holds no `StripRender` of its
     /// own; the `Bridge` methods that call this are the one place both live.
-    pub(crate) fn members(&self, selected: i32, focus: Option<FocusKey<u32>>, scroll: f32, out: &mut Vec<StripMember<u32>>) {
+    pub(crate) fn members(&self, selected: i32, focus: Option<FocusKey<u32>>, scroll: f32, chip_expand: f32, out: &mut Vec<StripMember<u32>>) {
         out.clear();
-        out.push(StripMember::new(widgets::TAB_KEY_CHIP, widgets::CHIP_FRAME));
+        out.push(StripMember::new(widgets::TAB_KEY_CHIP, widgets::chip_cap(chip_expand.clamp(0.0, 1.0), self.name_w)));
         widgets::tab_members(&self.widths, &self.keys, selected, self.focus(focus), scroll, out);
     }
 
@@ -321,7 +321,7 @@ mod tests {
         assert_eq!(snapshot.faces[snapshot.faces.len() - 2], TabFace::Icon(Icon::Bookmark),
             "the Watchlist bookmark sits just before Search");
         let mut members = Vec::new();
-        snapshot.members(0, None, 0.0, &mut members);
+        snapshot.members(0, None, 0.0, 0.0, &mut members);
         assert_eq!(members.iter().map(|member| member.elem).collect::<Vec<_>>(),
             vec![widgets::TAB_KEY_CHIP, widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES,
                 widgets::TAB_KEY_SHOWS, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH]);

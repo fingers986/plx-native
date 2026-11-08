@@ -8457,7 +8457,13 @@ pub fn request_play(
     ctx: &str,
     version: Option<plx_plex::plex::MediaId>,
 ) -> bool {
-    request_play_inner(
+    let machine_id = plx_plex::plex::client_for(sid)
+        .map(|client| client.machine_id().to_owned())
+        .unwrap_or_default();
+    let user = plx_plex::plex::session::current_profile_key();
+    let remembered = version.is_none().then(|| recalled_play_version(&user, &machine_id, rk)).flatten();
+    let chosen = version.or_else(|| remembered.map(plx_plex::plex::MediaId));
+    let accepted = request_play_inner(
         ps,
         meta,
         caps,
@@ -8470,13 +8476,19 @@ pub fn request_play(
             title: title.to_owned(),
             ctx: ctx.to_owned(),
             preview: false,
-            version,
+            version: chosen,
         },
         None,
         None,
         false,
         crate::player::report::AttemptOrigin::Fresh,
-    )
+    );
+    if accepted {
+        if let Some(version) = version {
+            remember_play_version(&user, &machine_id, rk, version.0);
+        }
+    }
+    accepted
 }
 
 /// Start an existing queue item without replacing the queue and losing its preceding rows.

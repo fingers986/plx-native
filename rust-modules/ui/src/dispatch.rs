@@ -45,7 +45,7 @@ pub const STRIP_BASE: u32 = 0xFFFF_0000;
 const _: () = assert!(STRIP_BASE >= super::geom::NAMESPACE_FLOOR);
 
 /// The input owner's page COMPOSED with the container's strip (§6.2): the strip is a `Row`
-/// group above the page's own, contributed only while the page allows it.
+/// group above the page's own, contributed while the page allows navigation or pointer hover.
 struct PageWithStrip<'a, H: Host> {
     page: &'a dyn Screen<H>,
     strip: Option<(GroupSpec, &'a [super::containers::tabs::StripMember<H::Elem>])>,
@@ -864,8 +864,20 @@ where
         let inst = e.inst.as_ref()?;
         let page: &dyn Screen<H> = &*inst.screen;
         let is_top_page = nav.top_page().map(|t| t.id) == Some(entry);
-        let strip = (is_top_page && page.strip_reachable() && !nav.tabs.strip.is_empty())
-            .then(|| (nav.tabs.strip_group(), nav.tabs.strip.as_slice()));
+        let strip = (is_top_page
+            && !page.blocks_chrome_input()
+            && (page.strip_reachable() || page.strip_hoverable())
+            && !nav.tabs.strip.is_empty())
+            .then(|| {
+                let mut group = nav.tabs.strip_group();
+                // Keep a hover-only strip in the focus graph so pointer focus survives reconcile,
+                // but do not make it a D-pad geometric destination while the page says it is
+                // unreachable.
+                if !page.strip_reachable() {
+                    group.reachable = super::screen::AxisMask(0);
+                }
+                (group, nav.tabs.strip.as_slice())
+            });
         Some(PageWithStrip { page, strip, strip_fallback: nav.tabs.strip_fallback, strip_selected: nav.tabs.strip_selected, entry })
     }
 
@@ -1000,7 +1012,25 @@ where
                         // is drawn over the page, so the pointer crosses the page's stops on its
                         // way to the keys, and a focus move off a text field puts the keyboard
                         // away (search). A click still lands.
-                        if keyboard && kind == PointerKind::Move { res.focus = None; }
+                        if kind == PointerKind::Move && keyboard {
+                            res.focus = None;
+                        }
+                        if kind == PointerKind::Move
+                            && self.input.pointer_lock.is_some_and(|key| Some(key.entry) == owner_e)
+                        {
+                            res.focus = None;
+                        }
+                        if matches!(ev.kind, InputKind::Click { .. }) {
+                            self.input.pointer_lock = None;
+                        }
+                        if kind == PointerKind::Move
+                            && self.input.arm.is_some_and(|arm|
+                                arm.holdable && res.focus.is_some_and(|focus| focus != arm.key))
+                        {
+                            // A hover that moves focus cancels the held-card action. Keep ordinary
+                            // pointer focus movement so the user can safely choose the next card.
+                            self.input.cancel_press();
+                        }
                         if tap.resolution_active() && [res.hit, res.focus, res.activate.map(|v| v.0)].into_iter().flatten()
                             .any(|k| !self.valid_resolution_key(rig, &self.parts(tick), k, None, false)) {
                             tap.resolution_error("impossible hit resolution");
@@ -1014,14 +1044,20 @@ where
                         }
                         // a pointer press whose hit leaves its arm is cancelled (§7.4)
                         if let Some(arm) = self.input.arm {
-                            if arm.from == PressFrom::Pointer && res.hit != Some(arm.key) {
+                            if arm.from == PressFrom::Pointer && !(arm.deferred_hold || arm.preparing_hold) && res.hit != Some(arm.key) {
                                 self.input.cancel_press();
                             }
                         }
                         if let (Some(e), Some(k)) = (owner_e, res.focus) {
                             let owner = InputOwner::Entry(e);
+                            let group = {
+                                let view = Self::owner_view(&self.nav, e);
+                                let Split { views, measure, .. } = rig.split();
+                                let cx = self.parts(tick).cx::<H>(views, measure);
+                                view.and_then(|view| view.group_of(&k.elem, &cx))
+                            };
                             if let Outcome::Moved { from, to, by } =
-                                self.input.engine.set(owner, k, None, super::screen::By::Pointer)
+                                self.input.engine.set(owner, k, group, super::screen::By::Pointer)
                             {
                                 if let Some(inst) = self.nav.instance_of(e) {
                                     head.push(Stamped {
@@ -1174,9 +1210,20 @@ where
             .filter_map(|s| Some((s.entry.inst.as_ref()?.id, s.motion.held())))
             .collect();
         // the press machine (§7.4): hold and commit are delivered from the Tick
+        let mut deferred_hold = None;
         for pe in self.input.tick(tick.ms, tick.dt()) {
             let (delivery, owner) = match pe {
+                PressEvent::Prepare(id, owner) => {
+                    (Delivery::Screen(ScreenEvent::PressPrepare(id)), owner)
+                }
                 PressEvent::Hold(id, owner, key) => (Delivery::Press { id, key, held: true }, owner),
+                PressEvent::HoldReady(id, owner) => {
+                    deferred_hold = Some(Stamped {
+                        from: MachineId::Input,
+                        fx: Fx::Deliver(owner, Delivery::Screen(ScreenEvent::PressHoldReady(id))),
+                    });
+                    continue;
+                }
                 PressEvent::Commit(id, owner, key) => (Delivery::Press { id, key, held: false }, owner),
             };
             head.push(Stamped {
@@ -1195,6 +1242,7 @@ where
                 fx: Fx::Deliver(MachineId::Instance(id), Delivery::Screen(ScreenEvent::Tick(t))),
             });
         }
+        head.extend(deferred_hold);
         // 5. expired timers, deadline then id order
         let mut due: Vec<(TimerId, u32, MachineId)> = Vec::new();
         self.timers.retain(|t| {
@@ -1230,6 +1278,7 @@ where
         if parts.owner != owner_before {
             // an owner change cancels the press (§7.4)
             self.input.cancel_press();
+            self.input.pointer_lock = None;
         }
         report.steps_post = plx_base::diag::spans::span("dpost", || self.drain(rig, &parts, MAX_STEPS_POST, &mut report, tap));
         // §7.3 step 6: after every landing and before draw, the owner's reconcile
@@ -1477,8 +1526,9 @@ where
     {
         let Some(entry) = nav.tabs.stack.top().filter(|entry| owner == Some(entry.id)) else { return Vec::new() };
         let Some(inst) = entry.inst.as_ref().filter(|i| i.screen.hit_source() == HitSource::Engine) else { return Vec::new() };
+        if inst.screen.blocks_chrome_input() { return Vec::new(); }
         let Some(bar) = chrome_presented::<H>(navigation, &*inst.screen) else { return Vec::new() };
-        let hover = if inst.screen.strip_reachable() { super::screen::Hover::Focus } else { super::screen::Hover::Ignore };
+        let hover = if inst.screen.strip_hoverable() { super::screen::Hover::Focus } else { super::screen::Hover::Ignore };
         nav.tabs.strip.iter().map(|member| Stop {
             key: FocusKey { entry: entry.id, elem: member.elem },
             rect: bar.chrome_rect(member.drawn), rest_rect: bar.chrome_rect(member.target),
@@ -1740,6 +1790,11 @@ where
                         } else if let Some(glass) = glass.as_deref_mut() {
                             glass.tab_band_mut().reset_material();
                         }
+                        let Split { views, measure, .. } = rig.split();
+                        let cx = chrome_parts.cx::<H>(views, measure);
+                        let mut overlay = DrawFrame::with_navigation(&cx, Painter::root(), navigation);
+                        inst.screen.draw_over_chrome(&mut overlay);
+                        stops.extend(overlay.into_stops());
                     }
                 }
             }
@@ -2105,6 +2160,13 @@ where
                 self.execute_deliver(rig, parts, to, Delivery::Screen(event), out, report, tap);
             }
             (MachineId::Instance(id), Delivery::Screen(ev)) => {
+                if let ScreenEvent::PressHoldReady(press) = &ev {
+                    if !self.input.arm.is_some_and(|arm| arm.id == *press && arm.deferred_hold
+                        && arm.owner == MachineId::Instance(id))
+                    {
+                        return;
+                    }
+                }
                 // An OS ownership edge takes effect at its position in the delivery stream.
                 // It is global even if its original recipient retired while the event waited.
                 if let ScreenEvent::Input(InputEvent {
@@ -2124,7 +2186,7 @@ where
                 // too late. Addressed commands, notices and lifecycle restoration still reach
                 // covered entries (including the host beneath a restored modal).
                 if matches!(ev, ScreenEvent::Input(_) | ScreenEvent::Activate(_) |
-                    ScreenEvent::PressHold(_) | ScreenEvent::PressCommit(_))
+                    ScreenEvent::PressPrepare(_) | ScreenEvent::PressHold(_) | ScreenEvent::PressHoldReady(_) | ScreenEvent::PressCommit(_))
                     && self.owner_entry().and_then(|entry| self.nav.instance_of(entry)) != Some(id)
                 {
                     report.dropped_deliveries += 1;
@@ -2297,7 +2359,22 @@ where
         // took on is `Acted` (the caller only reads it for a watched key).
         let mut fate = KeyFate::Acted;
         match ev {
-            ScreenEvent::PressHold(_) if handled == Handled::Yes => {
+            ScreenEvent::PressHold(id) if handled == Handled::DeferredHold => {
+                if let Some(arm) = self.input.arm.as_mut().filter(|arm| arm.id == *id) {
+                    arm.deferred_hold = true;
+                    out.push(Stamped {
+                        from: MachineId::Input,
+                        fx: Fx::Deliver(arm.owner, Delivery::Screen(ScreenEvent::PressHoldReady(*id))),
+                    });
+                }
+            }
+            ScreenEvent::PressHoldReady(_) if handled == Handled::Yes => {
+                if let Some(arm) = self.input.arm {
+                    self.input.pointer_lock = Some(arm.key);
+                }
+                self.input.cancel_press();
+            }
+            ScreenEvent::PressPrepare(_) | ScreenEvent::PressHold(_) if handled == Handled::Yes => {
                 // The screen answered the hold: abandon the press onto its release spring. That is
                 // the right end whichever way the app answers: a declined hold springs back, and
                 // one that opens a menu springs from the dip up to the pop AS the menu opens,
@@ -2553,7 +2630,9 @@ where
         if let Outcome::Moved { from, to, by } = outcome {
             // A catalog reconciliation changes the cursor, not the identity of an ongoing
             // gesture. Never let release activate the fallback item that replaced its arm.
-            self.input.abandon_if_off(entry, to);
+            if !self.input.arm.is_some_and(|arm| arm.deferred_hold || arm.preparing_hold) {
+                self.input.abandon_if_off(entry, to);
+            }
             if let Some(id) = self.nav.instance_of(entry) {
                 let mut out = Vec::new();
                 self.execute_deliver(rig, parts, MachineId::Instance(id), Delivery::Screen(ScreenEvent::FocusMoved { from, to, by }), &mut out, report, tap);

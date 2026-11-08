@@ -658,6 +658,24 @@ impl<K: Copy + Eq> Stack<K> {
         Some((i, at))
     }
 
+    fn is_terminal_pointer_row<H: Host, P: StackPage<H, Key = K>>(
+        &self, p: &P, cx: &Cx<'_, H>, to: FocusKey<H::Elem>,
+    ) -> bool {
+        if to.entry != self.entry { return false; }
+        let Some(i) = self.owner(p, cx, &to.elem) else { return false; };
+        if (i + 1..self.specs.len()).any(|j| self.height(p, cx, j) > 0.0) { return false; }
+        let Some(cards) = p.cards(cx, self.specs[i].key) else { return false; };
+        let Some(index) = cards.index_of(&to.elem) else { return false; };
+        match &self.bodies[i] {
+            Body::Grid(grid) => {
+                let cols = grid.columns_count().max(1);
+                index / cols + 1 == cards.len().div_ceil(cols)
+            }
+            Body::Shelf(_) => true,
+            Body::Plain => false,
+        }
+    }
+
     /// Section `i`'s rect on screen (a plain section; a shelf's block).
     fn rect<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, i: usize) -> Rect {
         match self.specs[i].kind {
@@ -745,7 +763,12 @@ impl<K: Copy + Eq> Stack<K> {
             }
             // A hover moves focus, never the page: the pointer scrolls by the screen's edges (and
             // a click by what it clicked, below). Every other move brings the page to the focus.
-            ScreenEvent::FocusMoved { by: plx_machine::machine::By::Pointer, .. } => self.wheeled = true,
+            ScreenEvent::FocusMoved { to, by: plx_machine::machine::By::Pointer, .. } => {
+                self.wheeled = true;
+                if self.is_terminal_pointer_row(p, cx, *to) {
+                    self.target = self.max_scroll(p, cx);
+                }
+            }
             ScreenEvent::FocusMoved { to, .. } if self.on_move => self.reveal_on(p, cx, *to),
             ScreenEvent::FocusMoved { .. } => self.wheeled = false,
             // The pointer's sideways glide moves the shelf under it (`Shelf::glide`).

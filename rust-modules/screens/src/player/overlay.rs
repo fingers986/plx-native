@@ -243,6 +243,12 @@ pub struct PlayerOverlayScreen {
     /// transport), so it must ask for no dim either. Resolved in `prepare`, which runs before the
     /// page pass the container paints dims in; `draw` is too late for that.
     suppressed: bool,
+    /// Cursor-only highlight for the drill-in title. It intentionally never enters D-pad focus.
+    title_pointer_hovered: bool,
+    /// Smoothed pointer-only title scale; D-pad focus remains on the menu rows.
+    title_hover_scale: plx_ui::Spring,
+    /// A brief local click dip for this pointer-only stop, which deliberately has no press focus group.
+    title_press_scale: plx_ui::Spring,
 }
 
 /// **"Your languages"**, in preference order, for the Subtitles menu's grouping
@@ -348,6 +354,9 @@ impl PlayerOverlayScreen {
             panel,
             repeat: RepeatGate::IDLE,
             suppressed: false,
+            title_pointer_hovered: false,
+            title_hover_scale: plx_ui::Spring::at(1.0),
+            title_press_scale: plx_ui::Spring::at(1.0),
         }
     }
 
@@ -511,6 +520,22 @@ impl PlayerOverlayScreen {
     /// This panel is going away by a viewer's own press: hand the transport the ordinary linger.
     fn closing<H: AppLike>(&self, fx: &mut Effects<'_, H>) {
         Self::ask(fx, PlayerReq::ExtendHud(HUD_LINGER_MS));
+    }
+
+    /// Back out of a pointer-only drill-in title. The title uses the engine's press event so the
+    /// same click dip used by ordinary rows is visible, while remaining outside D-pad focus.
+    fn pop_title<H: AppLike + crate::registry::MetadataLike>(
+        &mut self,
+        ps: &plx_media::route::PlaybackSession,
+        cx: &Cx<'_, H>,
+        fx: &mut Effects<'_, H>,
+    ) {
+        match &mut self.panel {
+            Panel::Tracks(p) => { p.pop(ps, H::metadata(cx)); }
+            Panel::More(p) => { p.pop(ps); }
+            _ => return,
+        }
+        self.moved(fx);
     }
 
     /// **Apply whatever the focused element decided, at once** (§7.4). Reached from a `Bare` row's
@@ -852,10 +877,18 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Machine<H> 
                 // `hit_source()` is. (This comment said `HitSource::Legacy`; this surface has
                 // answered `HitSource::Engine` since phase 12's contract freeze, and the property
                 // it relies on was never the Legacy answer but the delivery.)
-                if let InputKind::Click { .. } | InputKind::Pointer { .. } = input.kind {
-                    if matches!(&self.panel, Panel::Timing(_) | Panel::CustomDistance(_) | Panel::SubtitleSize(_))
-                        && matches!(input.kind, InputKind::Click { .. })
-                    {
+                if let InputKind::Pointer { hit, .. } = input.kind {
+                    self.title_pointer_hovered = hit == Some(plx_ui::page_stack::TITLE_KEY);
+                    return Handled::No;
+                }
+                if let InputKind::Click { .. } = input.kind {
+                    if let InputKind::Click { hit, .. } = input.kind {
+                        self.title_pointer_hovered = hit == Some(plx_ui::page_stack::TITLE_KEY);
+                        if self.title_pointer_hovered {
+                            self.title_press_scale.jump(0.94);
+                        }
+                    }
+                    if matches!(&self.panel, Panel::Timing(_) | Panel::CustomDistance(_) | Panel::SubtitleSize(_)) {
                         // Capsules intentionally have no cursor stops: every cursor click, on the
                         // capsule or elsewhere on the video, closes through the same path as BACK
                         // and releases the temporary menu pause before issuing one-way PLAY.
@@ -894,6 +927,10 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Machine<H> 
             // A pointer click on ANY row (`Activate::Immediate`/`Direct`, every `*Part::draw`
             // above) always applies at once.
             ScreenEvent::Activate(elem) => {
+                if plx_ui::page_stack::is_title_key(*elem) {
+                    self.pop_title(ps, cx, fx);
+                    return Handled::No;
+                }
                 // the event names the row that was hit (its key for Tracks): seat the panel on
                 // THAT row before `activate` reads the panel's own cursor, so a click never acts
                 // on a neighbour the cursor happened to still hold
@@ -919,11 +956,18 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Machine<H> 
                 Handled::No
             }
             ScreenEvent::PressCommit(_) => {
+                let title_key = FocusKey { entry: self.entry, elem: plx_ui::page_stack::TITLE_KEY };
+                if cx.press.owner.as_ref() == Some(&title_key) {
+                    self.pop_title(ps, cx, fx);
+                    return Handled::No;
+                }
                 self.activate(ps, cx, fx);
                 Handled::No
             }
             ScreenEvent::Tick(tick) => {
                 let dt = tick.dt();
+                self.title_hover_scale.step(if self.title_pointer_hovered { 1.10 } else { 1.0 }, 340.0, dt);
+                self.title_press_scale.step(1.0, 460.0, dt);
                 let mut installed = false;
                 match &mut self.panel {
                     Panel::Tracks(p) => {
@@ -1149,9 +1193,11 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Screen<H> f
         // for a surface, which is what the panels' own `Popover` used to hold.
         let appear = f.page_alpha;
         let measure = f.measure;
+        let title_key = FocusKey { entry: self.entry, elem: plx_ui::page_stack::TITLE_KEY };
+        let title_scale = self.title_hover_scale.pos * self.title_press_scale.pos * f.cx.press.dip_of(&title_key);
         match &mut self.panel {
-            Panel::Tracks(p) => p.draw(appear, measure),
-            Panel::More(p) => p.draw(appear, measure),
+            Panel::Tracks(p) => p.draw_with_title_feedback(appear, measure, title_scale),
+            Panel::More(p) => p.draw_with_title_feedback(appear, measure, title_scale),
             // Fixed y, never the live caption's own baseline — see `player_hud::CAPSULE_BOTTOM_Y`.
             Panel::Timing(p) => p.draw(plx_appkit::player_hud::CAPSULE_BOTTOM_Y, appear),
             Panel::CustomDistance(p) => p.draw(plx_appkit::player_hud::CAPSULE_BOTTOM_Y, appear),

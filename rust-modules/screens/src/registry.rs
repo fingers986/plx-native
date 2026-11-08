@@ -273,7 +273,7 @@ pub enum SearchReq {
 pub enum HomeReq {
     Play { sid: plx_plex::plex::ServerId, rk: String, resume_ns: i64 },
     Detail { sid: plx_plex::plex::ServerId, rk: String },
-    ItemMenu { sid: plx_plex::plex::ServerId, rk: String },
+    ItemMenu { sid: plx_plex::plex::ServerId, rk: String, opener: u32 },
     /// BACK from the shelves: fold to the hero and seat the engine in its remembered hero group.
     FoldToHero,
     Account,

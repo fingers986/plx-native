@@ -1603,6 +1603,25 @@ mod playbar_options {
     }
 
     #[test]
+    fn focused_scrub_emphasizes_the_rail_and_both_bold_clocks() {
+        let look = PlaybarLook::default();
+        let resting = bar(Knob::Tick, TransportMark::None);
+        let focused = bar(Knob::Focused, TransportMark::None);
+        let resting_track = census(resting, look)[0].1;
+        let focused_track = census(focused, look)[0].1;
+        assert_eq!(focused_track.h, resting_track.h * 1.5, "focus thickens the visible rail");
+        assert_eq!(focused_track.cy(), resting_track.cy(), "the rail expands around its center");
+
+        for align in [1, 2] {
+            let resting = runs(resting, look).into_iter().find(|run| run.align == align).expect("clock at rest");
+            let focused = runs(focused, look).into_iter().find(|run| run.align == align).expect("focused clock");
+            assert!(resting.bold && focused.bold, "both clock weights stay bold (align={align})");
+            assert_eq!(resting.ink, plx_ui::theme::TEXT_SECONDARY, "unfocused clock is dim (align={align})");
+            assert_eq!(focused.ink, plx_ui::theme::TEXT_PRIMARY, "focused clock is bright (align={align})");
+        }
+    }
+
+    #[test]
     fn a_busy_only_mark_draws_the_spinner_and_nothing_else() {
         let glyphs = |b: Playbar, look| {
             plx_ui::draw_census::capture_icons(|| {

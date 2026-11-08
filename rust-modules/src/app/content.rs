@@ -703,10 +703,12 @@ fn home_requests(app: &mut App, now: u32) {
                 activate_home_item(app, source, entry, sid, &rk, Some(resume_ns), ret, now),
             HomeReq::Detail { sid, rk } =>
                 activate_home_item(app, source, entry, sid, &rk, None, ret, now),
-            HomeReq::ItemMenu { sid, rk } => {
+            HomeReq::ItemMenu { sid, rk, opener } => {
                 let snapshot = app.bridge.hubs_snapshot();
                 let Some(item) = home_item(snapshot.view(), sid, &rk)
                     .filter(|item| plx_screens::item_menu::has_actions(item)) else { continue };
+                let mut ret = ret;
+                ret.focus = Some(plx_machine::machine::FocusKey { entry, elem: opener });
                 let from_deck = home_menu_from_deck(&ret);
                 let opener = app.bridge.home_opener(&app.pages, entry, ret.focus);
                 // `from_home: true` is the ONE thing `MenuHost::Home` still decided by phase 10;
