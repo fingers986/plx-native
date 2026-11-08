@@ -135,6 +135,8 @@ pub struct HudMotion {
     /// (the pop the Info card's buttons have always had). It is stepped while the screen focuses `GROUP_SECTION`
     /// (the open Info page is the section).
     pub(super) section_pop: RowPop,
+    /// Info/Chapter tab focus scale and press dip, using the same control spring as the row.
+    tab_pop: RowPop,
     /// The paused title's one-shot reveal clock; no motion remains after it reaches the end.
     pub(super) title_clock: plx_ui::marquee::Clock,
     /// The paused→playing EDGE, as an `SDL_GetTicks` stamp — the clock behind
@@ -206,6 +208,7 @@ impl HudMotion {
         Self {
             pop: RowPop::new(),
             section_pop: RowPop::new(),
+            tab_pop: RowPop::new(),
             title_clock: plx_ui::marquee::Clock::new(),
             play_at: None,
             pause_seen: None,
@@ -419,7 +422,7 @@ impl HudMotion {
     /// [`section_pop`](Self::section_pop); any other group closes both. The index is bounded by
     /// the CURRENT occupant's item count, so a stale `btn` left over from a wider slot cannot pop a
     /// control the narrower one does not have.
-    pub fn step(&mut self, slot: ControlSlot, focus: GroupId, btn: i32, dt: f32, now: u32) {
+    pub fn step(&mut self, slot: ControlSlot, focus: GroupId, btn: i32, tab: i32, dt: f32, now: u32) {
         self.note_transport(now);
         // Here and not in the draw: a scrub can end with the transport hidden (UP-hide), when
         // nothing draws, and the next one must not open on this one's last still.
@@ -443,11 +446,20 @@ impl HudMotion {
         }
         .filter(|&i| i < MAX_ROW_ITEMS);
         self.section_pop.step(section, dt);
+        let tab = (focus == super::geometry::GROUP_TABS)
+            .then(|| usize::try_from(tab).ok())
+            .flatten()
+            .filter(|&i| i < MAX_ROW_ITEMS);
+        self.tab_pop.step(tab, dt);
     }
 
     /// Section button `i`'s focus pop this frame.
     pub fn section_scale(&self, i: usize) -> f32 {
         self.section_pop.scale(i)
+    }
+
+    pub fn tab_scale(&self, i: usize) -> f32 {
+        self.tab_pop.scale(i)
     }
 
     /// Do the title block, control row and bottom tabs take the pointer? Not while a scrub has
