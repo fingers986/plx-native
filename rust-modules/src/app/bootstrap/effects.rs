@@ -238,6 +238,7 @@ fn store(command: &plx_data::stores::StoreCmd) -> Result<Value, &'static str> {
                 MetadataCmd::Clear => json!("clear"),
                 MetadataCmd::ClearItem { sid, rk } => json!({"clear_item":[sid.raw(),rk]}),
                 MetadataCmd::Withdraw { sid, rk } => json!({"withdraw":[sid.raw(),rk]}),
+                MetadataCmd::CapturePlayerInfo => json!("capture_player_info"),
                 _ => return Err("unsupported controlled metadata command"),
             }})
         }
@@ -345,7 +346,7 @@ pub(crate) fn encode(effect: &Fx<super::super::bridge::AppHost>) -> Result<Value
                         }),
                         ScreenEvent::Tick(tick) => json!({"ms":tick.ms,"dt_us":tick.dt_us}),
                         ScreenEvent::Timer(id) => json!(id.0),
-                        ScreenEvent::PressHold(id) | ScreenEvent::PressCommit(id) => json!(id.0),
+                        ScreenEvent::PressPrepare(id) | ScreenEvent::PressHold(id) | ScreenEvent::PressHoldReady(id) | ScreenEvent::PressCommit(id) => json!(id.0),
                         ScreenEvent::Activate(elem) => json!(elem),
                         ScreenEvent::Input(event) => input(event)?,
                         ScreenEvent::StoreChanged(store, generation) => json!([store.0,generation]),
