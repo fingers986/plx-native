@@ -100,15 +100,6 @@ pub const STRIP_ACCOUNT_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 4;
 pub const STRIP_WATCHLIST_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 5;
 
 const MAX_ITEMS: usize = plx_data::pms::MAX_SHELF_ITEMS;
-/// **How much of a resting shelf's posters must stand above the bottom margin for the pointer to take
-/// focus onto them**, from the poster's top (0..1). The page rests the focused shelf at one fixed
-/// line (`rest_scroll`), so the shelf below it stands cut by the bottom margin by a few tens of px
-/// and the shelf above it is off the top: a rule that wanted a shelf WHOLE on screen
-/// left the pointer nothing it could take focus onto (a shelf cut by the TOP still never takes it,
-/// so one passing under the pointer on its way off does not steal focus). The wheel moves the
-/// focus shelf by shelf either way (`bridge::wheel_input`, an Up or Down key).
-const POINTER_REACH: f32 = 0.5;
-
 const HERO_FLIP_CD: f32 = 0.35;
 const HERO_AUTO_S: f32 = 8.0;
 /// How near its target (px) a shelf's horizontal glide and the page's vertical reveal have to be
@@ -549,6 +540,9 @@ impl HubKeys {
 }
 
 pub struct HomeScreen {
+    pending_item_menu: Option<FocusKey<u32>>,
+    confirm_action: plx_ui::decision_prompt::DecisionPrompt,
+    confirm_return: Option<plx_machine::machine::FocusKey<u32>>,
     entry: EntryId,
     instance: InstanceId,
 
@@ -628,13 +622,10 @@ pub struct HomeScreen {
     snap_target: f32,
     /// **The page is where the pointer put it, not where focus would rest it.** Set by a wheel (the
     /// pointer's edge glide, `app::input::EdgeScroll`) and by a hover, which moves focus but never
-    /// the page; cleared by a key's move and by a click, which bring the page back to the focused
-    /// shelf. While set, the tick does not pull `grid.scroll_target` to the focused row.
+    /// the page; cleared by a key's move, which rests the page on the focused shelf. A poster click
+    /// leaves the view in place and activates that card directly. While set, the tick does not pull
+    /// `grid.scroll_target` to the focused row.
     free: bool,
-    /// **A click that only brings a card into view.** A click on a shelf card the screen shows only
-    /// part of (the shelf peeking under the hero, a shelf cut by the bottom edge) scrolls the page to
-    /// it and does not open it: its press is dropped when it commits. Cleared by any key.
-    reveal_press: Option<u32>,
     /// Stable element still visible while the engine has already crossed the hero/grid door.
     /// This is a press landing policy, not current focus, and retires at the visual midpoint.
     visible_activation: Option<u32>,
@@ -664,6 +655,9 @@ pub struct HomeScreen {
 impl HomeScreen {
     pub fn new(entry: EntryId, id: InstanceId) -> Self {
         Self {
+            pending_item_menu: None,
+            confirm_action: plx_ui::decision_prompt::DecisionPrompt::new(GroupId(0x7ffe_0010), 0x7ffe_0011, 0x7ffe_0012, plx_platform::i18n::msg::settings_cancel_c(), plx_platform::i18n::msg::settings_exit_action_c()),
+            confirm_return: None,
             entry,
             instance: id,
             groups: Vec::new(),
@@ -696,7 +690,6 @@ impl HomeScreen {
             covered: false,
             snap_target: 0.0,
             free: false,
-            reveal_press: None,
             visible_activation: None,
             cta_available: false,
             strip_chosen: false,
@@ -1572,7 +1565,13 @@ impl HomeScreen {
         let mut shelves = std::mem::take(&mut self.grid.shelves);
         let mut on_screen: Option<(usize, usize)> = focused.map(|(row, _)| (row, row));
         for (row, shelf) in shelves.iter_mut().enumerate() {
-            shelf.dormant(dormant);
+            // The exposed Continue Watching shelf remains interactive under the hero. Its focused
+            // card needs a live spring to show the same hover pop as every other card; keep all
+            // other shelves asleep until the hero-to-grid transition completes.
+            let peek_focused = dormant
+                && focused.is_some_and(|(focused_row, _)| focused_row == row)
+                && self.rows.get(row).is_some_and(|hub| hub.identity == HomeHubIdentity::ContinueWatching);
+            shelf.dormant(dormant && !peek_focused);
             let top = heading_y(shelf.base_y(), shelf.heading_lift());
             let bottom = shelf.base_y() + CARD_H + shelf.under_band();
             let visible = !dormant && on_axis(top, bottom - top, SCR_H, 0.0);
@@ -1614,7 +1613,7 @@ impl HomeScreen {
                 fx.push(Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Hold { lo: hold.0, hi: hold.1 }))));
             }
         }
-        if let Some(row) = self.rest_row(engine).filter(|row| *row < self.rows.len() && !self.free) {
+        if let Some(row) = self.rest_row(self.pending_item_menu.or(engine)).filter(|row| *row < self.rows.len() && !self.free) {
             self.grid.scroll_target = rest_scroll(row, self.rows.len(), self.band_open_at(self.rows.len().checked_sub(1)));
         }
         self.grid
@@ -1738,6 +1737,13 @@ impl HomeScreen {
         } else {
             self.hero_auto = HERO_AUTO_S;
         }
+        if self.pending_item_menu.is_some() && self.pending_item_menu != cx.press.owner {
+            self.pending_item_menu = None;
+        }
+        if self.pending_item_menu.is_some() {
+            self.snap_target = 1.0;
+            self.free = false;
+        }
         self.snap
             .step(pinned_snap(self.snap_target, self.rows.len()), K_SNAP, dt);
         // ONE answer for "is the dive still running", read by the present gate below. See
@@ -1749,7 +1755,7 @@ impl HomeScreen {
         if engine_on_grid == picture_is_grid {
             self.visible_activation = None;
         }
-        let visible_focus = self.visible_focus(cx.focus.current);
+        let visible_focus = self.visible_focus(self.pending_item_menu.or(cx.focus.current));
         let hero_focus = match self.focused_loc(visible_focus) {
             Some(Located::Hero(i)) if status_read(view).is_none() => Some(i),
             _ => None,
@@ -1775,6 +1781,8 @@ impl HomeScreen {
             owner: cx.owner,
         };
         self.update_grid(view, &visible_cx, cx.focus.current, fx, t);
+
+
 
         let grid_item = self
             .focused_grid(visible_focus)
@@ -1876,11 +1884,13 @@ impl HomeScreen {
         ));
     }
 
-    fn emit_item_menu<H: HomeLike>(&self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
-        if self.snap.pos < 0.5 {
-            return Handled::No;
-        }
-        let Some((row, col)) = self.focused_grid(cx.focus.current) else {
+    fn emit_item_menu<H: HomeLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        self.emit_item_menu_for(cx.focus.current, cx, fx)
+    }
+
+    fn emit_item_menu_for<H: HomeLike>(&mut self, key: Option<FocusKey<u32>>, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        let Some(key) = key else { return Handled::No; };
+        let Some((row, col)) = self.focused_grid(Some(key)) else {
             return Handled::No;
         };
         let Some(item) = self.item_at(H::hubs(cx), row, col) else {
@@ -1890,6 +1900,7 @@ impl HomeScreen {
             return Handled::No;
         }
         fx.push(Fx::App(AppFx::Home(HomeReq::ItemMenu {
+            opener: key.elem,
             sid: item.sid,
             rk: item.rk.clone(),
         })));
@@ -2121,7 +2132,7 @@ impl HomeScreen {
         plx_ui::testpat::draw(p);
         // A standing note, never a target: drawn over the page, records no stop and no hit rect.
         self.hold_hint.draw(p, f.measure);
-        if !self.plaintext_alert.visible() {
+        if !self.plaintext_alert.visible() && !self.confirm_action.visible() {
             // the question owns the pointer while it is up; nothing under it is a target
             self.record_stops(f, view);
         }
@@ -2358,9 +2369,9 @@ impl HomeScreen {
                 );
             }
         }
-        // The shelves have stops under the hero too: the first one peeks under it, and a click on
-        // a peeking card brings the page down to it (`reveal_press`). A hover there takes no focus
-        // from the hero (`OnlyIfFocused`, `pointable` is false while the hero is up).
+        // The shelves have stops under the hero too: the first one peeks under it, and its visible
+        // posters may take pointer focus as well as clicks. Stops are clipped to the drawn card, so
+        // the covered portion cannot steal focus from the hero controls.
         {
             let hero_up = self.snap.pos < 0.5;
             let focused_row = self.focused_grid(focus).map(|(row, _)| row).filter(|_| !hero_up);
@@ -2372,13 +2383,15 @@ impl HomeScreen {
                 if !row_focused && !self.shelf_on_screen(row_index) {
                     continue;
                 }
-                // Every tile of the row shares one y, so one answer says whether a pointer passing
-                // over the row may take its focus: its posters stand clear of the top margin and
-                // their upper part clears the bottom one ([`POINTER_REACH`]), which is what the shelf
-                // below the focused one is at rest.
+                // Every tile of the row shares one y. Its posters can take hover focus when they
+                // occupy the pointer-reach band; while the hero is up, only Continue Watching is
+                // exposed as a hover target.
                 let rest = Rect::new(0.0, self.grid.base_y(row_index) + CARD_DY, CARD_W, CARD_H)
                     .scaled(RowStyle::HOME.focus_scale);
-                let pointable = !hero_up && rest.y >= 40.0 && rest.y + rest.h * POINTER_REACH <= SCR_H - 20.0;
+                let poster_visible = rest.y + rest.h > plx_ui::widgets::TOP_BAR_BOTTOM
+                    && rest.y < SCR_H - 20.0;
+                let hero_peek = hero_up && row.identity == HomeHubIdentity::ContinueWatching;
+                let pointable = poster_visible && (!hero_up || hero_peek);
                 let src = HomeCards {
                     hover: if pointable || row_focused { Hover::Focus } else { Hover::OnlyIfFocused },
                     ..self.cards(view, row_index)
@@ -2525,9 +2538,8 @@ impl LogicalState for HomeScreen {
             // `grid.scroll_target`, encoded below, and it is a hand-off from the pointer's events
             // (a wheel, a hover, a click) to the next `Tick`, like a shelf's `seen`.
             free: _,
-            // A press hand-off from a click to its commit, like `free`: what it decides (whether
-            // the commit opens the card) is an effect, and the page it moves is `snap_target`.
-            reveal_press: _,
+            // A press hand-off across the hero/grid transition. The committed action is a
+            // one-way activation; the remembered element affects which control is drawn.
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,
             hero_pop: _, backdrop: _, grid: _,
             // The disc's membership is the Watchlist store's (the application feeds it); the flip
@@ -2536,7 +2548,7 @@ impl LogicalState for HomeScreen {
             // The plaintext question is the grant table's (`plex::grant::offers`), which no
             // recording can raise, and its alert only paints over a failed read-out. The clock
             // fact is `net::keypin`'s, likewise unraisable by a recording.
-            plaintext: _, plaintext_alert: _, clock: _,
+            plaintext: _, plaintext_alert: _, clock: _, confirm_action: _, confirm_return: _, pending_item_menu: _,
             // The hold hint is a paint-only standing note on a `Tick` timer: no input, reveal or
             // focus decision reads it, and it is not hashed (the way `status_ms` is not).
             hold_hint: _ } = self;
@@ -2595,6 +2607,7 @@ impl LogicalState for HomeScreen {
 
 impl<H: HomeLike> Focusable<H> for HomeScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        if self.confirm_action.groups(out, cx.measure) { return; }
         if self.plaintext_alert.groups(out) {
             return;
         }
@@ -2672,6 +2685,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     }
 
     fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
+        if let Some(answer) = self.confirm_action.group_of(*key) { return answer; }
         if let Some(answer) = self.plaintext_alert.group_of(*key) {
             return answer;
         }
@@ -2683,6 +2697,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     }
 
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
+        if let Some(answer) = self.confirm_action.neighbour(key, dir) { return answer; }
         if let Some(step) = self.plaintext_alert.neighbour(key, dir) {
             return step;
         }
@@ -2723,6 +2738,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     }
 
     fn place(&self, key: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
+        if let Some(answer) = self.confirm_action.place(*key, cx.measure) { return answer; }
         if let Some(placed) = self.plaintext_alert.place(*key) {
             return placed;
         }
@@ -2803,6 +2819,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     }
 
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
+        if let Some(answer) = self.confirm_action.reconcile(want) { return answer; }
         if let Some(key) = self.plaintext_alert.reconcile(want) {
             return key;
         }
@@ -2852,6 +2869,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     }
 
     fn seat(&self, group: GroupId, from: Placed, _cx: &Cx<'_, H>) -> FocusKey<u32> {
+        if let Some(answer) = self.confirm_action.seat(group, self.entry) { return answer; }
         if let Some(key) = self.plaintext_alert.seat(group, self.entry) {
             return key;
         }
@@ -3018,6 +3036,33 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
     type Ev = ScreenEvent<H>;
 
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        if matches!(ev, ScreenEvent::Input(InputEvent { kind: InputKind::Wheel { .. }
+            | InputKind::Key { key: Key::Back, edge: Edge::Down, .. }, .. })) {
+            self.pending_item_menu = None;
+        }
+
+        use plx_ui::decision_prompt::PromptStep;
+        if let ScreenEvent::Tick(tick) = ev {
+            self.confirm_action.update(tick.dt());
+        }
+        match self.confirm_action.step(ev, cx) {
+            PromptStep::Pass => {}
+            PromptStep::Done(handled) => {
+                fx.invalidate(Provenance::Input);
+                return handled;
+            }
+            PromptStep::Answer(yes) => {
+                let previous = self.confirm_return.take();
+                if yes {
+                    fx.push(Fx::App(AppFx::Loop(LoopReq::BackAtRoot)));
+                } else if let Some(key) = previous {
+                    self.reseat(FocusTarget::Elem(key), cx, fx);
+                }
+                fx.invalidate(Provenance::Input);
+                return Handled::Yes;
+            }
+        }
+
         match self.plaintext_alert.step(ev, cx) {
             AlertStep::Pass => {}
             AlertStep::Done(handled) => return handled,
@@ -3033,22 +3078,17 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
         if let ScreenEvent::Input(InputEvent { at, kind: InputKind::Key { key, edge, .. }, .. }) = ev {
             self.backdrop.note_key(*key, *edge, at.ms);
         }
-        if let ScreenEvent::Input(InputEvent { kind: InputKind::Key { .. }, .. }) = ev {
-            self.reveal_press = None;
-        }
-        // A click brings the page to what it clicked, the way a key's move does; a click on a
-        // card the screen shows only part of does only that (`reveal_press`).
+        // A click brings the page to what it clicked, the way a key's move does. The card remains
+        // the click target during that glide, so its activation is not delayed to a second click.
         if let ScreenEvent::Input(InputEvent { kind: InputKind::Click { hit: Some(elem), .. }, .. }) = ev {
             if let Some(loc) = self.locate(*elem) {
-                self.reveal_press = matches!(loc, Located::Item(..))
-                    .then(|| Focusable::<H>::place(self, elem, cx, At::Drawn))
-                    .flatten()
-                    .filter(|placed| placed.rect.y < 0.0 || placed.rect.y + placed.rect.h > SCR_H)
-                    .map(|_| *elem);
-                self.free = false;
-                self.snap_target = if loc.on_grid() { 1.0 } else { 0.0 };
-                if let Located::Item(row, _) = loc {
-                    if let Some(shelf) = self.grid.shelves.get_mut(row) { shelf.unfree(); }
+                if matches!(loc, Located::Item(..)) {
+                    // Clicking a poster activates it at the pointer's location; do not first
+                    // animate the page or its shelf to the D-pad resting position.
+                    self.free = true;
+                } else {
+                    self.free = false;
+                    self.snap_target = if loc.on_grid() { 1.0 } else { 0.0 };
                 }
                 fx.invalidate(Provenance::Input);
             }
@@ -3138,6 +3178,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { from, to, by } => {
+                if self.pending_item_menu.is_some_and(|key| key != *to) { self.pending_item_menu = None; }
                 if let Some((row, _)) = self.focused_grid(*from) {
                     if self.focused_grid(Some(*to)).is_none_or(|(next, _)| next != row) {
                         self.cancel_row_page(row, cx, fx);
@@ -3149,15 +3190,34 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 self.feed_shelves(ev, cx, fx);
                 let from_loc = from.and_then(|key| self.locate(key.elem));
                 let to_loc = self.locate(to.elem);
-                if let (Some(a), Some(b)) = (from_loc, to_loc) {
+                let pointer_to_hero_peek = *by == By::Pointer
+                    && self.snap.pos < 0.5
+                    && matches!(to_loc, Some(Located::Item(row, _))
+                        if self.rows.get(row).is_some_and(|hub| hub.identity == HomeHubIdentity::ContinueWatching));
+                if pointer_to_hero_peek {
+                    // The exposed Continue Watching card is now the picture's focus too. Keeping
+                    // the previous hero action in `visible_activation` would paint the white focus
+                    // on the hero and omit the card from the focused paint pass.
+                    self.visible_activation = None;
+                } else if let (Some(a), Some(b)) = (from_loc, to_loc) {
                     if a.on_grid() != b.on_grid() {
                         self.visible_activation = from.map(|key| key.elem);
                     }
                 }
                 // A hover moves focus, never the page: the pointer scrolls by the screen's edges
-                // (and a click by what it clicked). Every other move brings the page to the focus.
+                // (and a click by what it clicked), except that entering the last shelf reveals
+                // the document end so its posters and captions are not cut off. Every other move
+                // brings the page to the focus.
                 if *by == By::Pointer {
                     self.free = true;
+                    if let Some(Located::Item(row, _)) = to_loc {
+                        if row + 1 == self.rows.len() {
+                            self.grid.scroll_target = grid_max_scroll(
+                                self.rows.len(),
+                                self.band_open_at(self.rows.len().checked_sub(1)),
+                            );
+                        }
+                    }
                 } else {
                     self.free = false;
                     match to_loc {
@@ -3201,16 +3261,14 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 Handled::Yes
             }
             ScreenEvent::PressCommit(_) => {
+                self.pending_item_menu = None;
                 if let Some(elem) = cx
                     .focus
                     .current
                     .filter(|k| k.entry == self.entry)
                     .map(|k| k.elem)
                 {
-                    // the click that brought a partly shown card into view does not open it
-                    if self.reveal_press.take() != Some(elem) {
-                        self.activate(elem, cx, fx);
-                    }
+                    self.activate(elem, cx, fx);
                 }
                 Handled::Yes
             }
@@ -3218,7 +3276,58 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 self.activate(*elem, cx, fx);
                 Handled::Yes
             }
-            ScreenEvent::PressHold(_) => self.emit_item_menu(cx, fx),
+            ScreenEvent::PressPrepare(_) => {
+                self.pending_item_menu = None;
+                if let Some((row, _)) = self.focused_grid(cx.focus.current) {
+                    self.snap_target = 1.0;
+                    self.free = false;
+                    if let Some(shelf) = self.grid.shelves.get_mut(row) {
+                        shelf.unfree();
+                    }
+                    self.grid.scroll_target = rest_scroll(row, self.rows.len(),
+                        self.band_open_at(self.rows.len().checked_sub(1)));
+                    self.pending_item_menu = cx.focus.current;
+                    fx.invalidate(Provenance::Input);
+                    Handled::DeferredPrepare
+                } else {
+                    Handled::No
+                }
+            }
+            ScreenEvent::PressHold(_) => {
+                self.pending_item_menu = None;
+                if let Some((row, _)) = self.focused_grid(cx.focus.current) {
+                    self.snap_target = 1.0;
+                    self.free = false;
+                    if let Some(shelf) = self.grid.shelves.get_mut(row) {
+                        shelf.unfree();
+                    }
+                    self.grid.scroll_target = rest_scroll(row, self.rows.len(),
+                        self.band_open_at(self.rows.len().checked_sub(1)));
+                    self.pending_item_menu = cx.focus.current;
+                    fx.invalidate(Provenance::Input);
+                    Handled::DeferredHold
+                } else {
+                    Handled::No
+                }
+            }
+            ScreenEvent::PressHoldReady(_) => {
+                let Some(key) = self.pending_item_menu else { return Handled::Yes; };
+                if self.focused_grid(Some(key)).is_none() {
+                    self.pending_item_menu = None;
+                    return Handled::Yes;
+                }
+                if (self.snap.pos - 1.0).abs() > SNAP_REST_POS
+                    || (self.grid.scroll_y.pos - self.grid.scroll_target).abs() > 1.0
+                {
+                    return Handled::No;
+                }
+                self.snap.jump(1.0);
+                self.grid.scroll_y.jump(self.grid.scroll_target);
+                self.layout_grid();
+                self.pending_item_menu = None;
+                self.emit_item_menu_for(Some(key), cx, fx);
+                Handled::Yes
+            }
             ScreenEvent::App(AppMsg::Home(command)) => {
                 self.sync_catalog(cx);
                 self.command(*command, cx, fx)
@@ -3268,7 +3377,9 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                     fx.push(Fx::App(AppFx::Home(HomeReq::FoldToHero)));
                     fx.invalidate(Provenance::Input);
                 } else {
-                    fx.push(Fx::App(AppFx::Loop(LoopReq::BackAtRoot)));
+                    self.confirm_return = cx.focus.current;
+                    self.confirm_action.open(plx_platform::i18n::msg::settings_exit_question_c(), plx_platform::i18n::msg::settings_exit_body());
+                    self.reseat(FocusTarget::ContainerGroup(GroupId(0x7ffe_0010)), cx, fx);
                 }
                 Handled::Yes
             }
@@ -3309,19 +3420,28 @@ impl<H: HomeLike> Screen<H> for HomeScreen {
     fn render(&self) -> RenderStrategy {
         RenderStrategy::Page
     }
+    fn blocks_chrome_input(&self) -> bool { self.confirm_action.visible() }
+    fn draw_over_chrome(&mut self, f: &mut DrawFrame<'_, '_, H>) {
+        self.confirm_action.draw(f, self.entry);
+    }
     fn strip_reachable(&self) -> bool {
         self.snap.pos < 0.5
     }
+    fn strip_hoverable(&self) -> bool {
+        true
+    }
     fn links(&self, out: &mut Vec<Link>) {
+        if <Self as Screen<H>>::strip_reachable(self) {
+            out.push(Link {
+                from: HERO_GROUP,
+                dir: Dir::Up,
+                to: plx_ui::containers::tabs::STRIP,
+            });
+        }
         out.push(Link {
             from: plx_ui::containers::tabs::STRIP,
             dir: Dir::Down,
             to: HERO_GROUP,
-        });
-        out.push(Link {
-            from: HERO_GROUP,
-            dir: Dir::Up,
-            to: plx_ui::containers::tabs::STRIP,
         });
         // A collection shelf's linked heading sits between the shelf above and its own cards:
         // UP from any card reaches it, DOWN returns to the remembered card, and it is the next
@@ -3973,9 +4093,17 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
 
     /// The card the PICTURE shows focused: none until the dive has made the shelves the picture,
     /// and the card the page came from while the dive back to the billboard still shows them.
+    /// Continue Watching is the exception: its exposed posters remain pointer-focusable under the
+    /// billboard, and need their ordinary focus pop to make that hover visible.
     fn focus_index(&self, e: &u32) -> Option<usize> {
         if self.home.snap.pos <= 0.5 {
-            return None;
+            if self.home.rows.get(self.row).map_or(true, |row| row.identity != HomeHubIdentity::ContinueWatching) {
+                return None;
+            }
+            // During the hero/grid crossfade `activation_elem` remaps the engine's card focus back
+            // to the hero control shown in the picture. The exposed Continue Watching poster is
+            // deliberately hoverable now, so keep its actual card index for the focus animation.
+            return self.home.item_col(self.row, *e);
         }
         self.home.item_col(self.row, self.home.activation_elem(*e))
     }
