@@ -1,43 +1,33 @@
-name: Record PR 14 simulator fixtures
+name: Import validated PR 14 fixtures
 on:
   push:
     branches: [codex/pr14-macos-diagnosis]
     paths: [.github/workflows/record-pr14.yml]
 permissions:
-  contents: read
+  actions: read
+  contents: write
 jobs:
-  record:
-    runs-on: macos-latest
-    timeout-minutes: 50
+  import:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: brew install sdl2_ttf cmake pkg-config
-      - run: make sim-macos SIM_TDIR=rust-modules/target-sim-ci
-      - name: Record three flows
-        run: |
-          export SIM_BIN="$GITHUB_WORKSPACE/rust-modules/target-sim-ci/debug/plxnative-sim"
-          export OUT="$RUNNER_TEMP/plxnative-recordings"
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('tests/focusfp.sh')
-          s = p.read_text()
-          old = '''; sleep "$STEP" ;;'''
-          new = '''; sleep "$STEP"; echo "After key $tok"; grep '^focus ' "$log" | tail -1 || true ;;'''
-          assert s.count(old) == 1
-          s = s.replace(old, new)
-          flow = 'record_flow 1 boot-home-chip-grid '
-          assert s.count(flow) == 1
-          p.write_text(s.replace(flow, 'BOOT_SETTLE=8 STEP=2 ' + flow))
-          PY
-          bash tests/focusfp.sh --rec --only 1,6,12
-          for fixture in 1-boot-home-chip-grid 6-settings-family 12-filmography-detail-return; do
-            source="$OUT/root-${fixture%%-*}/plxnative-recordings/latest"
-            python3 tools/plxnative-rec check "$source"
-            python3 tools/plxnative-rec rerecord "$source" "$fixture"
-          done
-          python3 tests/replay_fixtures.py --window 960x540 --sim "$SIM_BIN" --output "$RUNNER_TEMP/pr14-replay"
-      - uses: actions/upload-artifact@v4
         with:
+          ref: codex/chapter-intro-credit-fallback
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 42497762370
           name: pr14-simulator-recordings
-          path: tests/fixtures/replay/*/
-          if-no-files-found: error
+          path: fixture-import
+      - run: |
+          set -euo pipefail
+          for name in 1-boot-home-chip-grid 6-settings-family 12-filmography-detail-return; do
+            test -f "fixture-import/$name/manifest.json"
+            python3 tools/plxnative-rec check "fixture-import/$name"
+            python3 tools/plxnative-rec rerecord "fixture-import/$name" "$name"
+          done
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- tests/fixtures/replay
+          git commit -m 'Refresh validated macOS replay fixtures'
+          git push origin HEAD:refs/heads/codex/chapter-intro-credit-fallback
